@@ -40,7 +40,7 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 | `squad new <dir>` | Creates a project folder with git, a first commit and a team. |
 | `squad init` | Adds a team to the repository you are in. Fills the `setup` line from the lockfile it finds (pnpm, yarn, npm, bun, uv, poetry, bundler) so every worktree gets its dependencies. |
 | `squad up` | Creates the worktrees, opens a herdr workspace, starts and briefs every agent. Run it from a pane inside herdr. Safe to run again: it keeps running seats, adopts agents you started by hand in a seat's pane, starts only what is missing and briefs only seats that were never briefed. |
-| `squad brief` | Sends the role briefing again, after you fixed a blocked agent or restarted herdr. |
+| `squad brief` | Starts the lead again (one short line) and briefs agents that can't load a role at start (e.g. OpenCode). Claude and Codex seats don't need it: their role is loaded at start. |
 | `squad watch` | The live strip in the team tab: plan usage bars per vendor, each task's owner and state, each seat's state, the last event. `squad up` starts it; `--once` prints it once. |
 | `squad usage` | One line of plan usage: Claude and Codex, 5-hour and 7-day windows, and when a nearly used-up window comes back. |
 | `squad statusline` | Claude Code's status line (set by `squad permissions`): the model and usage bars; also records Claude's usage for `squad watch`. |
@@ -96,6 +96,10 @@ Built-in presets:
 | `small` | Sol lead, Claude Opus dev, Sol reviewer; for small features |
 
 An OpenCode seat starts with the model your own OpenCode configuration selects. Add arguments to its line to pin one.
+
+## Roles load at start
+
+Each seat's identity, the protocol and its role are written to `.team/seats/<seat>.md` and loaded as a system prompt when the agent starts — Claude with `--append-system-prompt-file`, Codex with `developer_instructions`. Nothing is typed into the panes, there is no "reply READY" round trip, and the role survives the `/clear` / `/new` the lead sends between tasks. The lead only gets one line to start ("ask me what we are building", or "resume from the files" when the spec is already approved). Agents without such a flag (OpenCode) still get a typed briefing.
 
 ## Layout
 
@@ -182,7 +186,7 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 | Symptom | What to do |
 |---|---|
 | "run this from a pane inside herdr" | Start `herdr` in the repository and run `squad up` there. |
-| A seat "did not become ready" | herdr's error is printed above it. Usually the agent shows a first-run dialog (trust this folder, sign in): open its pane, answer it, then `squad brief`. A pane whose shell is still starting is retried for up to a minute automatically. |
+| A seat "did not become ready" | herdr's error is printed above it. Usually the agent shows a first-run dialog (trust this folder, sign in): open its pane, answer it, then `squad up` again. A pane whose shell is still starting is retried for up to a minute automatically. |
 | Codex: "Error adding directories … do not allow additional writable roots" | Fixed in 0.2.0 (squad passes `-s workspace-write`). If your seat line sets its own `-s read-only`, remove it. |
 | The lead's herdr calls reach the wrong session | Agents must use the `squad herdr …` commands written in `.team/roles/`, not plain `herdr`: Codex runs commands through a daemon that can carry another pane's environment. |
 | "an agent named … is already running" | A team is already up in this herdr session: use it (`squad brief`), or run the other project's team in its own session, `herdr --session <project>`. |
@@ -191,7 +195,7 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 
 ## Status of this project
 
-Version 0.6.1. Run end to end on herdr 0.9.3 with real agents, default 6-seat
+Version 0.7.0. Run end to end on herdr 0.9.3 with real agents, default 6-seat
 team (GPT-6.1 Sol lead, dev and reviewer in Codex; Claude Opus dev and
 reviewer; Claude Sonnet tester), on a three-task goal: spec and approval, both
 devs in parallel, cross-vendor reviews (3 × `APPROVE`), a test run per task
