@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -467,7 +467,8 @@ explain_stuck() { # <name> <pane>
   case "$text" in
     *"rust this folder"*|*"o you trust"*|*"afety check"*)
       say "    → it asks whether to trust this folder (first run of this project only)."
-      say "      Open pane '$1', choose trust." ;;
+      say "      Open pane '$1', choose trust."
+      STUCK_ON_TRUST=1 ;;
     *"pdate available"*)
       say "    → Codex wants to update itself before starting. Open pane '$1' and choose Skip."
       say "      To stop this for good: check_for_update_on_startup = false in ~/.codex/config.toml" ;;
@@ -479,6 +480,8 @@ explain_stuck() { # <name> <pane>
 }
 
 START_FAILED=0
+STUCK_ON_TRUST=0
+TRUST_WAIT=" "  # agent kinds held back until one trust dialog is answered
 STARTED=()  # seats started or adopted in this run: only these get briefed
 start_seat() { # <index> <pane>
   local i=$1 pane=$2 name kind args
@@ -506,7 +509,11 @@ start_seat() { # <index> <pane>
     STARTED+=("$name")
   else
     say "  $name did not become ready."
+    STUCK_ON_TRUST=0
     explain_stuck "$name" "$pane"
+    # Claude and Codex both save trust per repository: one answer covers every
+    # seat of that agent, so don't make the human answer the same dialog again
+    [ "$STUCK_ON_TRUST" = 1 ] && TRUST_WAIT="$TRUST_WAIT$kind "
     START_FAILED=1
   fi
 }
@@ -612,6 +619,9 @@ cmd_up() {
       STARTED+=("$name")
       continue
     fi
+    case "$TRUST_WAIT" in
+      *" ${S_KIND[$i]} "*) say "  $name waits: answer ${S_KIND[$i]}'s trust dialog once (above), it covers this seat too"; START_FAILED=1; continue ;;
+    esac
     start_seat "$i" "$pane"
   done
 

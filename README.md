@@ -127,9 +127,11 @@ No agent pushes. When all tasks are merged you review the base branch and push i
 
 ## First run of a project
 
-Each agent asks once whether to trust a new folder (Claude per worktree, Codex
-once per repository). `squad up` stops, names the dialog and the pane; answer
-it there and run `squad up` again. After that, the same project starts with no
+Claude and Codex each ask once whether to trust a new repository (both save it
+per repository). `squad up` starts one seat per agent, holds that agent's other
+seats while its dialog is open, names the dialog and the pane — so a new
+project means **two answers**: one in a Claude pane, one in a Codex pane. Then
+run `squad up` again; it starts the rest. After that, the same project starts with no
 dialogs, and a task runs from spec to merge without permission prompts:
 squad gives Claude and Codex seats write access to `.team/` and the
 repository's `.git` (`--add-dir`), runs Codex in `workspace-write`, and the
@@ -169,19 +171,19 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 
 ## Status of this project
 
-Version 0.4.0. Run end to end on herdr 0.9.3 with real agents (GPT-6.1 Sol lead
-and reviewer in Codex, Claude Opus dev): spec, approval, task dispatch,
-implementation on a task branch, cross-vendor review (`APPROVE`), merge into
-the integration branch, checks passing — with no permission prompt after the
-first-run trust dialogs. `test/smoke.sh` covers squad's own logic against a
-stand-in for herdr; CI runs it with shellcheck on Linux and macOS, including
-macOS's bash 3.2.
+Version 0.5.0. Run end to end on herdr 0.9.3 with real agents, default 6-seat
+team (GPT-6.1 Sol lead, dev and reviewer in Codex; Claude Opus dev and
+reviewer; Claude Sonnet tester), on a three-task goal: spec and approval, both
+devs in parallel, cross-vendor reviews (3 × `APPROVE`), a test run per task
+plus a final integration run (`PASS`), three merges, context cleared between
+tasks — with no permission prompt after the two first-run trust answers.
+`test/smoke.sh` covers squad's own logic against a stand-in for herdr; CI runs
+it with shellcheck on Linux and macOS, including macOS's bash 3.2.
 
 Known limits:
 
 - Agent arguments cannot contain quoted spaces.
 - Panes are stacked by repeated splitting, so with many seats the lower panes are small; resize them in herdr.
-- Sending `/clear` or `/new` to an agent through herdr is how the lead resets a worker's context between tasks; not yet exercised on a multi-task run.
 - OpenCode seats get no `--add-dir` (it has no such flag): allow `.team/` in OpenCode's own permission config.
 
 ## Contributing
