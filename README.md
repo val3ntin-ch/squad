@@ -191,7 +191,7 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 
 ## Status of this project
 
-Version 0.6.0. Run end to end on herdr 0.9.3 with real agents, default 6-seat
+Version 0.6.1. Run end to end on herdr 0.9.3 with real agents, default 6-seat
 team (GPT-6.1 Sol lead, dev and reviewer in Codex; Claude Opus dev and
 reviewer; Claude Sonnet tester), on a three-task goal: spec and approval, both
 devs in parallel, cross-vendor reviews (3 × `APPROVE`), a test run per task

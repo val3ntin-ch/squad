@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.6.0"
+VERSION="0.6.1"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -572,9 +572,14 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
   done
   wanted "$LEAD" || return $failed
   # The lead is briefed last and not waited on: it goes straight to the human.
-  if herdr agent prompt "$LEAD" \
-    "You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1 by asking me what we are building." \
-    >/dev/null; then
+  # A restarted team (approved spec on disk) resumes from the files instead of
+  # starting over: agents have no memory, everything is in .team/ and git.
+  local lead_msg
+  lead_msg="You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1 by asking me what we are building."
+  if grep -qE '^Status: *APPROVED' "$TEAM_DIR/SPEC.md" 2>/dev/null; then
+    lead_msg="You are the lead of an agent team that is resuming after a restart; nobody remembers earlier work, it is all in files. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead), then $TEAM_DIR/SPEC.md (already approved), $TEAM_DIR/TASKS.md, the reports in $TEAM_DIR/reports/ and $TEAM_DIR/events.log. Tell me in a few lines where things stand and what you will do next, then continue Phase 3 from the current state: never redo merged tasks, and check git for work on task branches that TASKS.md does not show yet."
+  fi
+  if herdr agent prompt "$LEAD" "$lead_msg" >/dev/null; then
     say "  briefed $LEAD"; mark_briefed "$LEAD"
   else
     say "  could not brief $LEAD (open its pane and check it)"
