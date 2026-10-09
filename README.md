@@ -41,6 +41,9 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 | `squad init` | Adds a team to the repository you are in. Fills the `setup` line from the lockfile it finds (pnpm, yarn, npm, bun, uv, poetry, bundler) so every worktree gets its dependencies. |
 | `squad up` | Creates the worktrees, opens a herdr workspace, starts and briefs every agent. Run it from a pane inside herdr. Safe to run again: it keeps running seats, adopts agents you started by hand in a seat's pane, starts only what is missing and briefs only seats that were never briefed. |
 | `squad brief` | Sends the role briefing again, after you fixed a blocked agent or restarted herdr. |
+| `squad watch` | The live strip in the team tab: plan usage bars per vendor, each task's owner and state, each seat's state, the last event. `squad up` starts it; `--once` prints it once. |
+| `squad usage` | One line of plan usage: Claude and Codex, 5-hour and 7-day windows, and when a nearly used-up window comes back. |
+| `squad statusline` | Use as Claude Code's status line (`"statusLine": {"type": "command", "command": "squad statusline"}`): shows the model and usage bars, and records Claude's usage for `squad watch`. |
 | `squad status` | Shows the seats, the spec status, the task table and agent states. |
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay; `squad up` starts it again. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
@@ -94,15 +97,32 @@ Built-in presets:
 
 An OpenCode seat starts with the model your own OpenCode configuration selects. Add arguments to its line to pin one.
 
+## Layout
+
+`squad up` picks a layout from the terminal width (`SQUAD_LAYOUT=talk|mission|focus` forces one):
+
+| Layout | When | Tabs |
+|---|---|---|
+| **talk** | default | `team`: lead (60%) beside the devs, live strip below · `review`: reviewers + tester · `changes`: lazygit |
+| **mission** | ≥ 220 columns | `team`: lead, each dev, reviewers + tester stacked, strip below · `changes` |
+| **focus** | < 120 columns | `team`: lead + strip · `devs` · `review` · `changes` |
+
+Switch tabs with herdr's `prefix 1`…`9` (or `prefix n` / `prefix p`); `prefix z` zooms a pane. The `changes` tab runs lazygit on the integration worktree: every `task/*` branch, worktree and diff (only when lazygit is installed).
+
+Usage comes from the vendors themselves: Codex writes its rate limits into its session files; Claude passes them to its status line, so set `squad statusline` as Claude's status line to see the Claude bar (it shows `—` until a Claude session has answered once).
+
 ## How the team works
 
-They do not chat. The lead is the only agent that sends messages, one short line per task through herdr, and then blocks until that agent is idle:
+They do not chat. The lead hands out work with one short line per task, never blocks on any one agent, and reacts when a worker reports back. A worker ends every step with `squad done`, which sends the lead one line — herdr queues it if the lead is busy, so nothing finishing goes unnoticed:
 
 ```
-lead ── herdr agent prompt dev-a "Task T-001 is yours…" ──▶ dev-a
-lead ── herdr agent wait dev-a ──▶ (blocks, costs nothing)
-dev-a writes .team/reports/T-001-dev.md and stops
+lead  ── "Task T-001 is yours…" ──▶ dev-a      lead ── "Task T-002 is yours…" ──▶ dev-b
+dev-a writes .team/reports/T-001-dev.md, runs: squad done dev-a T-001 DONE
+lead  ◀── [squad] dev-a finished T-001: DONE — report: …   (queued if the lead is busy)
+lead  ── "Review task T-001, round 1" ──▶ rev-sol
 ```
+
+Every `squad done` is also appended to `.team/events.log`; the live strip shows the last one.
 
 Everything else travels through files in `.team/`:
 
@@ -171,7 +191,7 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 
 ## Status of this project
 
-Version 0.5.0. Run end to end on herdr 0.9.3 with real agents, default 6-seat
+Version 0.6.0. Run end to end on herdr 0.9.3 with real agents, default 6-seat
 team (GPT-6.1 Sol lead, dev and reviewer in Codex; Claude Opus dev and
 reviewer; Claude Sonnet tester), on a three-task goal: spec and approval, both
 devs in parallel, cross-vendor reviews (3 × `APPROVE`), a test run per task

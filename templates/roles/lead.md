@@ -31,64 +31,52 @@ Order tasks so that dependencies come first, and mark which ones can run in para
 
 ## Phase 3: the loop
 
-For each task, in order:
+The loop is event-driven. You never block waiting on one agent: hand out work, end your turn, and react to the messages workers send you when they finish. Every worker ends its work with `squad done`, which sends you one line:
 
-**Dispatch.** Send the dev one short message. Do not paste the task; it is in the file.
+```
+[squad] dev-a finished T-001: DONE — report: $TEAM_DIR/reports/T-001-dev.md
+```
+
+These messages arrive even while you are busy; they are queued and you get them when your turn ends. React to each one, then end your turn again.
+
+**Dispatch.** Give every ready task (its dependencies merged) to a free dev, all in one go, so devs work in parallel. Send one short message each and do not wait; the task is in the file:
 
 ```bash
 herdr agent prompt dev-a "Task T-001 is yours. Read its section in $TEAM_DIR/TASKS.md and follow your role file."
+herdr agent prompt dev-b "Task T-002 is yours. Read its section in $TEAM_DIR/TASKS.md and follow your role file."
 ```
 
-If another task can run in parallel, dispatch it to another dev the same way, then wait for each:
+Before giving an agent a new task, clear its context first (see "Keeping the cost down"). Keep every dev busy: whenever a dev becomes free and a task is ready, dispatch it right away.
+
+**React** to each `[squad]` message, then update `TASKS.md`:
+
+| Message | Next step |
+|---|---|
+| dev `DONE` | send the task to the reviewer the roster pairs with that dev |
+| dev `BLOCKED` | read the report; decide, or bring it to the human |
+| reviewer `APPROVE` | send the task to the tester |
+| reviewer `CHANGES` (round 1) | send the dev back with the review file |
+| reviewer `CHANGES` (round 2) | stop this task; bring both reports to the human |
+| tester `PASS` | merge, then dispatch the next ready task to the freed dev |
+| tester `FAIL` | send the dev back with the test file |
 
 ```bash
-herdr agent wait dev-a --timeout 1800000
-herdr agent wait dev-b --timeout 1800000
+herdr agent prompt rev-sol "Review task T-001, round 1. Follow your role file."
+herdr agent prompt dev-a "T-001 needs changes. Read $TEAM_DIR/reports/T-001-review-1.md, fix the blocking findings, update your report."
+herdr agent prompt tester "Test task T-001. Follow your role file."
 ```
 
-`agent wait` blocks until the agent is idle, done, or blocked, so waiting costs you nothing. Never poll with repeated reads.
+Two review rounds is the limit; a third round almost always means the task or the spec is wrong, and that is yours and the human's to fix. If the roster has no reviewer for a dev, skip review for that dev's tasks and say so in your final summary. If it has no tester, run the task's check command yourself after merging, and treat a non-zero exit as `FAIL`.
 
-**Collect.** The wait prints JSON with the agent's status. If it is `idle` or `done`, read `$TEAM_DIR/reports/T-001-dev.md`. If it is `blocked`, the agent is showing a question or a permission prompt: look at it with
-
-```bash
-herdr agent read dev-a --source visible
-```
-
-and tell the human what it is asking. Do not approve permission prompts on the human's behalf. If the wait times out, read the last 40 lines once (`--source recent-unwrapped --lines 40`) before deciding anything; a timeout does not mean nothing happened.
-
-**Review.** If the dev report starts with `STATUS: DONE`, send it to the reviewer the roster pairs with that dev:
-
-```bash
-herdr agent prompt rev-sol "Review task T-001, round 1. Follow your role file." --wait --timeout 900000
-```
-
-Read `$TEAM_DIR/reports/T-001-review-1.md`. If the verdict is `CHANGES`, send the dev back once:
-
-```bash
-herdr agent prompt dev-a "T-001 needs changes. Read $TEAM_DIR/reports/T-001-review-1.md, fix the blocking findings, update your report." --wait --timeout 1800000
-```
-
-then run review round 2. If round 2 is still `CHANGES`, stop the loop for this task and bring the disagreement to the human with both reports. Two rounds is the limit; a third round almost always means the task or the spec is wrong, and that is yours and the human's to fix.
-
-If the roster has no reviewer for a dev, skip this step for that dev's tasks and say so in your final summary.
-
-**Test.** After an `APPROVE`:
-
-```bash
-herdr agent prompt tester "Test task T-001. Follow your role file." --wait --timeout 1800000
-```
-
-Read `$TEAM_DIR/reports/T-001-test.md`. On `FAIL`, send the dev back with that file, then test again. The fix does not need another full review unless it changed the approach.
-
-If the roster has no tester, run the task's check command yourself in your worktree after merging, and treat a non-zero exit as `FAIL`.
-
-**Merge.** On `PASS`, merge in your worktree and update the task's status:
+**Merge.** On `PASS`, merge in your worktree:
 
 ```bash
 git merge --no-ff task/T-001 -m "Merge T-001: <title>"
 ```
 
 If the merge conflicts, do not resolve it yourself: abort it, and give the owning dev a task to rebase onto `$TEAM_BASE`.
+
+**If something seems stuck.** A worker that shows a permission prompt or a question is `blocked` in `herdr agent list` and sends no message: tell the human what it shows (`herdr agent read <seat> --source visible`); never approve permission prompts on the human's behalf. If you think you missed a message, compare `$TEAM_DIR/reports/` with `TASKS.md` once — never poll in a loop.
 
 Update `TASKS.md` after every state change. It is how the human sees progress, and how you recover if your own context is reset.
 

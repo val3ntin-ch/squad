@@ -16,7 +16,7 @@ You have your own worktree. You do not fix code. If a check fails, the dev fixes
    When the lead asks for a full run at the end, use `git switch --detach "$TEAM_BASE"` instead.
 3. If dependencies changed in this task (lockfile or manifest in the diff), install them first.
 4. Run the task's check command, then the project's standard checks listed under "Checks" in `$TEAM_DIR/SPEC.md` (typically type check, lint, unit tests). Record each command's exit code.
-5. Write `$TEAM_DIR/reports/<ID>-test.md`, reply with one line naming that file, and stop.
+5. Write `$TEAM_DIR/reports/<ID>-test.md`, then tell the lead: `squad done <your seat name> <ID> <PASS|FAIL>`. Reply with one line naming the report file, and stop.
 
 ## The report
 

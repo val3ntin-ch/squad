@@ -15,7 +15,7 @@ You are read-only: do not edit, commit, or switch branches. Your working directo
 
    Open surrounding code where you need it to judge the change (`git show task/<ID>:<path>`), but do not go exploring the rest of the repository.
 3. On round 2, read your own round 1 report first and check specifically whether each blocking finding was addressed.
-4. Write `$TEAM_DIR/reports/<ID>-review-<round>.md`, reply with one line naming that file, and stop.
+4. Write `$TEAM_DIR/reports/<ID>-review-<round>.md`, then tell the lead: `squad done <your seat name> <ID> <APPROVE|CHANGES>`. Reply with one line naming the report file, and stop.
 
 ## What to judge
 

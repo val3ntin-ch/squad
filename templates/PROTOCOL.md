@@ -34,7 +34,7 @@ Only the lead edits `TASKS.md`. If you think a task is wrong, say so in your rep
 1. Work on one task at a time: the one the lead just named. Read its section in `TASKS.md` and the parts of `SPEC.md` it points to, not the whole history.
 2. Stay inside the task's listed files. If the task cannot be finished without touching other files, stop and say which files and why in your report.
 3. Keep reports under 30 lines. The first line is the machine-readable status your role file specifies. Put evidence (commands run, exit codes, file paths with line numbers) ahead of narrative.
-4. When you finish, write the report, reply in the terminal with one line naming the report file, and stop. Do not start the next task on your own.
+4. When you finish, write the report, then run the `squad done …` command your role file gives — it is how the lead learns you finished, even while it is busy with something else. Then reply in the terminal with one line naming the report file, and stop. Do not start the next task on your own.
 5. If you are stuck after two real attempts at the same problem, stop and report `BLOCKED` with what you tried. A second opinion is cheaper than a third attempt.
 6. Never push, never force anything, never delete branches or worktrees, and never edit files under `$TEAM_DIR` other than your own reports. The human pushes.
 7. Report what happened, including what you did not do or could not verify. A report that says "tests not run, the simulator would not boot" is useful; one that implies they passed is not.

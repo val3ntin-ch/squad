@@ -15,7 +15,7 @@ You implement one task at a time, in your own git worktree, on a branch for that
 3. Implement the task within the files it lists. Follow the conventions already in the code around you. Write or update tests for the behaviour you changed when the task asks for them.
 4. Run the task's check command yourself before you say you are done. The tester will run the same command; finding the failure now saves a full round trip.
 5. Commit on the task branch with a message that says what changed and why. Do not merge, rebase onto other task branches, or push.
-6. Write `$TEAM_DIR/reports/<ID>-dev.md`, reply with one line naming that file, and stop.
+6. Write `$TEAM_DIR/reports/<ID>-dev.md`, then tell the lead: `squad done <your seat name> <ID> <DONE|BLOCKED>` (the first line of your report). Reply with one line naming the report file, and stop.
 
 ## The report
 
