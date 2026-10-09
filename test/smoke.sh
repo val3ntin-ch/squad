@@ -6,7 +6,8 @@ set -euo pipefail
 
 here=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 squad="$here/../bin/squad"
-tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+# resolved path: on macOS mktemp gives /var/..., which git reports as /private/var/...
+tmp=$(cd -P "$(mktemp -d)" && pwd); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/home"
 
 cat >"$tmp/bin/herdr" <<'EOF'
@@ -17,7 +18,13 @@ case "$1 $2" in
   "workspace create") echo '{"result":{"root_pane":{"pane_id":"w2:p1"}}}' ;;
   "pane split") n=$((n + 1)); echo "$n" >"$nf"; echo "{\"result\":{\"pane\":{\"pane_id\":\"w2:p$n\"}}}" ;;
   "agent list") echo "${MOCK_AGENTS:-}" ;;
-  "agent start") if [ "$3" = "${MOCK_FAIL:-}" ]; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi; echo '{}' ;;
+  "agent start")
+    if [ "$3" = "${MOCK_FAIL:-}" ]; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
+    # MOCK_BUSY=N: the first N starts answer like a shell that is still starting
+    bf="$(dirname "$MOCK_LOG")/busy"; b=$(cat "$bf" 2>/dev/null || echo 0)
+    if [ "$b" -lt "${MOCK_BUSY:-0}" ]; then echo $((b + 1)) >"$bf"
+      echo '{"error":{"code":"agent_pane_busy","message":"agent target pane is not an available shell"}}'; exit 1; fi
+    echo '{}' ;;
   *) echo '{}' ;;
 esac
 EOF
@@ -53,11 +60,14 @@ check "dev-a runs in its own worktree" log_has "--cwd $tmp/proj-team/dev-a"
 check "reviewers share the integration worktree" test "$(grep -c "pane split.*--cwd $tmp/proj-team/integration" "$MOCK_LOG")" = 2
 check "every seat is briefed" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 6
 check "the lead is briefed last" sh -c "tail -1 '$MOCK_LOG' | grep -q 'agent prompt lead'"
-check "worktrees were created" test "$(git worktree list | wc -l)" = 5
+check "worktrees were created" test "$(git worktree list | wc -l | tr -d ' ')" = 5
 check "integration branch exists" git show-ref --verify --quiet refs/heads/team/integration
 check "up works from inside a team worktree" sh -c "cd '$tmp/proj-team/dev-a' && MOCK_AGENTS= '$squad' status"
 check "up refuses when the team is already running" refuses env MOCK_AGENTS="lead idle" "$squad" up
 check "a seat that fails to start stops before briefing" refuses env MOCK_FAIL=dev-b "$squad" up
+reset_log; rm -f "$tmp/busy"
+check "a seat on a still-starting shell is retried, not failed" env MOCK_BUSY=3 "$squad" up
+check "the busy seat was retried until it started" test "$(grep -c '^herdr agent start lead ' "$MOCK_LOG")" = 4
 check "brief alone works" "$squad" brief
 check "status prints the task table" sh -c "'$squad' status | grep -q 'T-001'"
 check "doctor passes" "$squad" doctor

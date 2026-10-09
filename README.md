@@ -15,7 +15,7 @@ squad up              # in the herdr pane: start the team
 Requirements: `git`, `jq`, [herdr](https://herdr.dev), and the agent CLIs your team uses (`claude`, `codex`, `opencode`), each signed in once by hand.
 
 ```bash
-git clone <this repository> ~/.squad
+git clone https://github.com/val3ntin-ch/squad ~/.squad
 ~/.squad/install.sh           # links ~/.local/bin/squad
 squad doctor                  # checks what is installed
 ```
@@ -43,6 +43,10 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 | `squad doctor` | Checks requirements. |
 
 `init`, `new` and `config` accept `--preset NAME`.
+
+**Several projects at once:** herdr agent names are unique per herdr session, so
+two teams can't share one session (both have a `lead`). Give each project its
+own session: `cd my-app && herdr --session my-app`, then `squad up`.
 
 ## Defining a team
 
@@ -135,14 +139,14 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 | Symptom | What to do |
 |---|---|
 | "run this from a pane inside herdr" | Start `herdr` in the repository and run `squad up` there. |
-| A seat "did not become ready" | Open its pane, answer the dialog (trust this folder, sign in), then `squad brief`. |
-| "an agent named … is already running" | A team is up. Use it, or close its workspace first. |
+| A seat "did not become ready" | herdr's error is printed above it. Usually the agent shows a first-run dialog (trust this folder, sign in): open its pane, answer it, then `squad brief`. A pane whose shell is still starting is retried for up to a minute automatically. |
+| "an agent named … is already running" | A team is already up in this herdr session: use it (`squad brief`), or run the other project's team in its own session, `herdr --session <project>`. |
 | The lead seems stuck | Look in herdr's sidebar for a blocked agent and answer it. |
 | An agent lost track | Tell it to re-read `$TEAM_DIR/PROTOCOL.md` and its role file. |
 
 ## Status of this project
 
-Version 0.1.0. `test/smoke.sh` runs squad against a stand-in for herdr and checks the commands it sends, the worktrees it creates and its error handling; all checks pass. It has not yet been run against a real herdr server with real agents, so expect small adjustments on first use. herdr commands follow its 0.9.3 documentation.
+Version 0.1.1. `test/smoke.sh` runs squad against a stand-in for herdr and checks the commands it sends, the worktrees it creates, its retries and its error handling; CI runs it with shellcheck on macOS and Linux. Checked against a real herdr 0.9.3: agent names are unique per session (`agent_name_taken`), and `agent start` on a still-starting shell fails with `agent_pane_busy`, which squad retries. A full team run with real agents is the next step.
 
 Known limits:
 
@@ -152,7 +156,7 @@ Known limits:
 
 ## Contributing
 
-Run `bash test/smoke.sh` before sending a change. The role prompts in `templates/roles/` matter as much as the script: improvements to how the agents hand work to each other are welcome.
+Run `bash test/smoke.sh` and `shellcheck bin/squad install.sh test/smoke.sh` before sending a change (CI runs both). The role prompts in `templates/roles/` matter as much as the script: improvements to how the agents hand work to each other are welcome.
 
 ## License
 

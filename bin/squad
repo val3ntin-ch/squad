@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.1.0"
+VERSION="0.1.1"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -322,6 +322,20 @@ split() { # <pane> <direction> <cwd> -> new pane id
     | jq -er '.result.pane.pane_id' || die "unexpected response from herdr while creating panes."
 }
 
+# herdr's `agent start` does not wait for the pane's shell: on a shell that is
+# still starting (rc files, plugin managers) it fails at once with
+# agent_pane_busy. Retry that case for up to a minute; anything else is final.
+start_agent() { # <herdr agent start args...>
+  local out deadline=$((SECONDS + 60))
+  while :; do
+    if out=$(herdr agent start "$@" 2>&1); then return 0; fi
+    case "$out" in
+      *agent_pane_busy*) [ "$SECONDS" -lt "$deadline" ] || { printf '%s\n' "$out" >&2; return 1; }; sleep 1 ;;
+      *) printf '%s\n' "$out" >&2; return 1 ;;
+    esac
+  done
+}
+
 START_FAILED=0
 start_seat() { # <index> <pane>
   local i=$1 pane=$2 name kind args
@@ -329,13 +343,12 @@ start_seat() { # <index> <pane>
   herdr pane rename "$pane" "$name" >/dev/null 2>&1 || true
   # The agent inherits its identity from the shell environment of its pane.
   herdr pane run "$pane" "export TEAM_ROLE='$name' TEAM_DIR='$TEAM_DIR' TEAM_BASE='$TEAM_BASE'; clear" >/dev/null
-  sleep 1
   local started=0
   if [ -n "$args" ]; then
     # shellcheck disable=SC2086  # arguments are split on spaces by design
-    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 90000 -- $args >/dev/null && started=1
+    start_agent "$name" --kind "$kind" --pane "$pane" --timeout 90000 -- $args && started=1
   else
-    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 90000 >/dev/null && started=1
+    start_agent "$name" --kind "$kind" --pane "$pane" --timeout 90000 && started=1
   fi
   if [ "$started" = 1 ]; then
     say "  started $name ($kind${args:+ $args})"
@@ -357,7 +370,8 @@ cmd_up() {
   local existing; existing=$(herdr agent list 2>/dev/null || true)
   for ((i = 0; i < n; i++)); do
     if printf '%s' "$existing" | grep -Eq "(^|[^a-z0-9_-])${S_NAME[$i]}([^a-z0-9_-]|\$)"; then
-      die "an agent named '${S_NAME[$i]}' is already running. Use 'squad brief', or close the old team workspace first."
+      # herdr agent names are unique per herdr session (server), not per workspace
+      die "an agent named '${S_NAME[$i]}' is already running in this herdr session. For this same team use 'squad brief'; to run a team for another project at the same time, start it in its own session: herdr --session $(basename "$REPO")"
     fi
   done
 
@@ -368,16 +382,19 @@ cmd_up() {
   mkdir -p "$WT_ROOT"
   if [ ! -d "$WT_ROOT/integration" ]; then
     if git -C "$REPO" show-ref --verify --quiet "refs/heads/$TEAM_BASE"; then
-      git -C "$REPO" worktree add "$WT_ROOT/integration" "$TEAM_BASE" >/dev/null 2>&1
+      git -C "$REPO" worktree add "$WT_ROOT/integration" "$TEAM_BASE" >/dev/null \
+        || die "git could not create the integration worktree (see the error above)."
     else
-      git -C "$REPO" worktree add -b "$TEAM_BASE" "$WT_ROOT/integration" HEAD >/dev/null 2>&1
+      git -C "$REPO" worktree add -b "$TEAM_BASE" "$WT_ROOT/integration" HEAD >/dev/null \
+        || die "git could not create the integration worktree (see the error above)."
     fi
     setup_worktree "$WT_ROOT/integration"
   fi
   for ((i = 0; i < n; i++)); do
     case "${S_ROLE[$i]}" in dev|tester) ;; *) continue ;; esac
     if [ ! -d "$WT_ROOT/${S_NAME[$i]}" ]; then
-      git -C "$REPO" worktree add --detach "$WT_ROOT/${S_NAME[$i]}" "$TEAM_BASE" >/dev/null 2>&1
+      git -C "$REPO" worktree add --detach "$WT_ROOT/${S_NAME[$i]}" "$TEAM_BASE" >/dev/null \
+        || die "git could not create the worktree for ${S_NAME[$i]} (see the error above)."
       setup_worktree "$WT_ROOT/${S_NAME[$i]}"
     fi
   done
