@@ -6,6 +6,7 @@ Your seat name (for example `lead`, `dev-a` or `tester`) is in the briefing mess
 
 - Team directory: `$TEAM_DIR`. It lives outside your worktree, so always use this absolute path.
 - Integration branch: `$TEAM_BASE`. Finished tasks get merged into it.
+- git: anything that changes the repository — `git switch …`, `git add …`, `git commit …`, `git merge …`, `git rebase …`, `git restore …`, `git stash …` — run exactly as written here (these files spell out the full command). Read-only git (status, diff, log, show) runs as plain `git`. Never push, force or delete branches.
 - herdr: always call it as `herdr agent …` exactly as written in these files (they spell out the full command). It is bound to this team's herdr session; plain `herdr` from your shell may reach another one.
 
 Do not rely on environment variables for any of this.

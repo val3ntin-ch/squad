@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -39,6 +39,7 @@ Usage:
   squad presets                     list the built-in team presets
   squad permissions                 let Codex run 'squad herdr' in every project
   squad herdr <args>                herdr, bound to this team's session (used by agents)
+  squad git <args>                  git writes for agents (switch/add/commit/merge...; no push/force/delete)
 
 A team is defined in .team/team.conf. 'squad init' copies your personal
 default ($USER_CONF) if it exists, otherwise the
@@ -199,6 +200,10 @@ render() { # <template> <dest>
   text=${text//"\$TEAM_DIR"/"$TEAM_DIR"}
   text=${text//"\$TEAM_BASE"/"$TEAM_BASE"}
   text=${text//"herdr agent "/"$herdr_bin agent "}
+  local git_bin="$SQUAD_HOME/bin/squad git" sub
+  for sub in switch add commit merge rebase restore stash; do
+    text=${text//"git $sub "/"$git_bin $sub "}
+  done
   printf '%s' "$text" >"$2"
 }
 
@@ -222,16 +227,38 @@ cmd_herdr() {
   if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock exec herdr "$@"; else exec herdr "$@"; fi
 }
 
-# squad permissions — let Codex run 'squad herdr' without asking, in every
-# project (one rule in ~/.codex/rules/default.rules). Claude needs no rule here.
+# squad git <subcommand> <args> — the git writes a team needs, for Codex seats.
+# Codex's workspace-write sandbox keeps .git read-only by design (also the git
+# dir a worktree points to), so switch/add/commit/merge fail inside it. This
+# command, allowed by one Codex rule, runs only those writes, only inside a
+# squad team, and never push, force or delete.
+cmd_git() {
+  find_repo
+  [ -f "$TEAM_DIR/team.conf" ] || die "squad git only runs inside a repository with a squad team."
+  local here; here=$(pwd -P)
+  case "$here/" in "$REPO"/*|"$WT_ROOT"/*) ;; *) die "squad git only runs inside the team's repository or worktrees." ;; esac
+  case "${1:-}" in
+    switch|add|commit|merge|rebase|restore|stash) ;;
+    branch) case " $* " in *" -d "*|*" -D "*|*" --delete "*|*" -m "*|*" -M "*|*" --force "*) die "squad git branch: deleting, renaming or forcing branches is not allowed." ;; esac ;;
+    *) die "squad git: '${1:-}' is not allowed. Allowed: switch add commit merge rebase restore stash branch. Read-only git (status, diff, log, show) runs as plain git." ;;
+  esac
+  case " $* " in *" --force "*|*" -f "*|*" --force-with-lease"*) die "squad git: forcing is not allowed." ;; esac
+  exec git "$@"
+}
+
+# squad permissions — let Codex run 'squad herdr' and 'squad git' without
+# asking, in every project (two rules in ~/.codex/rules/default.rules).
 cmd_permissions() {
   local rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
-  local rule="prefix_rule(pattern=[\"$SQUAD_HOME/bin/squad\", \"herdr\"], decision=\"allow\")"
-  if grep -qxF "$rule" "$rules" 2>/dev/null; then say "ok       Codex may run 'squad herdr' ($rules)"; return 0; fi
+  local sub rule
   mkdir -p "$(dirname "$rules")"
-  printf '%s\n' "$rule" >>"$rules"
-  say "Added to $rules:"
-  say "  $rule"
+  for sub in herdr git; do
+    rule="prefix_rule(pattern=[\"$SQUAD_HOME/bin/squad\", \"$sub\"], decision=\"allow\")"
+    if grep -qxF "$rule" "$rules" 2>/dev/null; then say "ok       Codex may run 'squad $sub' ($rules)"; continue; fi
+    printf '%s\n' "$rule" >>"$rules"
+    say "Added to $rules:"
+    say "  $rule"
+  done
 }
 
 # The install command a fresh worktree needs, from the lockfile in the repo.
@@ -342,10 +369,12 @@ cmd_doctor() {
     fi
   fi
   if command -v codex >/dev/null 2>&1; then
-    if grep -qF "\"$SQUAD_HOME/bin/squad\", \"herdr\"" "${CODEX_HOME:-$HOME/.codex}/rules/default.rules" 2>/dev/null; then
-      say "ok       codex may run 'squad herdr' without asking"
+    local codex_rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
+    if grep -qF "\"$SQUAD_HOME/bin/squad\", \"herdr\"" "$codex_rules" 2>/dev/null \
+       && grep -qF "\"$SQUAD_HOME/bin/squad\", \"git\"" "$codex_rules" 2>/dev/null; then
+      say "ok       codex may run 'squad herdr' and 'squad git' without asking"
     else
-      say "note     a Codex lead will ask before every 'squad herdr' call; run: squad permissions"
+      say "note     Codex seats will ask before 'squad herdr' / 'squad git' calls; run: squad permissions"
     fi
   fi
   # Codex shows an "Update available" dialog on start that blocks a seat
@@ -672,6 +701,7 @@ case "$cmd" in
   doctor)  cmd_doctor ;;
   presets) cmd_presets ;;
   herdr)   cmd_herdr "$@" ;;
+  git)     cmd_git "$@" ;;
   permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;
   -h|--help|help) usage ;;
