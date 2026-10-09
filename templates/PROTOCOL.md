@@ -2,11 +2,13 @@
 
 You are one of several coding agents working on the same repository inside herdr. A human owns the project and approves the spec. This file is the shared contract; your role file in `roles/` adds the specifics.
 
-Your environment tells you who you are:
+Your seat name (for example `lead`, `dev-a` or `tester`) is in the briefing message you received. `$TEAM_DIR/ROSTER.md` lists every seat. This team's facts, written into these files by squad:
 
-- `$TEAM_ROLE` is your seat name, for example `lead`, `dev-a` or `tester`. `$TEAM_DIR/ROSTER.md` lists every seat.
-- `$TEAM_DIR` is the absolute path of this directory. It lives outside your worktree, so always use the absolute path.
-- `$TEAM_BASE` is the integration branch that finished tasks get merged into.
+- Team directory: `$TEAM_DIR`. It lives outside your worktree, so always use this absolute path.
+- Integration branch: `$TEAM_BASE`. Finished tasks get merged into it.
+- herdr: always call it as `herdr agent …` exactly as written in these files (they spell out the full command). It is bound to this team's herdr session; plain `herdr` from your shell may reach another one.
+
+Do not rely on environment variables for any of this.
 
 ## Who talks to whom
 

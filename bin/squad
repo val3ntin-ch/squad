@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.1.1"
+VERSION="0.2.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -36,6 +36,8 @@ Usage:
   squad config [--preset NAME]      create or show your personal default team
   squad doctor                      check that everything needed is installed
   squad presets                     list the built-in team presets
+  squad permissions                 let Codex run 'squad herdr' in every project
+  squad herdr <args>                herdr, bound to this team's session (used by agents)
 
 A team is defined in .team/team.conf. 'squad init' copies your personal
 default ($USER_CONF) if it exists, otherwise the
@@ -45,7 +47,7 @@ EOF
 
 # ---- repository --------------------------------------------------------------
 
-REPO="" TEAM_DIR="" WT_ROOT=""
+REPO="" TEAM_DIR="" WT_ROOT="" GIT_COMMON=""
 find_repo() {
   need git ""
   git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository. Use 'squad new <dir>' to start a project."
@@ -54,6 +56,8 @@ find_repo() {
   [ -n "$REPO" ] || die "could not find the repository root."
   TEAM_DIR="$REPO/.team"
   WT_ROOT="${REPO}-team"
+  GIT_COMMON=$(cd "$REPO" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+    || GIT_COMMON="$REPO/.git"  # git < 2.31
 }
 
 # ---- team.conf ---------------------------------------------------------------
@@ -183,6 +187,52 @@ copy_if_missing() { # src dst
   if [ -e "$2" ]; then say "  kept     ${2#"$REPO"/}"; else cp "$1" "$2"; say "  created  ${2#"$REPO"/}"; fi
 }
 
+# Agents can't rely on their environment: Codex runs commands through a shared
+# daemon that keeps the environment of whichever pane started it first (seen:
+# another herdr server's socket and pane). So squad writes the real values into
+# the files agents read, and gives them a herdr wrapper bound to this team's
+# session.
+render() { # <template> <dest>
+  local text herdr_bin="$SQUAD_HOME/bin/squad herdr"
+  text=$(cat "$1"; echo x); text=${text%x}
+  text=${text//"\$TEAM_DIR"/"$TEAM_DIR"}
+  text=${text//"\$TEAM_BASE"/"$TEAM_BASE"}
+  text=${text//"herdr agent "/"$herdr_bin agent "}
+  printf '%s' "$text" >"$2"
+}
+
+render_team_files() {
+  local f
+  mkdir -p "$TEAM_DIR/roles"
+  render "$TEMPLATES/PROTOCOL.md" "$TEAM_DIR/PROTOCOL.md"
+  for f in "$TEMPLATES"/roles/*.md; do render "$f" "$TEAM_DIR/roles/$(basename "$f")"; done
+}
+
+write_herdr_socket() { # remember the herdr session squad runs in, for 'squad herdr'
+  printf '%s\n' "${HERDR_SOCKET_PATH:-}" >"$TEAM_DIR/herdr.sock"
+}
+
+# squad herdr <args> — herdr, bound to the session of the team this directory
+# belongs to. One stable command for every project, so one permission rule
+# (squad permissions) covers them all.
+cmd_herdr() {
+  find_repo
+  local sock; sock=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true)
+  if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock exec herdr "$@"; else exec herdr "$@"; fi
+}
+
+# squad permissions — let Codex run 'squad herdr' without asking, in every
+# project (one rule in ~/.codex/rules/default.rules). Claude needs no rule here.
+cmd_permissions() {
+  local rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
+  local rule="prefix_rule(pattern=[\"$SQUAD_HOME/bin/squad\", \"herdr\"], decision=\"allow\")"
+  if grep -qxF "$rule" "$rules" 2>/dev/null; then say "ok       Codex may run 'squad herdr' ($rules)"; return 0; fi
+  mkdir -p "$(dirname "$rules")"
+  printf '%s\n' "$rule" >>"$rules"
+  say "Added to $rules:"
+  say "  $rule"
+}
+
 cmd_init() {
   parse_preset_flag "$@"
   find_repo
@@ -196,10 +246,6 @@ cmd_init() {
   copy_if_missing "$conf_src" "$TEAM_DIR/team.conf"
   copy_if_missing "$TEMPLATES/SPEC.md" "$TEAM_DIR/SPEC.md"
   copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
-  # Protocol and roles belong to the tool: refresh them so upgrades take effect.
-  cp "$TEMPLATES/PROTOCOL.md" "$TEAM_DIR/PROTOCOL.md"
-  cp "$TEMPLATES"/roles/*.md "$TEAM_DIR/roles/"
-  say "  updated  .team/PROTOCOL.md and .team/roles/"
 
   # Keep team files out of commits without touching the tracked .gitignore.
   local exclude; exclude="$(cd "$REPO" && git rev-parse --git-common-dir)/info/exclude"
@@ -208,6 +254,9 @@ cmd_init() {
   grep -qxF '.team/' "$exclude" 2>/dev/null || printf '.team/\n' >>"$exclude"
 
   load_conf
+  # Protocol and roles belong to the tool: refresh them so upgrades take effect.
+  render_team_files
+  say "  updated  .team/PROTOCOL.md and .team/roles/"
   write_roster
   say ""
   say "Team of $(seat_count) seats defined in .team/team.conf (from ${conf_src/#$HOME/~})."
@@ -268,6 +317,23 @@ cmd_doctor() {
       say "note     no .team/team.conf here yet (run 'squad init')"
     fi
   fi
+  if command -v codex >/dev/null 2>&1; then
+    if grep -qF "\"$SQUAD_HOME/bin/squad\", \"herdr\"" "${CODEX_HOME:-$HOME/.codex}/rules/default.rules" 2>/dev/null; then
+      say "ok       codex may run 'squad herdr' without asking"
+    else
+      say "note     a Codex lead will ask before every 'squad herdr' call; run: squad permissions"
+    fi
+  fi
+  # Codex shows an "Update available" dialog on start that blocks a seat
+  if command -v codex >/dev/null 2>&1; then
+    local codex_conf="${CODEX_HOME:-$HOME/.codex}/config.toml"
+    if grep -Eq '^check_for_update_on_startup *= *false' "$codex_conf" 2>/dev/null; then
+      say "ok       codex update check off (no update dialog blocking seats)"
+    else
+      say "note     codex may show an update dialog that blocks a seat on start; to avoid it add"
+      say "         check_for_update_on_startup = false   to $codex_conf"
+    fi
+  fi
   if [ "${HERDR_ENV:-}" = 1 ]; then say "ok       running inside herdr"; else say "note     not inside herdr ('squad up' must be run from a herdr pane)"; fi
   return $ok
 }
@@ -280,25 +346,31 @@ require_herdr() {
   [ "${HERDR_ENV:-}" = 1 ] || die "run this from a pane inside herdr (start 'herdr' in the repository first)."
 }
 
-brief() {
-  local i n failed=0 name; n=$(seat_count)
+mark_briefed() { mkdir -p "$TEAM_DIR/.briefed" && : >"$TEAM_DIR/.briefed/$1"; }
+is_briefed() { [ -f "$TEAM_DIR/.briefed/$1" ]; }
+
+brief() { # [seat names...] — none: every seat. The lead goes last.
+  local i n failed=0 name want=" $* "; n=$(seat_count)
+  wanted() { [ "$want" = "  " ] || case "$want" in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
   for ((i = 0; i < n; i++)); do
     [ "${S_ROLE[$i]}" != lead ] || continue
     name=${S_NAME[$i]}
+    wanted "$name" || continue
     if herdr agent prompt "$name" \
       "You are '$name' on an agent team. Read $TEAM_DIR/PROTOCOL.md and $(role_file "${S_ROLE[$i]}") now. Do not start any work yet. Reply with the single word READY." \
       --wait --timeout 180000 >/dev/null; then
-      say "  briefed $name"
+      say "  briefed $name"; mark_briefed "$name"
     else
       say "  could not brief $name (see the error above; open its pane and check it)"
       failed=1
     fi
   done
+  wanted "$LEAD" || return $failed
   # The lead is briefed last and not waited on: it goes straight to the human.
   if herdr agent prompt "$LEAD" \
     "You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1 by asking me what we are building." \
     >/dev/null; then
-    say "  briefed $LEAD"
+    say "  briefed $LEAD"; mark_briefed "$LEAD"
   else
     say "  could not brief $LEAD (open its pane and check it)"
     failed=1
@@ -307,7 +379,7 @@ brief() {
 }
 
 cmd_brief() {
-  require_herdr; find_repo; load_conf; write_roster
+  require_herdr; find_repo; load_conf; render_team_files; write_herdr_socket; write_roster
   brief || die "some seats were not briefed. Fix them, then run 'squad brief' again."
 }
 
@@ -336,25 +408,52 @@ start_agent() { # <herdr agent start args...>
   done
 }
 
+# Name the first-run dialog a stuck agent is showing, from its pane's text.
+explain_stuck() { # <name> <pane>
+  local text; text=$(herdr pane read "$2" 2>/dev/null || true)
+  case "$text" in
+    *"rust this folder"*|*"o you trust"*|*"afety check"*)
+      say "    → it asks whether to trust this folder (first run of this project only)."
+      say "      Open pane '$1', choose trust." ;;
+    *"pdate available"*)
+      say "    → Codex wants to update itself before starting. Open pane '$1' and choose Skip."
+      say "      To stop this for good: check_for_update_on_startup = false in ~/.codex/config.toml" ;;
+    *"ign in"*|*"og in"*|*"login"*)
+      say "    → it is not signed in. Open pane '$1' and sign in once." ;;
+    *)
+      say "    → open pane '$1' and answer what it shows (usually a first-run dialog)." ;;
+  esac
+}
+
 START_FAILED=0
+STARTED=()  # seats started or adopted in this run: only these get briefed
 start_seat() { # <index> <pane>
   local i=$1 pane=$2 name kind args
   name=${S_NAME[$i]}; kind=${S_KIND[$i]}; args=${S_ARGS[$i]}
   herdr pane rename "$pane" "$name" >/dev/null 2>&1 || true
   # The agent inherits its identity from the shell environment of its pane.
   herdr pane run "$pane" "export TEAM_ROLE='$name' TEAM_DIR='$TEAM_DIR' TEAM_BASE='$TEAM_BASE'; clear" >/dev/null
-  local started=0
-  if [ -n "$args" ]; then
-    # shellcheck disable=SC2086  # arguments are split on spaces by design
-    start_agent "$name" --kind "$kind" --pane "$pane" --timeout 90000 -- $args && started=1
-  else
-    start_agent "$name" --kind "$kind" --pane "$pane" --timeout 90000 && started=1
+  # Agent arguments: the seat's own (split on spaces by design), then write
+  # access to $TEAM_DIR — it lives outside the seat's worktree, and without it
+  # every report, spec or task edit stops on a permission prompt.
+  local -a start_args=("$name" --kind "$kind" --pane "$pane" --timeout 90000) agent_args=()
+  # shellcheck disable=SC2206  # split on spaces by design
+  [ -n "$args" ] && agent_args=($args)
+  # …and the repository's git directory: a worktree's commits and merges write
+  # there, outside the worktree, so without it every commit asks first.
+  case "$kind" in claude|codex) agent_args+=(--add-dir "$TEAM_DIR" --add-dir "$GIT_COMMON") ;; esac
+  # Codex rejects --add-dir under its read-only default (an untrusted folder)
+  # and exits; workspace-write is its normal mode in a trusted project.
+  if [ "$kind" = codex ]; then
+    case " $args " in *" -s "*|*" --sandbox "*|*" --sandbox="*) ;; *) agent_args+=(-s workspace-write) ;; esac
   fi
-  if [ "$started" = 1 ]; then
+  [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
+  if start_agent "${start_args[@]}"; then
     say "  started $name ($kind${args:+ $args})"
+    STARTED+=("$name")
   else
-    say "  $name did not become ready. It is probably showing a first-run dialog"
-    say "    (trust this folder / sign in). Open its pane and answer it."
+    say "  $name did not become ready."
+    explain_stuck "$name" "$pane"
     START_FAILED=1
   fi
 }
@@ -364,16 +463,10 @@ cmd_up() {
   [ -f "$TEAM_DIR/team.conf" ] || cmd_init
   load_conf
   mkdir -p "$TEAM_DIR/reports"
+  render_team_files
+  write_herdr_socket
   write_roster
   local i n; n=$(seat_count)
-
-  local existing; existing=$(herdr agent list 2>/dev/null || true)
-  for ((i = 0; i < n; i++)); do
-    if printf '%s' "$existing" | grep -Eq "(^|[^a-z0-9_-])${S_NAME[$i]}([^a-z0-9_-]|\$)"; then
-      # herdr agent names are unique per herdr session (server), not per workspace
-      die "an agent named '${S_NAME[$i]}' is already running in this herdr session. For this same team use 'squad brief'; to run a team for another project at the same time, start it in its own session: herdr --session $(basename "$REPO")"
-    fi
-  done
 
   git -C "$REPO" rev-parse --verify -q HEAD >/dev/null \
     || die "the repository has no commits yet. Make a first commit, then run 'squad up'."
@@ -399,40 +492,87 @@ cmd_up() {
     fi
   done
 
-  say "Creating the team workspace"
+  # herdr agent names are unique per herdr session (server), not per workspace
+  local ws_label agents_json ws_json ws other
+  ws_label="$(basename "$REPO") team"
+  agents_json=$(herdr agent list) || die "herdr did not answer 'agent list'."
+  ws_json=$(herdr workspace list) || die "herdr did not answer 'workspace list'."
+  ws=$(jq -r --arg l "$ws_label" '.result.workspaces[] | select(.label == $l) | .workspace_id' <<<"$ws_json" | head -1)
+  for ((i = 0; i < n; i++)); do
+    other=$(jq -r --arg n "${S_NAME[$i]}" --arg w "$ws" '.result.agents[] | select(.name == $n and .workspace_id != $w) | .pane_id' <<<"$agents_json" | head -1)
+    [ -z "$other" ] || die "an agent named '${S_NAME[$i]}' already runs in another workspace of this herdr session (pane $other) — probably another project's team. Run this team in its own session: herdr --session $(basename "$REPO")"
+  done
+
   local lead_i=0 p_lead last_left last_right="" pane
   for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = lead ] && lead_i=$i; done
-  p_lead=$(herdr workspace create --cwd "$WT_ROOT/integration" --label "$(basename "$REPO") team" --focus \
-            | jq -er '.result.root_pane.pane_id') || die "unexpected response from herdr while creating the workspace."
-  last_left=$p_lead
-
-  # Left column: lead, reviewers, tester. Right column: devs.
   local PANES=()
-  PANES[$lead_i]=$p_lead
-  for ((i = 0; i < n; i++)); do
-    [ "${S_ROLE[$i]}" = dev ] || continue
-    if [ -z "$last_right" ]; then pane=$(split "$p_lead" right "$(seat_cwd "$i")")
-    else pane=$(split "$last_right" down "$(seat_cwd "$i")"); fi
-    last_right=$pane; PANES[$i]=$pane
-  done
-  for ((i = 0; i < n; i++)); do
-    case "${S_ROLE[$i]}" in reviewer|tester) ;; *) continue ;; esac
-    pane=$(split "$last_left" down "$(seat_cwd "$i")")
-    last_left=$pane; PANES[$i]=$pane
-  done
+  if [ -z "$ws" ]; then
+    say "Creating the team workspace"
+    # new agents: nobody has been briefed yet
+    rm -f "$TEAM_DIR"/.briefed/*
+    p_lead=$(herdr workspace create --cwd "$WT_ROOT/integration" --label "$ws_label" --focus \
+              | jq -er '.result.root_pane.pane_id') || die "unexpected response from herdr while creating the workspace."
+    last_left=$p_lead
+    # Left column: lead, reviewers, tester. Right column: devs.
+    PANES[$lead_i]=$p_lead
+    for ((i = 0; i < n; i++)); do
+      [ "${S_ROLE[$i]}" = dev ] || continue
+      if [ -z "$last_right" ]; then pane=$(split "$p_lead" right "$(seat_cwd "$i")")
+      else pane=$(split "$last_right" down "$(seat_cwd "$i")"); fi
+      last_right=$pane; PANES[$i]=$pane
+    done
+    for ((i = 0; i < n; i++)); do
+      case "${S_ROLE[$i]}" in reviewer|tester) ;; *) continue ;; esac
+      pane=$(split "$last_left" down "$(seat_cwd "$i")")
+      last_left=$pane; PANES[$i]=$pane
+    done
+  else
+    # Resume: panes carry their seat name as label (squad sets it on start).
+    say "Resuming the team workspace ($ws)"
+    local panes_json
+    panes_json=$(herdr pane list --workspace "$ws") || die "herdr did not answer 'pane list'."
+    for ((i = 0; i < n; i++)); do
+      PANES[$i]=$(jq -r --arg l "${S_NAME[$i]}" '.result.panes[] | select(.label == $l) | .pane_id' <<<"$panes_json" | head -1)
+    done
+    p_lead=${PANES[$lead_i]:-$(jq -r '.result.panes[0].pane_id' <<<"$panes_json")}
+    for ((i = 0; i < n; i++)); do
+      [ -z "${PANES[$i]}" ] || continue
+      PANES[$i]=$(split "$p_lead" down "$(seat_cwd "$i")")
+      say "  added a pane for ${S_NAME[$i]}"
+    done
+  fi
 
   say "Starting agents"
-  for ((i = 0; i < n; i++)); do start_seat "$i" "${PANES[$i]}"; done
+  local name detected
+  for ((i = 0; i < n; i++)); do
+    name=${S_NAME[$i]}; pane=${PANES[$i]}
+    if [ -n "$(jq -r --arg n "$name" '.result.agents[] | select(.name == $n) | .pane_id' <<<"$agents_json")" ]; then
+      if is_briefed "$name"; then say "  $name already running"
+      else say "  $name already running, not briefed yet"; STARTED+=("$name"); fi
+      continue
+    fi
+    # an agent herdr detected in the seat's pane but never named (its start
+    # timed out on a first-run dialog that was answered later): adopt it
+    detected=$(jq -r --arg p "$pane" '.result.agents[] | select(.pane_id == $p and .name == null) | .agent' <<<"$agents_json" | head -1)
+    if [ -n "$detected" ] && herdr agent rename "$pane" "$name" >/dev/null; then
+      say "  adopted the running $detected in $name's pane"
+      STARTED+=("$name")
+      continue
+    fi
+    start_seat "$i" "$pane"
+  done
 
   if [ "$START_FAILED" = 1 ]; then
     say ""
-    say "Some agents need attention. Once every pane shows an agent waiting for input, run:"
-    say "  squad brief"
+    say "Some agents need attention (see above). Answer them in their panes, then run"
+    say "'squad up' again: it keeps what runs and starts only what is missing."
     exit 1
   fi
 
-  say "Briefing agents"
-  brief || die "some seats were not briefed. Fix them, then run 'squad brief'."
+  if [ "${#STARTED[@]}" -gt 0 ]; then
+    say "Briefing agents"
+    brief "${STARTED[@]}" || die "some seats were not briefed. Fix them, then run 'squad brief'."
+  fi
 
   say ""
   say "Team is up. Go to the '$LEAD' pane and say what you want built."
@@ -488,6 +628,8 @@ case "$cmd" in
   config)  cmd_config "$@" ;;
   doctor)  cmd_doctor ;;
   presets) cmd_presets ;;
+  herdr)   cmd_herdr "$@" ;;
+  permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;
   -h|--help|help) usage ;;
   *) usage >&2; die "unknown command '$cmd'." ;;

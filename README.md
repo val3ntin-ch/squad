@@ -18,7 +18,12 @@ Requirements: `git`, `jq`, [herdr](https://herdr.dev), and the agent CLIs your t
 git clone https://github.com/val3ntin-ch/squad ~/.squad
 ~/.squad/install.sh           # links ~/.local/bin/squad
 squad doctor                  # checks what is installed
+squad permissions             # once: lets a Codex lead call 'squad herdr' without asking
 ```
+
+If Codex is on your team, also set `check_for_update_on_startup = false` in
+`~/.codex/config.toml` (update it with your package manager instead):
+otherwise its "Update available" dialog stops seats on start.
 
 ## Make it your default
 
@@ -34,13 +39,15 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 |---|---|
 | `squad new <dir>` | Creates a project folder with git, a first commit and a team. |
 | `squad init` | Adds a team to the repository you are in. |
-| `squad up` | Creates the worktrees, opens a herdr workspace, starts and briefs every agent. Run it from a pane inside herdr. |
+| `squad up` | Creates the worktrees, opens a herdr workspace, starts and briefs every agent. Run it from a pane inside herdr. Safe to run again: it keeps running seats, adopts agents you started by hand in a seat's pane, starts only what is missing and briefs only seats that were never briefed. |
 | `squad brief` | Sends the role briefing again, after you fixed a blocked agent or restarted herdr. |
 | `squad status` | Shows the seats, the spec status, the task table and agent states. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
 | `squad presets` | Lists the built-in teams. |
-| `squad doctor` | Checks requirements. |
+| `squad doctor` | Checks requirements, the Codex rule and Codex's update dialog. |
+| `squad permissions` | Adds one Codex rule so the lead's `squad herdr` calls never ask (every project). |
+| `squad herdr <args>` | herdr bound to this team's session. Agents use it; you don't need to. |
 
 `init`, `new` and `config` accept `--preset NAME`.
 
@@ -116,6 +123,16 @@ No agent pushes. When all tasks are merged you review the base branch and push i
 
 `squad init` adds `.team/` to `.git/info/exclude`, so team files stay out of your commits. Your own checkout is never touched: all work happens in worktrees in `<repo>-team/`.
 
+## First run of a project
+
+Each agent asks once whether to trust a new folder (Claude per worktree, Codex
+once per repository). `squad up` stops, names the dialog and the pane; answer
+it there and run `squad up` again. After that, the same project starts with no
+dialogs, and a task runs from spec to merge without permission prompts:
+squad gives Claude and Codex seats write access to `.team/` and the
+repository's `.git` (`--add-dir`), runs Codex in `workspace-write`, and the
+lead reaches herdr through `squad herdr`, which `squad permissions` allows.
+
 ## Your part
 
 - **Approve the spec.** The lead writes `SPEC.md` and stops. Nothing else happens until you approve it. This is the cheapest moment to change direction.
@@ -140,19 +157,28 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 |---|---|
 | "run this from a pane inside herdr" | Start `herdr` in the repository and run `squad up` there. |
 | A seat "did not become ready" | herdr's error is printed above it. Usually the agent shows a first-run dialog (trust this folder, sign in): open its pane, answer it, then `squad brief`. A pane whose shell is still starting is retried for up to a minute automatically. |
+| Codex: "Error adding directories … do not allow additional writable roots" | Fixed in 0.2.0 (squad passes `-s workspace-write`). If your seat line sets its own `-s read-only`, remove it. |
+| The lead's herdr calls reach the wrong session | Agents must use the `squad herdr …` commands written in `.team/roles/`, not plain `herdr`: Codex runs commands through a daemon that can carry another pane's environment. |
 | "an agent named … is already running" | A team is already up in this herdr session: use it (`squad brief`), or run the other project's team in its own session, `herdr --session <project>`. |
 | The lead seems stuck | Look in herdr's sidebar for a blocked agent and answer it. |
 | An agent lost track | Tell it to re-read `$TEAM_DIR/PROTOCOL.md` and its role file. |
 
 ## Status of this project
 
-Version 0.1.1. `test/smoke.sh` runs squad against a stand-in for herdr and checks the commands it sends, the worktrees it creates, its retries and its error handling; CI runs it with shellcheck on macOS and Linux. Checked against a real herdr 0.9.3: agent names are unique per session (`agent_name_taken`), and `agent start` on a still-starting shell fails with `agent_pane_busy`, which squad retries. A full team run with real agents is the next step.
+Version 0.2.0. Run end to end on herdr 0.9.3 with real agents (GPT-6.1 Sol lead
+and reviewer in Codex, Claude Opus dev): spec, approval, task dispatch,
+implementation on a task branch, cross-vendor review (`APPROVE`), merge into
+the integration branch, checks passing — with no permission prompt after the
+first-run trust dialogs. `test/smoke.sh` covers squad's own logic against a
+stand-in for herdr; CI runs it with shellcheck on Linux and macOS, including
+macOS's bash 3.2.
 
 Known limits:
 
 - Agent arguments cannot contain quoted spaces.
 - Panes are stacked by repeated splitting, so with many seats the lower panes are small; resize them in herdr.
-- Sending `/clear` or `/new` to an agent through herdr is how the lead resets a worker's context; this is the least proven part.
+- Sending `/clear` or `/new` to an agent through herdr is how the lead resets a worker's context between tasks; not yet exercised on a multi-task run.
+- OpenCode seats get no `--add-dir` (it has no such flag): allow `.team/` in OpenCode's own permission config.
 
 ## Contributing
 
