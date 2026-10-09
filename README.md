@@ -18,7 +18,7 @@ Requirements: `git`, `jq`, [herdr](https://herdr.dev), and the agent CLIs your t
 git clone https://github.com/val3ntin-ch/squad ~/.squad
 ~/.squad/install.sh           # links ~/.local/bin/squad
 squad doctor                  # checks what is installed
-squad permissions             # once: lets a Codex lead call 'squad herdr' without asking
+squad permissions             # once: lets Codex seats run 'squad herdr' / 'squad git' without asking
 ```
 
 If Codex is on your team, also set `check_for_update_on_startup = false` in
@@ -47,7 +47,8 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 | `squad config` | Creates or shows your personal default team. |
 | `squad presets` | Lists the built-in teams. |
 | `squad doctor` | Checks requirements, the Codex rule and Codex's update dialog. |
-| `squad permissions` | Adds one Codex rule so the lead's `squad herdr` calls never ask (every project). |
+| `squad permissions` | Adds two Codex rules so `squad herdr` and `squad git` never ask (every project). |
+| `squad git <args>` | The git writes agents need (switch, add, commit, merge, rebase, restore, stash, branch) — never push, force or delete, and only inside a squad team. Agents use it; you don't need to. |
 | `squad herdr <args>` | herdr bound to this team's session. Agents use it; you don't need to. |
 
 `init`, `new` and `config` accept `--preset NAME`.
@@ -133,6 +134,8 @@ dialogs, and a task runs from spec to merge without permission prompts:
 squad gives Claude and Codex seats write access to `.team/` and the
 repository's `.git` (`--add-dir`), runs Codex in `workspace-write`, and the
 lead reaches herdr through `squad herdr`, which `squad permissions` allows.
+Codex's sandbox keeps `.git` read-only by design, so Codex seats make their
+git writes through `squad git`, the second rule `squad permissions` adds.
 
 ## Your part
 
@@ -166,7 +169,7 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 
 ## Status of this project
 
-Version 0.3.0. Run end to end on herdr 0.9.3 with real agents (GPT-6.1 Sol lead
+Version 0.4.0. Run end to end on herdr 0.9.3 with real agents (GPT-6.1 Sol lead
 and reviewer in Codex, Claude Opus dev): spec, approval, task dispatch,
 implementation on a task branch, cross-vendor review (`APPROVE`), merge into
 the integration branch, checks passing — with no permission prompt after the

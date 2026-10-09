@@ -100,10 +100,20 @@ check "the lead calls herdr through 'squad herdr'" grep -qF "$squad_abs herdr ag
 check "up remembers the session's socket" sh -c "HERDR_SOCKET_PATH=/s/x.sock '$squad' brief >/dev/null; grep -qxF /s/x.sock .team/herdr.sock"
 check "squad herdr uses the team's socket, not the caller's" sh -c "HERDR_SOCKET_PATH=/other.sock '$squad' herdr agent list >/dev/null; tail -1 '$MOCK_LOG' | grep -q 'sock=/s/x.sock'"
 check "squad herdr works from a team worktree" sh -c "cd '$tmp/proj-team/dev-a' && '$squad' herdr agent list >/dev/null"
+check "role files send git writes through squad git" grep -qF "$squad_abs git switch -c task/" .team/roles/dev.md
+check "the lead merges through squad git" grep -qF "$squad_abs git merge --no-ff" .team/roles/lead.md
+check "squad git runs an allowed write" sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -c t-probe >/dev/null 2>&1 && git branch --show-current | grep -qx t-probe"
+check "squad git refuses push" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git push"
+check "squad git refuses force" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -f t-probe"
+check "squad git refuses deleting branches" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git branch -D t-probe"
+check "squad git refuses read commands (plain git is fine)" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git log"
+check "squad git refuses outside a team" refuses sh -c "cd '$tmp' && '$squad' git switch -c nope"
+git -C "$tmp/proj-team/dev-a" switch -q --detach team/integration
 codex_home="$tmp/codexhome"
 check "permissions adds one Codex rule" env CODEX_HOME="$codex_home" "$squad" permissions
 check "the rule allows squad herdr" grep -qF "\"$squad_abs\", \"herdr\"" "$codex_home/rules/default.rules"
 check "permissions is idempotent" sh -c "CODEX_HOME='$codex_home' '$squad' permissions >/dev/null; test \$(grep -c herdr '$codex_home/rules/default.rules') = 1"
+check "permissions also allows squad git" grep -qF "\"$squad_abs\", \"git\"" "$codex_home/rules/default.rules"
 
 check "a seat that fails to start stops before briefing" refuses env MOCK_FAIL=dev-b "$squad" up
 check "a stuck seat's trust dialog is named" sh -c "MOCK_FAIL=dev-b MOCK_PANE_TEXT='Trust this folder?' '$squad' up | grep -q 'trust this folder'"
