@@ -153,6 +153,10 @@ check "statusline saves Claude's usage" sh -c "echo '{\"model\":{\"display_name\
 check "usage shows Claude after the status line ran" sh -c "'$squad' usage | grep -qE 'Claude 5h [▓░]+ +61%'"
 check "a window past its reset shows 0%" sh -c "echo '{\"rate_limits\":{\"five_hour\":{\"used_percentage\":90,\"resets_at\":1}}}' | '$squad' statusline >/dev/null; '$squad' usage | grep -qE 'Claude 5h ░+ +0%'"
 check "watch --once shows usage, tasks and seats" sh -c "'$squad' watch --once | grep -q 'T-001' && '$squad' watch --once | grep -q 'lead'"
+check "permissions sets Claude's status line when none is set" sh -c "CODEX_HOME='$codex_home' CLAUDE_CONFIG_DIR='$tmp/cl1' '$squad' permissions >/dev/null; jq -e '.statusLine.command | contains(\"squad statusline\")' '$tmp/cl1/settings.json'"
+mkdir -p "$tmp/cl2" && echo '{"statusLine":{"type":"command","command":"mine"},"model":"opus"}' >"$tmp/cl2/settings.json"
+check "permissions keeps an existing Claude status line" sh -c "CODEX_HOME='$codex_home' CLAUDE_CONFIG_DIR='$tmp/cl2' '$squad' permissions >/dev/null; jq -e '.statusLine.command == \"mine\" and .model == \"opus\"' '$tmp/cl2/settings.json'"
+check "squad done tells the lead to finish its current step first" grep -q 'first finish what you were doing' "$MOCK_LOG"
 check "permissions also allows squad git" grep -qF "\"$squad_abs\", \"git\"" "$codex_home/rules/default.rules"
 
 check "a seat that fails to start stops before briefing" refuses env MOCK_FAIL=dev-b "$squad" up

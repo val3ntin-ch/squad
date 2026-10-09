@@ -18,7 +18,7 @@ Requirements: `git`, `jq`, [herdr](https://herdr.dev), and the agent CLIs your t
 git clone https://github.com/val3ntin-ch/squad ~/.squad
 ~/.squad/install.sh           # links ~/.local/bin/squad
 squad doctor                  # checks what is installed
-squad permissions             # once: lets Codex seats run 'squad herdr' / 'squad git' without asking
+squad permissions             # once per machine: Codex rules + Claude usage status line
 ```
 
 If Codex is on your team, also set `check_for_update_on_startup = false` in
@@ -43,14 +43,14 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 | `squad brief` | Sends the role briefing again, after you fixed a blocked agent or restarted herdr. |
 | `squad watch` | The live strip in the team tab: plan usage bars per vendor, each task's owner and state, each seat's state, the last event. `squad up` starts it; `--once` prints it once. |
 | `squad usage` | One line of plan usage: Claude and Codex, 5-hour and 7-day windows, and when a nearly used-up window comes back. |
-| `squad statusline` | Use as Claude Code's status line (`"statusLine": {"type": "command", "command": "squad statusline"}`): shows the model and usage bars, and records Claude's usage for `squad watch`. |
+| `squad statusline` | Claude Code's status line (set by `squad permissions`): the model and usage bars; also records Claude's usage for `squad watch`. |
 | `squad status` | Shows the seats, the spec status, the task table and agent states. |
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay; `squad up` starts it again. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
 | `squad presets` | Lists the built-in teams. |
 | `squad doctor` | Checks requirements, the Codex rule and Codex's update dialog. |
-| `squad permissions` | Adds two Codex rules so `squad herdr` and `squad git` never ask (every project). |
+| `squad permissions` | One-time machine setup: Codex rules so `squad herdr`, `squad git` and `squad done` never ask (every project), and Claude Code's status line set to `squad statusline` unless you already have one. |
 | `squad git <args>` | The git writes agents need (switch, add, commit, merge, rebase, restore, stash, branch) — never push, force or delete, and only inside a squad team. Agents use it; you don't need to. |
 | `squad herdr <args>` | herdr bound to this team's session. Agents use it; you don't need to. |
 
@@ -109,7 +109,7 @@ An OpenCode seat starts with the model your own OpenCode configuration selects. 
 
 Switch tabs with herdr's `prefix 1`…`9` (or `prefix n` / `prefix p`); `prefix z` zooms a pane. The `changes` tab runs lazygit on the integration worktree: every `task/*` branch, worktree and diff (only when lazygit is installed).
 
-Usage comes from the vendors themselves: Codex writes its rate limits into its session files; Claude passes them to its status line, so set `squad statusline` as Claude's status line to see the Claude bar (it shows `—` until a Claude session has answered once).
+Usage comes from the vendors themselves: Codex writes its rate limits into its session files; Claude passes them to its status line, which `squad permissions` sets to `squad statusline` — the Claude bar (it shows `—` until a Claude session has answered once).
 
 ## How the team works
 

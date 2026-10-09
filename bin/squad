@@ -354,7 +354,9 @@ cmd_done() {
   printf '%s %s %s %s\n' "$(date '+%H:%M:%S')" "$seat" "$task" "$status" >>"$TEAM_DIR/events.log"
   [ "$seat" = "$LEAD" ] && return 0
   sock=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true)
-  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}"
+  # Codex injects a message that arrives mid-turn into the running turn and
+  # would drop the unfinished step; told to finish first, it does (tested).
+  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}. (Notification: first finish what you were doing, then handle this.)"
   if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock herdr agent prompt "$LEAD" "$msg" >/dev/null
   else herdr agent prompt "$LEAD" "$msg" >/dev/null; fi || die "could not reach the lead; the event is in $TEAM_DIR/events.log"
   say "told $LEAD: $msg"
@@ -379,8 +381,9 @@ cmd_git() {
   exec git "$@"
 }
 
-# squad permissions — let Codex run 'squad herdr' and 'squad git' without
-# asking, in every project (two rules in ~/.codex/rules/default.rules).
+# squad permissions — one-time machine setup: Codex rules so 'squad herdr',
+# 'squad git' and 'squad done' never ask, and Claude Code's status line set to
+# 'squad statusline' (plan usage) unless you already have one.
 cmd_permissions() {
   local rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
   local sub rule
@@ -392,6 +395,21 @@ cmd_permissions() {
     say "Added to $rules:"
     say "  $rule"
   done
+  local claude_settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" current tmp
+  local line='command -v squad >/dev/null 2>&1 && squad statusline 2>/dev/null || true'
+  current=$(jq -r '.statusLine.command // empty' "$claude_settings" 2>/dev/null || true)
+  if [ "$current" = "$line" ]; then
+    say "ok       Claude status line shows plan usage"
+  elif [ -n "$current" ]; then
+    say "note     Claude already has a status line; left as is. For usage bars, use: squad statusline"
+  else
+    mkdir -p "$(dirname "$claude_settings")"
+    [ -s "$claude_settings" ] || echo '{}' >"$claude_settings"
+    tmp=$(mktemp)
+    jq --arg c "$line" '.statusLine = {type: "command", command: $c}' "$claude_settings" >"$tmp" && cat "$tmp" >"$claude_settings"
+    rm -f "$tmp"
+    say "Set Claude's status line to 'squad statusline' ($claude_settings)"
+  fi
 }
 
 # The install command a fresh worktree needs, from the lockfile in the repo.

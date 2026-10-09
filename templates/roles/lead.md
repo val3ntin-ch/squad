@@ -37,7 +37,7 @@ The loop is event-driven. You never block waiting on one agent: hand out work, e
 [squad] dev-a finished T-001: DONE — report: $TEAM_DIR/reports/T-001-dev.md
 ```
 
-These messages arrive even while you are busy; they are queued and you get them when your turn ends. React to each one, then end your turn again.
+These messages arrive even while you are busy — sometimes in the middle of your turn. Finish the step you were on first, then react to each message, then end your turn again.
 
 **Dispatch.** Give every ready task (its dependencies merged) to a free dev, all in one go, so devs work in parallel. Send one short message each and do not wait; the task is in the file:
 
