@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# squad - run a team of coding agents on a repository, inside herdr.
+# https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
+
+set -euo pipefail
+VERSION="0.1.0"
+
+# ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
+
+self=${BASH_SOURCE[0]}
+while [ -L "$self" ]; do
+  dir=$(cd -P "$(dirname "$self")" && pwd)
+  self=$(readlink "$self")
+  case "$self" in /*) ;; *) self="$dir/$self" ;; esac
+done
+SQUAD_HOME=$(cd -P "$(dirname "$self")/.." && pwd)
+TEMPLATES="$SQUAD_HOME/templates"
+PRESETS="$SQUAD_HOME/presets"
+USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/squad/team.conf"
+
+die()  { printf 'squad: %s\n' "$*" >&2; exit 1; }
+say()  { printf '%s\n' "$*"; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 is required but not installed. $2"; }
+
+usage() {
+  cat <<EOF
+squad $VERSION - a team of coding agents on your repository, inside herdr
+
+Usage:
+  squad new <dir> [--preset NAME]   create a new project with git and a team
+  squad init [--preset NAME]        add a team to the current repository
+  squad up                          start the team (run inside herdr)
+  squad brief                       re-send the role briefing to a running team
+  squad status                      show seats, agent states and the task table
+  squad clean                       remove the team's worktrees (clean ones only)
+  squad config [--preset NAME]      create or show your personal default team
+  squad doctor                      check that everything needed is installed
+  squad presets                     list the built-in team presets
+
+A team is defined in .team/team.conf. 'squad init' copies your personal
+default ($USER_CONF) if it exists, otherwise the
+'default' preset. Edit the file to change seats, agents or models.
+EOF
+}
+
+# ---- repository --------------------------------------------------------------
+
+REPO="" TEAM_DIR="" WT_ROOT=""
+find_repo() {
+  need git ""
+  git rev-parse --git-dir >/dev/null 2>&1 || die "not inside a git repository. Use 'squad new <dir>' to start a project."
+  # The main checkout, even when called from one of the team's worktrees.
+  REPO=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
+  [ -n "$REPO" ] || die "could not find the repository root."
+  TEAM_DIR="$REPO/.team"
+  WT_ROOT="${REPO}-team"
+}
+
+# ---- team.conf ---------------------------------------------------------------
+
+S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=()
+TEAM_BASE="team/integration"
+SETUP_CMD=""
+LEAD=""
+
+load_conf() {
+  local conf="$TEAM_DIR/team.conf" kw name kind role reviews rest n=0 line_no=0
+  [ -f "$conf" ] || die "$conf not found. Run 'squad init' first."
+  S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    line_no=$((line_no + 1))
+    line=${line%%#*}
+    read -r kw rest <<<"$line" || true
+    case "${kw:-}" in
+      "") continue ;;
+      base)  [ -n "$rest" ] && TEAM_BASE=$rest ;;
+      setup) SETUP_CMD=$rest ;;
+      seat)
+        read -r name kind role reviews rest <<<"$rest" || true
+        [ -n "${role:-}" ] || die "team.conf line $line_no: expected 'seat <name> <agent> <role> <reviews> [args]'."
+        [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || die "team.conf line $line_no: seat name '$name' must be lowercase letters, digits, - or _."
+        case "$role" in lead|dev|reviewer|tester) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer or tester." ;; esac
+        local i
+        for ((i = 0; i < n; i++)); do
+          [ "${S_NAME[$i]}" != "$name" ] || die "team.conf line $line_no: seat '$name' is defined twice."
+        done
+        S_NAME[$n]=$name; S_KIND[$n]=$kind; S_ROLE[$n]=$role
+        S_REVIEWS[$n]=${reviews:--}; S_ARGS[$n]=${rest:-}
+        n=$((n + 1)) ;;
+      *) die "team.conf line $line_no: unknown keyword '$kw'." ;;
+    esac
+  done <"$conf"
+
+  local leads=0 i
+  for ((i = 0; i < n; i++)); do
+    if [ "${S_ROLE[$i]}" = lead ]; then leads=$((leads + 1)); LEAD=${S_NAME[$i]}; fi
+  done
+  [ "$leads" = 1 ] || die "team.conf must define exactly one seat with the role 'lead' (found $leads)."
+
+  # Every name a reviewer points at must be a dev.
+  local r target found j
+  for ((i = 0; i < n; i++)); do
+    [ "${S_ROLE[$i]}" = reviewer ] || continue
+    r=${S_REVIEWS[$i]}
+    [ "$r" != "-" ] || die "team.conf: reviewer '${S_NAME[$i]}' must name the dev(s) it reviews."
+    IFS=, read -r -a _targets <<<"$r"
+    for target in "${_targets[@]}"; do
+      found=0
+      for ((j = 0; j < n; j++)); do
+        if [ "${S_NAME[$j]}" = "$target" ] && [ "${S_ROLE[$j]}" = dev ]; then found=1; fi
+      done
+      [ "$found" = 1 ] || die "team.conf: reviewer '${S_NAME[$i]}' reviews '$target', which is not a dev seat."
+    done
+  done
+}
+
+seat_count() { echo "${#S_NAME[@]}"; }
+
+role_file() { # role -> path
+  case "$1" in
+    lead) echo "$TEAM_DIR/roles/lead.md" ;;
+    dev) echo "$TEAM_DIR/roles/dev.md" ;;
+    reviewer) echo "$TEAM_DIR/roles/reviewer.md" ;;
+    tester) echo "$TEAM_DIR/roles/tester.md" ;;
+  esac
+}
+
+seat_cwd() { # index -> working directory
+  case "${S_ROLE[$1]}" in
+    lead|reviewer) echo "$WT_ROOT/integration" ;;
+    *) echo "$WT_ROOT/${S_NAME[$1]}" ;;
+  esac
+}
+
+clear_cmd() { # agent kind -> command that resets its conversation
+  case "$1" in
+    claude) echo "/clear" ;;
+    codex|opencode) echo "/new" ;;
+    *) echo "-" ;;
+  esac
+}
+
+write_roster() {
+  local i n; n=$(seat_count)
+  {
+    echo "# Roster"
+    echo
+    echo "Generated by squad from team.conf on every start. Do not edit; change team.conf instead."
+    echo
+    echo "| Seat | Role | Agent | Arguments | Reviews | Clear |"
+    echo "|---|---|---|---|---|---|"
+    for ((i = 0; i < n; i++)); do
+      printf '| `%s` | %s | %s | %s | %s | `%s` |\n' \
+        "${S_NAME[$i]}" "${S_ROLE[$i]}" "${S_KIND[$i]}" "${S_ARGS[$i]:--}" \
+        "${S_REVIEWS[$i]}" "$(clear_cmd "${S_KIND[$i]}")"
+    done
+    echo
+    echo "\"Reviews\" is the dev whose tasks that reviewer checks. \"Clear\" is the command"
+    echo "to send a seat, as a prompt of its own, to reset its context between tasks"
+    echo "(\"-\" means none is known for that agent; leave its context alone)."
+  } >"$TEAM_DIR/ROSTER.md"
+}
+
+# ---- init / new / config -----------------------------------------------------
+
+preset_path() {
+  [ -f "$PRESETS/$1.conf" ] || die "no preset named '$1'. Run 'squad presets' to list them."
+  echo "$PRESETS/$1.conf"
+}
+
+parse_preset_flag() { # sets PRESET from "--preset NAME" in "$@"
+  PRESET=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --preset) [ $# -ge 2 ] || die "--preset needs a name."; PRESET=$2; shift 2 ;;
+      --preset=*) PRESET=${1#--preset=}; shift ;;
+      *) die "unknown option '$1'." ;;
+    esac
+  done
+}
+
+copy_if_missing() { # src dst
+  if [ -e "$2" ]; then say "  kept     ${2#"$REPO"/}"; else cp "$1" "$2"; say "  created  ${2#"$REPO"/}"; fi
+}
+
+cmd_init() {
+  parse_preset_flag "$@"
+  find_repo
+  local conf_src
+  if [ -n "$PRESET" ]; then conf_src=$(preset_path "$PRESET")
+  elif [ -f "$USER_CONF" ]; then conf_src=$USER_CONF
+  else conf_src=$(preset_path default); fi
+
+  mkdir -p "$TEAM_DIR/roles" "$TEAM_DIR/reports"
+  say "Setting up $TEAM_DIR"
+  copy_if_missing "$conf_src" "$TEAM_DIR/team.conf"
+  copy_if_missing "$TEMPLATES/SPEC.md" "$TEAM_DIR/SPEC.md"
+  copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
+  # Protocol and roles belong to the tool: refresh them so upgrades take effect.
+  cp "$TEMPLATES/PROTOCOL.md" "$TEAM_DIR/PROTOCOL.md"
+  cp "$TEMPLATES"/roles/*.md "$TEAM_DIR/roles/"
+  say "  updated  .team/PROTOCOL.md and .team/roles/"
+
+  # Keep team files out of commits without touching the tracked .gitignore.
+  local exclude; exclude="$(cd "$REPO" && git rev-parse --git-common-dir)/info/exclude"
+  case "$exclude" in /*) ;; *) exclude="$REPO/$exclude" ;; esac
+  mkdir -p "$(dirname "$exclude")"
+  grep -qxF '.team/' "$exclude" 2>/dev/null || printf '.team/\n' >>"$exclude"
+
+  load_conf
+  write_roster
+  say ""
+  say "Team of $(seat_count) seats defined in .team/team.conf (from ${conf_src/#$HOME/~})."
+  say "Next: start herdr in this repository and run 'squad up'."
+}
+
+cmd_new() {
+  [ $# -ge 1 ] || die "usage: squad new <dir> [--preset NAME]"
+  local dir=$1; shift
+  need git ""
+  [ ! -e "$dir" ] || die "'$dir' already exists. Use 'squad init' inside it instead."
+  mkdir -p "$dir"
+  ( cd "$dir"
+    git init -q
+    git commit -q --allow-empty -m "Initial commit" \
+      || die "git could not create the first commit (set user.name and user.email)."
+    cmd_init "$@" )
+  say ""
+  say "Project created in $dir. Then:  cd $dir && herdr   and run 'squad up'."
+}
+
+cmd_config() {
+  parse_preset_flag "$@"
+  if [ -n "$PRESET" ] || [ ! -f "$USER_CONF" ]; then
+    mkdir -p "$(dirname "$USER_CONF")"
+    cp "$(preset_path "${PRESET:-default}")" "$USER_CONF"
+    say "Wrote your default team from the '${PRESET:-default}' preset."
+  fi
+  say "Your default team: $USER_CONF"
+  say "Edit it to change the seats every new 'squad init' starts with."
+}
+
+cmd_presets() {
+  local f
+  for f in "$PRESETS"/*.conf; do
+    printf '%-10s %s\n' "$(basename "$f" .conf)" "$(grep -c '^seat ' "$f") seats"
+  done
+}
+
+# ---- doctor ------------------------------------------------------------------
+
+cmd_doctor() {
+  local ok=0 tool i n kinds=""
+  for tool in git jq herdr; do
+    if command -v "$tool" >/dev/null 2>&1; then say "ok       $tool"; else say "MISSING  $tool"; ok=1; fi
+  done
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    find_repo
+    if [ -f "$TEAM_DIR/team.conf" ]; then
+      load_conf; n=$(seat_count)
+      for ((i = 0; i < n; i++)); do
+        case " $kinds " in *" ${S_KIND[$i]} "*) continue ;; esac
+        kinds="$kinds ${S_KIND[$i]}"
+        if command -v "${S_KIND[$i]}" >/dev/null 2>&1; then say "ok       ${S_KIND[$i]} (agent)"
+        else say "MISSING  ${S_KIND[$i]} (agent used in team.conf; if its command has another name, ignore this)"; ok=1; fi
+      done
+    else
+      say "note     no .team/team.conf here yet (run 'squad init')"
+    fi
+  fi
+  if [ "${HERDR_ENV:-}" = 1 ]; then say "ok       running inside herdr"; else say "note     not inside herdr ('squad up' must be run from a herdr pane)"; fi
+  return $ok
+}
+
+# ---- up / brief --------------------------------------------------------------
+
+require_herdr() {
+  need herdr "See https://herdr.dev"
+  need jq "(brew install jq / apt install jq)"
+  [ "${HERDR_ENV:-}" = 1 ] || die "run this from a pane inside herdr (start 'herdr' in the repository first)."
+}
+
+brief() {
+  local i n failed=0 name; n=$(seat_count)
+  for ((i = 0; i < n; i++)); do
+    [ "${S_ROLE[$i]}" != lead ] || continue
+    name=${S_NAME[$i]}
+    if herdr agent prompt "$name" \
+      "You are '$name' on an agent team. Read $TEAM_DIR/PROTOCOL.md and $(role_file "${S_ROLE[$i]}") now. Do not start any work yet. Reply with the single word READY." \
+      --wait --timeout 180000 >/dev/null; then
+      say "  briefed $name"
+    else
+      say "  could not brief $name (see the error above; open its pane and check it)"
+      failed=1
+    fi
+  done
+  # The lead is briefed last and not waited on: it goes straight to the human.
+  if herdr agent prompt "$LEAD" \
+    "You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1 by asking me what we are building." \
+    >/dev/null; then
+    say "  briefed $LEAD"
+  else
+    say "  could not brief $LEAD (open its pane and check it)"
+    failed=1
+  fi
+  return $failed
+}
+
+cmd_brief() {
+  require_herdr; find_repo; load_conf; write_roster
+  brief || die "some seats were not briefed. Fix them, then run 'squad brief' again."
+}
+
+setup_worktree() {
+  [ -n "$SETUP_CMD" ] || return 0
+  say "  running setup in ${1#"$WT_ROOT"/}"
+  ( cd "$1" && eval "$SETUP_CMD" ) || die "the setup command failed in $1"
+}
+
+split() { # <pane> <direction> <cwd> -> new pane id
+  herdr pane split "$1" --direction "$2" --cwd "$3" --no-focus \
+    | jq -er '.result.pane.pane_id' || die "unexpected response from herdr while creating panes."
+}
+
+START_FAILED=0
+start_seat() { # <index> <pane>
+  local i=$1 pane=$2 name kind args
+  name=${S_NAME[$i]}; kind=${S_KIND[$i]}; args=${S_ARGS[$i]}
+  herdr pane rename "$pane" "$name" >/dev/null 2>&1 || true
+  # The agent inherits its identity from the shell environment of its pane.
+  herdr pane run "$pane" "export TEAM_ROLE='$name' TEAM_DIR='$TEAM_DIR' TEAM_BASE='$TEAM_BASE'; clear" >/dev/null
+  sleep 1
+  local started=0
+  if [ -n "$args" ]; then
+    # shellcheck disable=SC2086  # arguments are split on spaces by design
+    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 90000 -- $args >/dev/null && started=1
+  else
+    herdr agent start "$name" --kind "$kind" --pane "$pane" --timeout 90000 >/dev/null && started=1
+  fi
+  if [ "$started" = 1 ]; then
+    say "  started $name ($kind${args:+ $args})"
+  else
+    say "  $name did not become ready. It is probably showing a first-run dialog"
+    say "    (trust this folder / sign in). Open its pane and answer it."
+    START_FAILED=1
+  fi
+}
+
+cmd_up() {
+  require_herdr; find_repo
+  [ -f "$TEAM_DIR/team.conf" ] || cmd_init
+  load_conf
+  mkdir -p "$TEAM_DIR/reports"
+  write_roster
+  local i n; n=$(seat_count)
+
+  local existing; existing=$(herdr agent list 2>/dev/null || true)
+  for ((i = 0; i < n; i++)); do
+    if printf '%s' "$existing" | grep -Eq "(^|[^a-z0-9_-])${S_NAME[$i]}([^a-z0-9_-]|\$)"; then
+      die "an agent named '${S_NAME[$i]}' is already running. Use 'squad brief', or close the old team workspace first."
+    fi
+  done
+
+  git -C "$REPO" rev-parse --verify -q HEAD >/dev/null \
+    || die "the repository has no commits yet. Make a first commit, then run 'squad up'."
+
+  say "Preparing worktrees under $WT_ROOT"
+  mkdir -p "$WT_ROOT"
+  if [ ! -d "$WT_ROOT/integration" ]; then
+    if git -C "$REPO" show-ref --verify --quiet "refs/heads/$TEAM_BASE"; then
+      git -C "$REPO" worktree add "$WT_ROOT/integration" "$TEAM_BASE" >/dev/null 2>&1
+    else
+      git -C "$REPO" worktree add -b "$TEAM_BASE" "$WT_ROOT/integration" HEAD >/dev/null 2>&1
+    fi
+    setup_worktree "$WT_ROOT/integration"
+  fi
+  for ((i = 0; i < n; i++)); do
+    case "${S_ROLE[$i]}" in dev|tester) ;; *) continue ;; esac
+    if [ ! -d "$WT_ROOT/${S_NAME[$i]}" ]; then
+      git -C "$REPO" worktree add --detach "$WT_ROOT/${S_NAME[$i]}" "$TEAM_BASE" >/dev/null 2>&1
+      setup_worktree "$WT_ROOT/${S_NAME[$i]}"
+    fi
+  done
+
+  say "Creating the team workspace"
+  local lead_i=0 p_lead last_left last_right="" pane
+  for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = lead ] && lead_i=$i; done
+  p_lead=$(herdr workspace create --cwd "$WT_ROOT/integration" --label "$(basename "$REPO") team" --focus \
+            | jq -er '.result.root_pane.pane_id') || die "unexpected response from herdr while creating the workspace."
+  last_left=$p_lead
+
+  # Left column: lead, reviewers, tester. Right column: devs.
+  local PANES=()
+  PANES[$lead_i]=$p_lead
+  for ((i = 0; i < n; i++)); do
+    [ "${S_ROLE[$i]}" = dev ] || continue
+    if [ -z "$last_right" ]; then pane=$(split "$p_lead" right "$(seat_cwd "$i")")
+    else pane=$(split "$last_right" down "$(seat_cwd "$i")"); fi
+    last_right=$pane; PANES[$i]=$pane
+  done
+  for ((i = 0; i < n; i++)); do
+    case "${S_ROLE[$i]}" in reviewer|tester) ;; *) continue ;; esac
+    pane=$(split "$last_left" down "$(seat_cwd "$i")")
+    last_left=$pane; PANES[$i]=$pane
+  done
+
+  say "Starting agents"
+  for ((i = 0; i < n; i++)); do start_seat "$i" "${PANES[$i]}"; done
+
+  if [ "$START_FAILED" = 1 ]; then
+    say ""
+    say "Some agents need attention. Once every pane shows an agent waiting for input, run:"
+    say "  squad brief"
+    exit 1
+  fi
+
+  say "Briefing agents"
+  brief || die "some seats were not briefed. Fix them, then run 'squad brief'."
+
+  say ""
+  say "Team is up. Go to the '$LEAD' pane and say what you want built."
+  say "It writes .team/SPEC.md and waits for your approval before anyone writes code."
+}
+
+# ---- status / clean ----------------------------------------------------------
+
+cmd_status() {
+  find_repo; load_conf
+  local i n; n=$(seat_count)
+  say "Team ($n seats) for $REPO"
+  for ((i = 0; i < n; i++)); do
+    printf '  %-12s %-9s %-9s %s\n' "${S_NAME[$i]}" "${S_ROLE[$i]}" "${S_KIND[$i]}" "${S_ARGS[$i]}"
+  done
+  if [ -f "$TEAM_DIR/SPEC.md" ]; then say ""; say "Spec: $(grep -m1 '^Status:' "$TEAM_DIR/SPEC.md" | sed 's/^Status: *//; s/ *<!--.*//' || echo unknown)"; fi
+  if [ -f "$TEAM_DIR/TASKS.md" ]; then
+    say ""; say "Tasks:"
+    # The first table in the file is the status table.
+    awk '/^\|/ {print "  " $0; seen=1; next} seen {exit}' "$TEAM_DIR/TASKS.md"
+  fi
+  if [ "${HERDR_ENV:-}" = 1 ] && command -v herdr >/dev/null 2>&1; then
+    say ""; say "Agents:"; herdr agent list || true
+  fi
+}
+
+cmd_clean() {
+  find_repo
+  [ -d "$WT_ROOT" ] || { say "No team worktrees to remove."; return 0; }
+  local wt kept=0
+  for wt in "$WT_ROOT"/*/; do
+    [ -d "$wt" ] || continue
+    wt=${wt%/}
+    # No --force: git refuses to remove a worktree with uncommitted changes.
+    if git -C "$REPO" worktree remove "$wt" 2>/dev/null; then say "  removed ${wt#"$WT_ROOT"/}"
+    else say "  kept    ${wt#"$WT_ROOT"/} (has uncommitted changes, or is not a worktree)"; kept=1; fi
+  done
+  rmdir "$WT_ROOT" 2>/dev/null || true
+  say "Branches were not deleted. Your work is on '$(sed -n 's/^base  *//p' "$TEAM_DIR/team.conf" 2>/dev/null | head -1)' and the task/* branches."
+  return $kept
+}
+
+# ---- main --------------------------------------------------------------------
+
+cmd=${1:-help}; [ $# -gt 0 ] && shift
+case "$cmd" in
+  new)     cmd_new "$@" ;;
+  init)    cmd_init "$@" ;;
+  up)      cmd_up ;;
+  brief)   cmd_brief ;;
+  status)  cmd_status ;;
+  clean)   cmd_clean ;;
+  config)  cmd_config "$@" ;;
+  doctor)  cmd_doctor ;;
+  presets) cmd_presets ;;
+  -v|--version|version) say "squad $VERSION" ;;
+  -h|--help|help) usage ;;
+  *) usage >&2; die "unknown command '$cmd'." ;;
+esac
