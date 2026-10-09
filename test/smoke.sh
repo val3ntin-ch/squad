@@ -117,6 +117,10 @@ check "permissions also allows squad git" grep -qF "\"$squad_abs\", \"git\"" "$c
 
 check "a seat that fails to start stops before briefing" refuses env MOCK_FAIL=dev-b "$squad" up
 check "a stuck seat's trust dialog is named" sh -c "MOCK_FAIL=dev-b MOCK_PANE_TEXT='Trust this folder?' '$squad' up | grep -q 'trust this folder'"
+reset_log
+check "a trust dialog holds that agent's other seats" sh -c "MOCK_FAIL=lead MOCK_PANE_TEXT='Trust this folder?' '$squad' up | grep -q 'dev-b waits'"
+check "held seats are not started" refuses grep -qE '^herdr agent start (dev-b|rev-sol) ' "$MOCK_LOG"
+check "other agents' seats still start" grep -qE '^herdr agent start dev-a ' "$MOCK_LOG"
 check "a stuck seat's update prompt is named" sh -c "MOCK_FAIL=dev-b MOCK_PANE_TEXT='Update available' '$squad' up | grep -q 'check_for_update_on_startup'"
 reset_log; rm -f "$tmp/busy"
 check "a seat on a still-starting shell is retried, not failed" env MOCK_BUSY=3 "$squad" up
