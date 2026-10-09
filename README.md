@@ -38,10 +38,11 @@ That file is your personal team. Edit it once (seats, agents, models) and every 
 | Command | What it does |
 |---|---|
 | `squad new <dir>` | Creates a project folder with git, a first commit and a team. |
-| `squad init` | Adds a team to the repository you are in. |
+| `squad init` | Adds a team to the repository you are in. Fills the `setup` line from the lockfile it finds (pnpm, yarn, npm, bun, uv, poetry, bundler) so every worktree gets its dependencies. |
 | `squad up` | Creates the worktrees, opens a herdr workspace, starts and briefs every agent. Run it from a pane inside herdr. Safe to run again: it keeps running seats, adopts agents you started by hand in a seat's pane, starts only what is missing and briefs only seats that were never briefed. |
 | `squad brief` | Sends the role briefing again, after you fixed a blocked agent or restarted herdr. |
 | `squad status` | Shows the seats, the spec status, the task table and agent states. |
+| `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay; `squad up` starts it again. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
 | `squad presets` | Lists the built-in teams. |
@@ -165,7 +166,7 @@ Idle agents cost nothing. For a one-file change, use one agent; a team pays off 
 
 ## Status of this project
 
-Version 0.2.0. Run end to end on herdr 0.9.3 with real agents (GPT-6.1 Sol lead
+Version 0.3.0. Run end to end on herdr 0.9.3 with real agents (GPT-6.1 Sol lead
 and reviewer in Codex, Claude Opus dev): spec, approval, task dispatch,
 implementation on a task branch, cross-vendor review (`APPROVE`), merge into
 the integration branch, checks passing — with no permission prompt after the

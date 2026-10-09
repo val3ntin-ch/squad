@@ -113,6 +113,12 @@ check "a seat on a still-starting shell is retried, not failed" env MOCK_BUSY=3 
 check "the busy seat was retried until it started" test "$(grep -c '^herdr agent start lead ' "$MOCK_LOG")" = 4
 check "brief alone works" "$squad" brief
 check "status prints the task table" sh -c "'$squad' status | grep -q 'T-001'"
+check "status shows each seat's agent state" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"working\"}]}}' '$squad' status | grep -qE 'dev-a +working'"
+check "status marks seats without an agent" sh -c "'$squad' status | grep -qE 'tester +not running'"
+reset_log
+check "down refuses nothing when no team is open" "$squad" down
+check "down closes the team workspace" sh -c "MOCK_WS='{\"result\":{\"workspaces\":[{\"workspace_id\":\"w7\",\"label\":\"proj team\"}]}}' '$squad' down >/dev/null; grep -q 'workspace close w7' '$MOCK_LOG'"
+check "down forgets who was briefed" sh -c "ls .team/.briefed 2>/dev/null | grep -q . && exit 1 || exit 0"
 check "doctor passes" "$squad" doctor
 
 echo "dirty" >"$tmp/proj-team/dev-a/scratch.txt"
@@ -123,6 +129,11 @@ rm "$tmp/proj-team/dev-a/scratch.txt"
 check "clean removes it once it is clean" "$squad" clean
 
 cd "$tmp"
+mkdir -p "$tmp/pnpmrepo" && (cd "$tmp/pnpmrepo" && git init -q && touch pnpm-lock.yaml && git add -A && git commit -qm i)
+check "init detects the install command from the lockfile" sh -c "cd '$tmp/pnpmrepo' && '$squad' init | grep -q 'pnpm install --frozen-lockfile'"
+check "the detected command lands in team.conf" grep -qx 'setup pnpm install --frozen-lockfile' "$tmp/pnpmrepo/.team/team.conf"
+check "init keeps a team.conf it did not create" sh -c "cd '$tmp/pnpmrepo' && '$squad' init | grep -q 'kept'"
+
 check "new accepts the opencode preset" "$squad" new proj2 --preset opencode
 cd proj2; reset_log
 check "up starts the opencode team" "$squad" up

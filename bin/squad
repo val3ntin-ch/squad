@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -32,6 +32,7 @@ Usage:
   squad up                          start the team (run inside herdr)
   squad brief                       re-send the role briefing to a running team
   squad status                      show seats, agent states and the task table
+  squad down                        stop the team (close its herdr workspace)
   squad clean                       remove the team's worktrees (clean ones only)
   squad config [--preset NAME]      create or show your personal default team
   squad doctor                      check that everything needed is installed
@@ -233,6 +234,20 @@ cmd_permissions() {
   say "  $rule"
 }
 
+# The install command a fresh worktree needs, from the lockfile in the repo.
+detect_setup() {
+  local r=$REPO
+  if   [ -f "$r/pnpm-lock.yaml" ]; then echo "pnpm install --frozen-lockfile"
+  elif [ -f "$r/yarn.lock" ] && [ -f "$r/.yarnrc.yml" ]; then echo "yarn install --immutable"
+  elif [ -f "$r/yarn.lock" ]; then echo "yarn install --frozen-lockfile"
+  elif [ -f "$r/package-lock.json" ]; then echo "npm ci"
+  elif [ -f "$r/bun.lock" ] || [ -f "$r/bun.lockb" ]; then echo "bun install --frozen-lockfile"
+  elif [ -f "$r/uv.lock" ]; then echo "uv sync"
+  elif [ -f "$r/poetry.lock" ]; then echo "poetry install"
+  elif [ -f "$r/Gemfile.lock" ]; then echo "bundle install"
+  fi
+}
+
 cmd_init() {
   parse_preset_flag "$@"
   find_repo
@@ -243,7 +258,16 @@ cmd_init() {
 
   mkdir -p "$TEAM_DIR/roles" "$TEAM_DIR/reports"
   say "Setting up $TEAM_DIR"
+  local new_conf=0; [ -e "$TEAM_DIR/team.conf" ] || new_conf=1
   copy_if_missing "$conf_src" "$TEAM_DIR/team.conf"
+  # a new team.conf with an empty 'setup' line gets the repo's install command
+  local detected; detected=$(detect_setup)
+  if [ "$new_conf" = 1 ] && [ -n "$detected" ] && grep -qE '^setup[[:space:]]*$' "$TEAM_DIR/team.conf"; then
+    local tmp; tmp=$(mktemp)
+    awk -v cmd="$detected" '/^setup[[:space:]]*$/ && !done {print "setup " cmd; done=1; next} {print}' "$TEAM_DIR/team.conf" >"$tmp" \
+      && cat "$tmp" >"$TEAM_DIR/team.conf"; rm -f "$tmp"
+    say "  setup    $detected (detected; change it in .team/team.conf)"
+  fi
   copy_if_missing "$TEMPLATES/SPEC.md" "$TEAM_DIR/SPEC.md"
   copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
 
@@ -595,8 +619,26 @@ cmd_status() {
     awk '/^\|/ {print "  " $0; seen=1; next} seen {exit}' "$TEAM_DIR/TASKS.md"
   fi
   if [ "${HERDR_ENV:-}" = 1 ] && command -v herdr >/dev/null 2>&1; then
-    say ""; say "Agents:"; herdr agent list || true
+    local agents_json state
+    agents_json=$(herdr agent list 2>/dev/null) || agents_json='{"result":{"agents":[]}}'
+    say ""; say "Agents:"
+    for ((i = 0; i < n; i++)); do
+      state=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_status][0] // "not running"' <<<"$agents_json")
+      printf '  %-12s %s\n' "${S_NAME[$i]}" "$state"
+    done
   fi
+}
+
+# squad down — stop the team: close its herdr workspace (and every agent in
+# it). Worktrees, branches and .team/ stay; 'squad up' starts it again.
+cmd_down() {
+  require_herdr; find_repo
+  local ws
+  ws=$(herdr workspace list | jq -r --arg l "$(basename "$REPO") team" '.result.workspaces[] | select(.label == $l) | .workspace_id' | head -1)
+  [ -n "$ws" ] || { say "No team workspace is open."; return 0; }
+  herdr workspace close "$ws" >/dev/null || die "herdr could not close workspace $ws."
+  rm -f "$TEAM_DIR"/.briefed/*
+  say "Team stopped (workspace $ws closed). Worktrees and branches are kept; 'squad clean' removes the worktrees."
 }
 
 cmd_clean() {
@@ -625,6 +667,7 @@ case "$cmd" in
   brief)   cmd_brief ;;
   status)  cmd_status ;;
   clean)   cmd_clean ;;
+  down)    cmd_down ;;
   config)  cmd_config "$@" ;;
   doctor)  cmd_doctor ;;
   presets) cmd_presets ;;
