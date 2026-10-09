@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.5.0"
+VERSION="0.6.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -39,6 +39,10 @@ Usage:
   squad presets                     list the built-in team presets
   squad permissions                 let Codex run 'squad herdr' in every project
   squad herdr <args>                herdr, bound to this team's session (used by agents)
+  squad watch                       live strip: plan usage, tasks, seats (runs in the team tab)
+  squad usage                       one line of plan usage per vendor (Claude, Codex)
+  squad statusline                  Claude Code status line: shows and records Claude's usage
+  squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
   squad git <args>                  git writes for agents (switch/add/commit/merge...; no push/force/delete)
 
 A team is defined in .team/team.conf. 'squad init' copies your personal
@@ -200,6 +204,7 @@ render() { # <template> <dest>
   text=${text//"\$TEAM_DIR"/"$TEAM_DIR"}
   text=${text//"\$TEAM_BASE"/"$TEAM_BASE"}
   text=${text//"herdr agent "/"$herdr_bin agent "}
+  text=${text//"squad done "/"$SQUAD_HOME/bin/squad done "}
   local git_bin="$SQUAD_HOME/bin/squad git" sub
   for sub in switch add commit merge rebase restore stash; do
     text=${text//"git $sub "/"$git_bin $sub "}
@@ -227,6 +232,136 @@ cmd_herdr() {
   if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock exec herdr "$@"; else exec herdr "$@"; fi
 }
 
+# ---- usage ---------------------------------------------------------------------
+# Plan usage per vendor, as JSON {p5,r5,p7,r7}: percent used and reset time
+# (epoch seconds) of the 5-hour and 7-day windows. Codex writes rate_limits into
+# its session files; Claude passes them to its status line, which 'squad
+# statusline' saves. Missing data prints nothing.
+CLAUDE_USAGE="${XDG_CACHE_HOME:-$HOME/.cache}/squad/claude-usage.json"
+
+usage_codex() {
+  local dir="${CODEX_HOME:-$HOME/.codex}/sessions" f
+  [ -d "$dir" ] || return 0
+  f=$(find "$dir" -name 'rollout-*.jsonl' -mtime -7 -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -1)
+  [ -n "$f" ] || return 0
+  grep '"rate_limits"' "$f" | tail -1 \
+    | jq -c '[.. | objects | select(.rate_limits? and (.rate_limits | type) == "object") | .rate_limits][0] // empty
+             | {p5: .primary.used_percent, r5: .primary.resets_at, p7: .secondary.used_percent, r7: .secondary.resets_at}' 2>/dev/null
+}
+
+usage_claude() { [ -f "$CLAUDE_USAGE" ] && jq -c '{p5, r5, p7, r7}' "$CLAUDE_USAGE" 2>/dev/null; return 0; }
+
+# bar <percent> <resets_at> -> "▓▓░░░ 41%" (a window past its reset shows 0%)
+bar() {
+  local pct=${1:-} reset=${2:-} now cells i out=""
+  [ -n "$pct" ] && [ "$pct" != null ] || { printf '%s' "  —  "; return; }
+  now=$(date +%s)
+  if [ -n "$reset" ] && [ "$reset" != null ] && [ "${reset%.*}" -le "$now" ]; then pct=0; fi
+  pct=${pct%.*}
+  cells=$(( (pct + 10) / 20 )); [ "$cells" -gt 5 ] && cells=5
+  for ((i = 0; i < 5; i++)); do if [ "$i" -lt "$cells" ]; then out="${out}▓"; else out="${out}░"; fi; done
+  printf '%s %3s%%' "$out" "$pct"
+}
+
+usage_line() { # one line for every vendor with data
+  local name json line="" r5 when
+  for name in Claude Codex; do
+    if [ "$name" = Claude ]; then json=$(usage_claude); else json=$(usage_codex); fi
+    [ -n "$json" ] || { line="$line$name —   "; continue; }
+    line="$line$name 5h $(bar "$(jq -r .p5 <<<"$json")" "$(jq -r .r5 <<<"$json")") 7d $(bar "$(jq -r .p7 <<<"$json")" "$(jq -r .r7 <<<"$json")")"
+    # nearly used up: when does it come back?
+    r5=$(jq -r --argjson now "$(date +%s)" 'if (.p5 // 0) >= 80 and (.r5 // 0) > $now then .r5 else empty end' <<<"$json")
+    if [ -n "$r5" ] && [ "$r5" != null ]; then
+      when=$(date -r "${r5%.*}" '+%H:%M' 2>/dev/null || date -d "@${r5%.*}" '+%H:%M' 2>/dev/null)
+      line="$line (5h back $when)"
+    fi
+    line="$line   "
+  done
+  printf '%s\n' "${line%   }"
+}
+
+cmd_usage() { usage_line; }
+
+# squad statusline — Claude Code status line: saves the plan usage Claude
+# passes on stdin (for 'squad watch') and prints a compact line.
+cmd_statusline() {
+  local input model
+  input=$(cat)
+  mkdir -p "$(dirname "$CLAUDE_USAGE")"
+  jq -c '.rate_limits // empty | {p5: .five_hour.used_percentage, r5: .five_hour.resets_at, p7: .seven_day.used_percentage, r7: .seven_day.resets_at}' \
+    <<<"$input" 2>/dev/null >"$CLAUDE_USAGE.tmp" && [ -s "$CLAUDE_USAGE.tmp" ] && mv "$CLAUDE_USAGE.tmp" "$CLAUDE_USAGE"
+  rm -f "$CLAUDE_USAGE.tmp"
+  model=$(jq -r '.model.display_name // empty' <<<"$input" 2>/dev/null)
+  local json; json=$(usage_claude)
+  if [ -n "$json" ]; then
+    printf '%s  5h %s  7d %s\n' "$model" "$(bar "$(jq -r .p5 <<<"$json")" "$(jq -r .r5 <<<"$json")")" "$(bar "$(jq -r .p7 <<<"$json")" "$(jq -r .r7 <<<"$json")")"
+  else
+    printf '%s\n' "$model"
+  fi
+}
+
+# squad watch — the live strip in the team tab: usage per vendor, each task's
+# state, each seat's state and the last event. Refreshes every 20 s.
+watch_once() {
+  local agents_json tasks states="" i n state ev mark
+  agents_json=$(herdr_team agent list 2>/dev/null) || agents_json='{"result":{"agents":[]}}'
+  n=$(seat_count)
+  for ((i = 0; i < n; i++)); do
+    state=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_status][0] // "off"' <<<"$agents_json")
+    case "$state" in working) mark="●" ;; blocked) mark="!" ;; idle|done) mark="○" ;; *) mark="·" ;; esac
+    states="$states${S_NAME[$i]} $mark  "
+  done
+  tasks=$(awk -F'|' '/^\| *T-[0-9]/ {gsub(/^ +| +$/, "", $2); gsub(/^ +| +$/, "", $4); gsub(/^ +| +$/, "", $5); printf "%s %s %s · ", $2, $4, $5}' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
+  ev=$(tail -1 "$TEAM_DIR/events.log" 2>/dev/null || true)  # no events yet on a fresh team
+  printf '\033[H\033[2J'
+  printf ' %s\n' "$(usage_line)"
+  printf ' %s\n' "${tasks% · }"
+  printf ' %s%s\n' "$states" "${ev:+  last: $ev}"
+}
+
+herdr_team() { # herdr bound to this team's session
+  local sock; sock=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true)
+  if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock herdr "$@"; else herdr "$@"; fi
+}
+
+cmd_watch() {
+  find_repo; load_conf
+  local once=0; [ "${1:-}" = --once ] && once=1
+  while :; do
+    watch_once
+    [ "$once" = 1 ] && return 0
+    sleep 20
+  done
+}
+
+# squad done <seat> <task> <status> — a worker's last step: tell the lead it
+# finished, even while the lead is busy (herdr queues the message for it).
+# herdr's 'agent wait' watches one agent at a time, so a lead waiting on one
+# worker never noticed another one finishing; this push replaces that.
+cmd_done() {
+  [ $# -ge 3 ] || die "usage: squad done <seat> <task> <status>"
+  local seat=$1 task=$2 status=$3 i n role="" report sock
+  find_repo; load_conf; n=$(seat_count)
+  for ((i = 0; i < n; i++)); do [ "${S_NAME[$i]}" = "$seat" ] && role=${S_ROLE[$i]}; done
+  [ -n "$role" ] || die "no seat named '$seat' in this team."
+  case "$role" in
+    dev) report="$TEAM_DIR/reports/$task-dev.md" ;;
+    tester) report="$TEAM_DIR/reports/$task-test.md" ;;
+    reviewer) report=$(ls -t "$TEAM_DIR/reports/$task"-review-*.md 2>/dev/null | head -1) ;;
+    *) report="" ;;
+  esac
+  [ -z "$report" ] || [ -f "$report" ] || say "squad: note — $report does not exist yet; write the report first."
+  printf '%s %s %s %s\n' "$(date '+%H:%M:%S')" "$seat" "$task" "$status" >>"$TEAM_DIR/events.log"
+  [ "$seat" = "$LEAD" ] && return 0
+  sock=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true)
+  # Codex injects a message that arrives mid-turn into the running turn and
+  # would drop the unfinished step; told to finish first, it does (tested).
+  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}. (Notification: first finish what you were doing, then handle this.)"
+  if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock herdr agent prompt "$LEAD" "$msg" >/dev/null
+  else herdr agent prompt "$LEAD" "$msg" >/dev/null; fi || die "could not reach the lead; the event is in $TEAM_DIR/events.log"
+  say "told $LEAD: $msg"
+}
+
 # squad git <subcommand> <args> — the git writes a team needs, for Codex seats.
 # Codex's workspace-write sandbox keeps .git read-only by design (also the git
 # dir a worktree points to), so switch/add/commit/merge fail inside it. This
@@ -246,19 +381,35 @@ cmd_git() {
   exec git "$@"
 }
 
-# squad permissions — let Codex run 'squad herdr' and 'squad git' without
-# asking, in every project (two rules in ~/.codex/rules/default.rules).
+# squad permissions — one-time machine setup: Codex rules so 'squad herdr',
+# 'squad git' and 'squad done' never ask, and Claude Code's status line set to
+# 'squad statusline' (plan usage) unless you already have one.
 cmd_permissions() {
   local rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
   local sub rule
   mkdir -p "$(dirname "$rules")"
-  for sub in herdr git; do
+  for sub in herdr git "done"; do
     rule="prefix_rule(pattern=[\"$SQUAD_HOME/bin/squad\", \"$sub\"], decision=\"allow\")"
     if grep -qxF "$rule" "$rules" 2>/dev/null; then say "ok       Codex may run 'squad $sub' ($rules)"; continue; fi
     printf '%s\n' "$rule" >>"$rules"
     say "Added to $rules:"
     say "  $rule"
   done
+  local claude_settings="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json" current tmp
+  local line='command -v squad >/dev/null 2>&1 && squad statusline 2>/dev/null || true'
+  current=$(jq -r '.statusLine.command // empty' "$claude_settings" 2>/dev/null || true)
+  if [ "$current" = "$line" ]; then
+    say "ok       Claude status line shows plan usage"
+  elif [ -n "$current" ]; then
+    say "note     Claude already has a status line; left as is. For usage bars, use: squad statusline"
+  else
+    mkdir -p "$(dirname "$claude_settings")"
+    [ -s "$claude_settings" ] || echo '{}' >"$claude_settings"
+    tmp=$(mktemp)
+    jq --arg c "$line" '.statusLine = {type: "command", command: $c}' "$claude_settings" >"$tmp" && cat "$tmp" >"$claude_settings"
+    rm -f "$tmp"
+    say "Set Claude's status line to 'squad statusline' ($claude_settings)"
+  fi
 }
 
 # The install command a fresh worktree needs, from the lockfile in the repo.
@@ -371,8 +522,9 @@ cmd_doctor() {
   if command -v codex >/dev/null 2>&1; then
     local codex_rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
     if grep -qF "\"$SQUAD_HOME/bin/squad\", \"herdr\"" "$codex_rules" 2>/dev/null \
-       && grep -qF "\"$SQUAD_HOME/bin/squad\", \"git\"" "$codex_rules" 2>/dev/null; then
-      say "ok       codex may run 'squad herdr' and 'squad git' without asking"
+       && grep -qF "\"$SQUAD_HOME/bin/squad\", \"git\"" "$codex_rules" 2>/dev/null \
+       && grep -qF "\"$SQUAD_HOME/bin/squad\", \"done\"" "$codex_rules" 2>/dev/null; then
+      say "ok       codex may run 'squad herdr', 'squad git' and 'squad done' without asking"
     else
       say "note     Codex seats will ask before 'squad herdr' / 'squad git' calls; run: squad permissions"
     fi
@@ -442,9 +594,87 @@ setup_worktree() {
   ( cd "$1" && eval "$SETUP_CMD" ) || die "the setup command failed in $1"
 }
 
-split() { # <pane> <direction> <cwd> -> new pane id
-  herdr pane split "$1" --direction "$2" --cwd "$3" --no-focus \
+split() { # <pane> <direction> <cwd> [ratio kept by <pane>] -> new pane id
+  local ratio=()
+  [ -n "${4:-}" ] && ratio=(--ratio "$4")
+  herdr pane split "$1" --direction "$2" --cwd "$3" ${ratio[@]+"${ratio[@]}"} --no-focus \
     | jq -er '.result.pane.pane_id' || die "unexpected response from herdr while creating panes."
+}
+
+# lay_row <first pane> <direction> <seat index...> — put the seats in equal
+# parts along <direction>; the first seat takes <first pane>. Sets PANES[].
+lay_row() {
+  local pane=$1 dir=$2; shift 2
+  local total=$# k=0 i
+  for i in "$@"; do
+    if [ "$k" -eq 0 ]; then PANES[$i]=$pane
+    else
+      # keep 1/(remaining) of the space for what is already there
+      PANES[$i]=$(split "$pane" "$dir" "$(seat_cwd "$i")" "$(awk -v r="$((total - k + 1))" 'BEGIN { printf "%.3f", 1 / r }')")
+      pane=${PANES[$i]}
+    fi
+    k=$((k + 1))
+  done
+}
+
+new_tab() { # <workspace> <label> <cwd> -> root pane of the new tab
+  herdr tab create --workspace "$1" --label "$2" --cwd "$3" --no-focus \
+    | jq -er '.result.root_pane.pane_id' || die "unexpected response from herdr while creating a tab."
+}
+
+# The team workspace, layout picked by terminal width (SQUAD_LAYOUT overrides):
+#   talk     (default)      tab team: lead 60% | devs, live strip below
+#                           tab review: reviewers + tester · tab changes: lazygit
+#   mission  (>= 220 cols)  one tab: lead | each dev | reviewers + tester, strip below
+#   focus    (< 120 cols)   tabs: lead + strip · devs · review · changes
+make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
+  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio
+  local devs=() others=()
+  for ((i = 0; i < $(seat_count); i++)); do
+    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; esac
+  done
+  read -r width height < <(herdr pane layout --pane "$root" | jq -r '.result.layout.area | "\(.width) \(.height)"')
+  mode=${SQUAD_LAYOUT:-}
+  if [ -z "$mode" ]; then
+    if [ "${width:-0}" -ge 220 ]; then mode=mission; elif [ "${width:-0}" -lt 120 ]; then mode=focus; else mode="talk"; fi
+  fi
+  herdr tab rename "$tab" team >/dev/null 2>&1 || true
+  # live strip: 4 rows at the bottom of the first tab
+  ratio=$(awk -v h="${height:-40}" 'BEGIN { r = 1 - 5 / h; if (r < 0.75) r = 0.75; if (r > 0.95) r = 0.95; printf "%.3f", r }')
+  strip=$(split "$root" down "$WT_ROOT/integration" "$ratio")
+  herdr pane rename "$strip" watch >/dev/null 2>&1 || true
+  herdr pane run "$strip" "$SQUAD_HOME/bin/squad watch" >/dev/null
+  PANES[$LEAD_I]=$root
+  case "$mode" in
+    mission)
+      p=$(split "$root" right "$(seat_cwd "${devs[0]:-$LEAD_I}")" 0.4)
+      [ "${#devs[@]}" -gt 0 ] && lay_row "$p" right "${devs[@]}"
+      if [ "${#others[@]}" -gt 0 ]; then
+        p=$(split "${PANES[${devs[$((${#devs[@]} - 1))]:-$LEAD_I}]}" right "$(seat_cwd "${others[0]}")" 0.5)
+        lay_row "$p" down "${others[@]}"
+      fi ;;
+    focus)
+      [ "${#devs[@]}" -gt 0 ] && lay_row "$(new_tab "$ws" devs "$(seat_cwd "${devs[0]}")")" down "${devs[@]}"
+      [ "${#others[@]}" -gt 0 ] && lay_row "$(new_tab "$ws" review "$(seat_cwd "${others[0]}")")" down "${others[@]}" ;;
+    *)
+      mode="talk"
+      if [ "${#devs[@]}" -gt 0 ]; then
+        p=$(split "$root" right "$(seat_cwd "${devs[0]}")" 0.6)
+        lay_row "$p" down "${devs[@]}"
+      fi
+      [ "${#others[@]}" -gt 0 ] && lay_row "$(new_tab "$ws" review "$(seat_cwd "${others[0]}")")" right "${others[@]}" ;;
+  esac
+  if command -v lazygit >/dev/null 2>&1; then
+    p=$(new_tab "$ws" changes "$WT_ROOT/integration")
+    herdr pane rename "$p" changes >/dev/null 2>&1 || true
+    herdr pane run "$p" "lazygit" >/dev/null
+  fi
+  # name every seat's pane now, not when its agent starts: a seat held back
+  # (trust dialog) must still be found by its label when 'squad up' resumes
+  for ((i = 0; i < $(seat_count); i++)); do
+    [ -n "${PANES[$i]:-}" ] && herdr pane rename "${PANES[$i]}" "${S_NAME[$i]}" >/dev/null 2>&1
+  done
+  say "  layout: $mode (${width:-?} columns; SQUAD_LAYOUT=talk|mission|focus to choose)"
 }
 
 # herdr's `agent start` does not wait for the pane's shell: on a shell that is
@@ -563,29 +793,20 @@ cmd_up() {
     [ -z "$other" ] || die "an agent named '${S_NAME[$i]}' already runs in another workspace of this herdr session (pane $other) — probably another project's team. Run this team in its own session: herdr --session $(basename "$REPO")"
   done
 
-  local lead_i=0 p_lead last_left last_right="" pane
+  local lead_i=0 p_lead pane
   for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = lead ] && lead_i=$i; done
   local PANES=()
   if [ -z "$ws" ]; then
     say "Creating the team workspace"
     # new agents: nobody has been briefed yet
     rm -f "$TEAM_DIR"/.briefed/*
-    p_lead=$(herdr workspace create --cwd "$WT_ROOT/integration" --label "$ws_label" --focus \
-              | jq -er '.result.root_pane.pane_id') || die "unexpected response from herdr while creating the workspace."
-    last_left=$p_lead
-    # Left column: lead, reviewers, tester. Right column: devs.
-    PANES[$lead_i]=$p_lead
-    for ((i = 0; i < n; i++)); do
-      [ "${S_ROLE[$i]}" = dev ] || continue
-      if [ -z "$last_right" ]; then pane=$(split "$p_lead" right "$(seat_cwd "$i")")
-      else pane=$(split "$last_right" down "$(seat_cwd "$i")"); fi
-      last_right=$pane; PANES[$i]=$pane
-    done
-    for ((i = 0; i < n; i++)); do
-      case "${S_ROLE[$i]}" in reviewer|tester) ;; *) continue ;; esac
-      pane=$(split "$last_left" down "$(seat_cwd "$i")")
-      last_left=$pane; PANES[$i]=$pane
-    done
+    local created
+    created=$(herdr workspace create --cwd "$WT_ROOT/integration" --label "$ws_label" --focus) \
+      || die "unexpected response from herdr while creating the workspace."
+    p_lead=$(jq -er '.result.root_pane.pane_id' <<<"$created") || die "unexpected response from herdr while creating the workspace."
+    ws=$(jq -er '.result.workspace.workspace_id' <<<"$created")
+    LEAD_I=$lead_i
+    make_layout "$ws" "$(jq -r '.result.tab.tab_id' <<<"$created")" "$p_lead"
   else
     # Resume: panes carry their seat name as label (squad sets it on start).
     say "Resuming the team workspace ($ws)"
@@ -711,6 +932,10 @@ case "$cmd" in
   doctor)  cmd_doctor ;;
   presets) cmd_presets ;;
   herdr)   cmd_herdr "$@" ;;
+  done)    cmd_done "$@" ;;
+  usage)   cmd_usage ;;
+  watch)   cmd_watch "$@" ;;
+  statusline) cmd_statusline ;;
   git)     cmd_git "$@" ;;
   permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;

@@ -15,7 +15,9 @@ cat >"$tmp/bin/herdr" <<'EOF'
 echo "herdr $* sock=${HERDR_SOCKET_PATH:-}" >>"$MOCK_LOG"
 nf="$(dirname "$MOCK_LOG")/n"; n=$(cat "$nf" 2>/dev/null || echo 1)
 case "$1 $2" in
-  "workspace create") echo '{"result":{"root_pane":{"pane_id":"w2:p1"}}}' ;;
+  "workspace create") echo '{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"}}}' ;;
+  "pane layout") echo "{\"result\":{\"layout\":{\"area\":{\"width\":${MOCK_WIDTH:-160},\"height\":40}}}}" ;;
+  "tab create") n=$((n + 1)); echo "$n" >"$nf"; echo "{\"result\":{\"root_pane\":{\"pane_id\":\"w2:p$n\"}}}" ;;
   "pane split") n=$((n + 1)); echo "$n" >"$nf"; echo "{\"result\":{\"pane\":{\"pane_id\":\"w2:p$n\"}}}" ;;
   # JSON shaped like herdr 0.9.3; set MOCK_AGENTS / MOCK_WS / MOCK_PANES to override
   "agent list") if [ -n "${MOCK_AGENTS:-}" ]; then echo "$MOCK_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
@@ -33,9 +35,11 @@ case "$1 $2" in
 esac
 EOF
 chmod +x "$tmp/bin/herdr"
-for a in claude codex opencode; do printf '#!/bin/sh\n' >"$tmp/bin/$a"; chmod +x "$tmp/bin/$a"; done
+for a in claude codex opencode lazygit; do printf '#!/bin/sh\n' >"$tmp/bin/$a"; chmod +x "$tmp/bin/$a"; done
 
 export PATH="$tmp/bin:$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" MOCK_LOG="$tmp/log"
+# never touch the real caches/configs: shells often export these explicitly
+export XDG_CACHE_HOME="$tmp/home/.cache" CODEX_HOME="$tmp/home/.codex"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 unset HERDR_ENV
 
@@ -60,7 +64,7 @@ reset_log
 check "up starts the default team" "$squad" up
 check "six agents started" test "$(grep -c '^herdr agent start' "$MOCK_LOG")" = 6
 check "lead runs codex with the Sol model" log_has "agent start lead --kind codex --pane w2:p1 --timeout 90000 -- -m gpt-6.1-sol --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git -s workspace-write"
-check "claude seats get write access to .team" log_has "agent start dev-a --kind claude --pane w2:p2 --timeout 90000 -- --model claude-opus-5-5 --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git"
+check "claude seats get write access to .team" log_has "agent start dev-a --kind claude --pane w2:p3 --timeout 90000 -- --model claude-opus-5-5 --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git"
 check "dev-a runs in its own worktree" log_has "--cwd $tmp/proj-team/dev-a"
 check "reviewers share the integration worktree" test "$(grep -c "pane split.*--cwd $tmp/proj-team/integration" "$MOCK_LOG")" = 2
 check "every seat is briefed" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 6
@@ -113,6 +117,46 @@ codex_home="$tmp/codexhome"
 check "permissions adds one Codex rule" env CODEX_HOME="$codex_home" "$squad" permissions
 check "the rule allows squad herdr" grep -qF "\"$squad_abs\", \"herdr\"" "$codex_home/rules/default.rules"
 check "permissions is idempotent" sh -c "CODEX_HOME='$codex_home' '$squad' permissions >/dev/null; test \$(grep -c herdr '$codex_home/rules/default.rules') = 1"
+layout_up() { # <width> -> fresh team workspace laid out at that width
+  reset_log; rm -f .team/.briefed/*
+  MOCK_WIDTH=$1 "$squad" up >/dev/null 2>&1
+}
+layout_up 160
+check "talk layout at 160 columns" grep -qF "layout: talk" <(MOCK_WIDTH=160 "$squad" up 2>/dev/null; true)
+check "talk: the strip runs squad watch" grep -qF "$squad_abs watch" "$MOCK_LOG"
+check "talk: reviewers and tester get a review tab" grep -q 'tab create --workspace w2 --label review' "$MOCK_LOG"
+check "talk: lazygit gets a changes tab" grep -q 'tab create --workspace w2 --label changes' "$MOCK_LOG"
+layout_up 240
+check "mission layout at 240 columns: no extra tabs but changes" sh -c "! grep -q 'label review' '$MOCK_LOG' && ! grep -q 'label devs' '$MOCK_LOG'"
+layout_up 100
+check "focus layout at 100 columns: devs get their own tab" grep -q 'tab create --workspace w2 --label devs' "$MOCK_LOG"
+reset_log; rm -f .team/.briefed/*
+MOCK_FAIL=lead MOCK_PANE_TEXT='Trust this folder?' MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true  # exits 1: seats held
+check "held seats' panes are named too (so resume finds them)" sh -c "for s in dev-b rev-sol; do grep -q \"pane rename w2:p[0-9]* \$s\" '$MOCK_LOG' || exit 1; done"
+check "SQUAD_LAYOUT overrides the width" sh -c "SQUAD_LAYOUT=mission MOCK_WIDTH=100 '$squad' up | grep -q 'layout: mission'"
+
+# squad done: a worker tells the lead, even while it is busy
+reset_log
+echo "STATUS: DONE" >.team/reports/T-009-dev.md
+check "squad done tells the lead" sh -c "'$squad' done dev-a T-009 DONE >/dev/null && grep -q 'agent prompt lead \[squad\] dev-a finished T-009: DONE' '$MOCK_LOG'"
+check "squad done names the report" grep -qF "report: $tmp/proj/.team/reports/T-009-dev.md" "$MOCK_LOG"
+check "squad done records the event" grep -q 'dev-a T-009 DONE' .team/events.log
+check "squad done refuses an unknown seat" refuses "$squad" "done" nobody T-009 DONE
+check "role files tell workers to run squad done" grep -qF "$squad_abs done <your seat name>" .team/roles/dev.md
+check "the lead no longer blocks on agent wait" refuses grep -q 'agent wait' .team/roles/lead.md
+
+# usage: Codex from its session files, Claude from the status line
+cx="$tmp/codex"; mkdir -p "$cx/sessions/2026/01/01"
+printf '%s\n' '{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"primary":{"used_percent":42.0,"window_minutes":300,"resets_at":4102444800},"secondary":{"used_percent":7.0,"window_minutes":10080,"resets_at":4102444800}}}}' >"$cx/sessions/2026/01/01/rollout-x.jsonl"
+check "usage reads Codex's rate limits" sh -c "CODEX_HOME='$cx' '$squad' usage | grep -qE 'Codex 5h [▓░]+ +42%'"
+check "statusline saves Claude's usage" sh -c "echo '{\"model\":{\"display_name\":\"Opus\"},\"rate_limits\":{\"five_hour\":{\"used_percentage\":61,\"resets_at\":4102444800},\"seven_day\":{\"used_percentage\":20,\"resets_at\":4102444800}}}' | '$squad' statusline | grep -q '61%'"
+check "usage shows Claude after the status line ran" sh -c "'$squad' usage | grep -qE 'Claude 5h [▓░]+ +61%'"
+check "a window past its reset shows 0%" sh -c "echo '{\"rate_limits\":{\"five_hour\":{\"used_percentage\":90,\"resets_at\":1}}}' | '$squad' statusline >/dev/null; '$squad' usage | grep -qE 'Claude 5h ░+ +0%'"
+check "watch --once shows usage, tasks and seats" sh -c "'$squad' watch --once | grep -q 'T-001' && '$squad' watch --once | grep -q 'lead'"
+check "permissions sets Claude's status line when none is set" sh -c "CODEX_HOME='$codex_home' CLAUDE_CONFIG_DIR='$tmp/cl1' '$squad' permissions >/dev/null; jq -e '.statusLine.command | contains(\"squad statusline\")' '$tmp/cl1/settings.json'"
+mkdir -p "$tmp/cl2" && echo '{"statusLine":{"type":"command","command":"mine"},"model":"opus"}' >"$tmp/cl2/settings.json"
+check "permissions keeps an existing Claude status line" sh -c "CODEX_HOME='$codex_home' CLAUDE_CONFIG_DIR='$tmp/cl2' '$squad' permissions >/dev/null; jq -e '.statusLine.command == \"mine\" and .model == \"opus\"' '$tmp/cl2/settings.json'"
+check "squad done tells the lead to finish its current step first" grep -q 'first finish what you were doing' "$MOCK_LOG"
 check "permissions also allows squad git" grep -qF "\"$squad_abs\", \"git\"" "$codex_home/rules/default.rules"
 
 check "a seat that fails to start stops before briefing" refuses env MOCK_FAIL=dev-b "$squad" up
@@ -144,7 +188,10 @@ check "clean removes it once it is clean" "$squad" clean
 
 cd "$tmp"
 mkdir -p "$tmp/pnpmrepo" && (cd "$tmp/pnpmrepo" && git init -q && touch pnpm-lock.yaml && git add -A && git commit -qm i)
-check "init detects the install command from the lockfile" sh -c "cd '$tmp/pnpmrepo' && '$squad' init | grep -q 'pnpm install --frozen-lockfile'"
+# capture first: 'squad … | grep -q' would kill squad mid-write once grep matches
+check "init detects the install command from the lockfile" sh -c "cd '$tmp/pnpmrepo' && out=\$('$squad' init) && echo \"\$out\" | grep -q 'pnpm install --frozen-lockfile'"
+check "init finishes writing every team file" test -f "$tmp/pnpmrepo/.team/TASKS.md" -a -f "$tmp/pnpmrepo/.team/PROTOCOL.md" -a -f "$tmp/pnpmrepo/.team/ROSTER.md"
+check "watch works on a fresh team with no events yet" sh -c "cd '$tmp/pnpmrepo' && '$squad' watch --once | grep -q 'Codex'"
 check "the detected command lands in team.conf" grep -qx 'setup pnpm install --frozen-lockfile' "$tmp/pnpmrepo/.team/team.conf"
 check "init keeps a team.conf it did not create" sh -c "cd '$tmp/pnpmrepo' && '$squad' init | grep -q 'kept'"
 
