@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.6.1"
+VERSION="0.7.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -561,6 +561,8 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
     [ "${S_ROLE[$i]}" != lead ] || continue
     name=${S_NAME[$i]}
     wanted "$name" || continue
+    # role already loaded as a system prompt: nothing to type, nothing to wait for
+    if loads_role "${S_KIND[$i]}"; then mark_briefed "$name"; continue; fi
     if herdr agent prompt "$name" \
       "You are '$name' on an agent team. Read $TEAM_DIR/PROTOCOL.md and $(role_file "${S_ROLE[$i]}") now. Do not start any work yet. Reply with the single word READY." \
       --wait --timeout 180000 >/dev/null; then
@@ -578,6 +580,13 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
   lead_msg="You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1 by asking me what we are building."
   if grep -qE '^Status: *APPROVED' "$TEAM_DIR/SPEC.md" 2>/dev/null; then
     lead_msg="You are the lead of an agent team that is resuming after a restart; nobody remembers earlier work, it is all in files. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead), then $TEAM_DIR/SPEC.md (already approved), $TEAM_DIR/TASKS.md, the reports in $TEAM_DIR/reports/ and $TEAM_DIR/events.log. Tell me in a few lines where things stand and what you will do next, then continue Phase 3 from the current state: never redo merged tasks, and check git for work on task branches that TASKS.md does not show yet."
+  fi
+  local k; for ((k = 0; k < n; k++)); do [ "${S_NAME[$k]}" = "$LEAD" ] && break; done
+  if loads_role "${S_KIND[$k]}"; then
+    # the role is in the lead's system prompt: one short line to start it
+    lead_msg="Start: ask me what we are building."
+    grep -qE '^Status: *APPROVED' "$TEAM_DIR/SPEC.md" 2>/dev/null \
+      && lead_msg="Resume after a restart: read SPEC.md (approved), TASKS.md, reports/ and events.log, tell me where things stand, then continue Phase 3."
   fi
   if herdr agent prompt "$LEAD" "$lead_msg" >/dev/null; then
     say "  briefed $LEAD"; mark_briefed "$LEAD"
@@ -714,6 +723,23 @@ explain_stuck() { # <name> <pane>
   esac
 }
 
+# Agents whose CLI can load a system prompt at start: their role is loaded
+# there (survives /clear and /new, nothing typed into the pane, no READY
+# round trip). Others are briefed with a typed message.
+loads_role() { case "$1" in claude|codex) return 0 ;; *) return 1 ;; esac; }
+
+write_seat_file() { # <index> -> path of .team/seats/<seat>.md
+  local i=$1 f="$TEAM_DIR/seats/${S_NAME[$1]}.md"
+  mkdir -p "$TEAM_DIR/seats"
+  {
+    printf '# You are seat `%s` (role: %s) on an agent team\n\n' "${S_NAME[$i]}" "${S_ROLE[$i]}"
+    printf 'This is loaded at start and stays across context clears. Team directory: %s\n\n' "$TEAM_DIR"
+    cat "$TEAM_DIR/PROTOCOL.md"; printf '\n\n'
+    cat "$(role_file "${S_ROLE[$i]}")"
+  } >"$f"
+  echo "$f"
+}
+
 START_FAILED=0
 STUCK_ON_TRUST=0
 TRUST_WAIT=" "  # agent kinds held back until one trust dialog is answered
@@ -733,6 +759,12 @@ start_seat() { # <index> <pane>
   # …and the repository's git directory: a worktree's commits and merges write
   # there, outside the worktree, so without it every commit asks first.
   case "$kind" in claude|codex) agent_args+=(--add-dir "$TEAM_DIR" --add-dir "$GIT_COMMON") ;; esac
+  # the seat's identity, protocol and role as a system prompt
+  if loads_role "$kind"; then
+    local seat_file; seat_file=$(write_seat_file "$i")
+    if [ "$kind" = claude ]; then agent_args+=(--append-system-prompt-file "$seat_file")
+    else agent_args+=(-c "developer_instructions=$(jq -Rs . <"$seat_file")"); fi
+  fi
   # Codex rejects --add-dir under its read-only default (an untrusted folder)
   # and exits; workspace-write is its normal mode in a trusted project.
   if [ "$kind" = codex ]; then

@@ -63,11 +63,16 @@ export HERDR_ENV=1
 reset_log
 check "up starts the default team" "$squad" up
 check "six agents started" test "$(grep -c '^herdr agent start' "$MOCK_LOG")" = 6
-check "lead runs codex with the Sol model" log_has "agent start lead --kind codex --pane w2:p1 --timeout 90000 -- -m gpt-6.1-sol --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git -s workspace-write"
-check "claude seats get write access to .team" log_has "agent start dev-a --kind claude --pane w2:p3 --timeout 90000 -- --model claude-opus-5-5 --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git"
+check "lead runs codex with the Sol model" log_has "agent start lead --kind codex --pane w2:p1 --timeout 90000 -- -m gpt-6.1-sol --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git -c developer_instructions="
+check "codex seats get their role as developer_instructions" grep -qE '^herdr agent start lead .* -c developer_instructions="# You are seat `lead`' "$MOCK_LOG"
+check "codex seats run in workspace-write" grep -qE '^herdr agent start lead .* -s workspace-write sock=' "$MOCK_LOG"
+check "claude seats get write access to .team" log_has "agent start dev-a --kind claude --pane w2:p3 --timeout 90000 -- --model claude-opus-5-5 --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git --append-system-prompt-file $tmp/proj/.team/seats/dev-a.md"
 check "dev-a runs in its own worktree" log_has "--cwd $tmp/proj-team/dev-a"
 check "reviewers share the integration worktree" test "$(grep -c "pane split.*--cwd $tmp/proj-team/integration" "$MOCK_LOG")" = 2
-check "every seat is briefed" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 6
+check "no typed briefing for seats that load their role" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 1
+check "only the lead gets a start line" log_has "agent prompt lead Start: ask me what we are building."
+check "every seat is marked briefed" sh -c "for s in lead dev-a dev-b rev-sol rev-claude tester; do test -f .team/.briefed/\$s || exit 1; done"
+check "a seat file holds its name, protocol and role" sh -c "grep -q 'You are seat .dev-a. (role: dev)' .team/seats/dev-a.md && grep -q 'Team protocol' .team/seats/dev-a.md && grep -q 'Role: dev' .team/seats/dev-a.md"
 check "the lead is briefed last" sh -c "tail -1 '$MOCK_LOG' | grep -q 'agent prompt lead'"
 check "worktrees were created" test "$(git worktree list | wc -l | tr -d ' ')" = 5
 check "integration branch exists" git show-ref --verify --quiet refs/heads/team/integration
@@ -85,14 +90,14 @@ check "resume creates no new workspace" refuses log_has "workspace create"
 check "resume keeps the running lead" refuses log_has "agent start lead"
 check "resume adopts the unnamed agent in its seat's pane" log_has "agent rename w2:p4 rev-sol"
 check "resume starts only the missing seats" test "$(grep -c '^herdr agent start' "$MOCK_LOG")" = 4
-check "resume briefs only started and adopted seats" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 5
+check "resume types nothing to seats that load their role" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 0
 check "resume does not re-brief the lead" refuses log_has "agent prompt lead"
 
 # a seat that runs but was never briefed (its first run stopped early) gets briefed
 reset_log; rm -f .team/.briefed/dev-a
 agents2='{"result":{"agents":[{"name":"lead","pane_id":"w2:p1","workspace_id":"w2","agent":"codex"},{"name":"dev-a","pane_id":"w2:p2","workspace_id":"w2","agent":"claude"}]}}'
 check "up on a running team succeeds" env MOCK_WS="$ws" MOCK_PANES="$panes" MOCK_AGENTS="$agents2" "$squad" up
-check "a running seat that was never briefed gets briefed" log_has "agent prompt dev-a"
+check "a running seat that was never briefed gets marked briefed" test -f .team/.briefed/dev-a
 check "a running seat that was briefed is left alone" refuses log_has "agent prompt lead"
 
 # agents get literal values, not environment variables (Codex runs commands
@@ -171,7 +176,7 @@ check "a seat on a still-starting shell is retried, not failed" env MOCK_BUSY=3 
 check "the busy seat was retried until it started" test "$(grep -c '^herdr agent start lead ' "$MOCK_LOG")" = 4
 check "brief alone works" "$squad" brief
 reset_log; cp .team/SPEC.md "$tmp/spec.bak"; sed -i.x 's/^Status:.*/Status: APPROVED/' .team/SPEC.md
-check "a lead with an approved spec resumes instead of starting over" sh -c "'$squad' brief >/dev/null && grep -q 'agent prompt lead You are the lead of an agent team that is resuming' '$MOCK_LOG' && ! grep -q 'begin Phase 1' '$MOCK_LOG'"
+check "a lead with an approved spec resumes instead of starting over" sh -c "'$squad' brief >/dev/null && grep -q 'agent prompt lead Resume after a restart' '$MOCK_LOG' && ! grep -q 'ask me what we are building' '$MOCK_LOG'"
 cp "$tmp/spec.bak" .team/SPEC.md; rm -f .team/SPEC.md.x
 check "status prints the task table" sh -c "'$squad' status | grep -q 'T-001'"
 check "status shows each seat's agent state" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"working\"}]}}' '$squad' status | grep -qE 'dev-a +working'"
@@ -202,6 +207,7 @@ check "new accepts the opencode preset" "$squad" new proj2 --preset opencode
 cd proj2; reset_log
 check "up starts the opencode team" "$squad" up
 check "opencode seat starts with no extra arguments" grep -qE '^herdr agent start dev-c --kind opencode --pane [^ ]+ --timeout 90000 sock=[^ ]*$' "$MOCK_LOG"
+check "opencode (no system-prompt flag) still gets a typed briefing" grep -q "^herdr agent prompt dev-c You are 'dev-c' on an agent team" "$MOCK_LOG"
 check "roster pairs rev-claude with dev-b and dev-c" grep -qF 'dev-b,dev-c' .team/ROSTER.md
 check "roster gives opencode its clear command" sh -c "grep 'dev-c' .team/ROSTER.md | grep -qF '/new'"
 
