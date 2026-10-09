@@ -170,6 +170,9 @@ reset_log; rm -f "$tmp/busy"
 check "a seat on a still-starting shell is retried, not failed" env MOCK_BUSY=3 "$squad" up
 check "the busy seat was retried until it started" test "$(grep -c '^herdr agent start lead ' "$MOCK_LOG")" = 4
 check "brief alone works" "$squad" brief
+reset_log; cp .team/SPEC.md "$tmp/spec.bak"; sed -i.x 's/^Status:.*/Status: APPROVED/' .team/SPEC.md
+check "a lead with an approved spec resumes instead of starting over" sh -c "'$squad' brief >/dev/null && grep -q 'agent prompt lead You are the lead of an agent team that is resuming' '$MOCK_LOG' && ! grep -q 'begin Phase 1' '$MOCK_LOG'"
+cp "$tmp/spec.bak" .team/SPEC.md; rm -f .team/SPEC.md.x
 check "status prints the task table" sh -c "'$squad' status | grep -q 'T-001'"
 check "status shows each seat's agent state" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"working\"}]}}' '$squad' status | grep -qE 'dev-a +working'"
 check "status marks seats without an agent" sh -c "'$squad' status | grep -qE 'tester +not running'"
