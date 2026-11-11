@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.7.0"
+VERSION="0.8.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -15,7 +15,7 @@ while [ -L "$self" ]; do
 done
 SQUAD_HOME=$(cd -P "$(dirname "$self")/.." && pwd)
 TEMPLATES="$SQUAD_HOME/templates"
-PRESETS="$SQUAD_HOME/presets"
+PRESETS="${SQUAD_PRESETS:-$SQUAD_HOME/presets}"  # SQUAD_PRESETS: another preset folder (tests)
 USER_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/squad/team.conf"
 
 die()  { printf 'squad: %s\n' "$*" >&2; exit 1; }
@@ -30,17 +30,17 @@ Usage:
   squad new <dir> [--preset NAME]   create a new project with git and a team
   squad init [--preset NAME]        add a team to the current repository
   squad up                          start the team (run inside herdr)
-  squad brief                       re-send the role briefing to a running team
+  squad brief                       start the lead again (and brief seats that need it)
   squad status                      show seats, agent states and the task table
   squad down                        stop the team (close its herdr workspace)
   squad clean                       remove the team's worktrees (clean ones only)
   squad config [--preset NAME]      create or show your personal default team
   squad doctor                      check that everything needed is installed
   squad presets                     list the built-in team presets
-  squad permissions                 let Codex run 'squad herdr' in every project
+  squad permissions                 once per machine: Claude's usage status line
   squad herdr <args>                herdr, bound to this team's session (used by agents)
-  squad watch                       live strip: plan usage, tasks, seats (runs in the team tab)
-  squad usage                       one line of plan usage per vendor (Claude, Codex)
+  squad watch                       live board: plan usage, progress, tasks, seats (runs in the team tab)
+  squad usage                       one line of plan usage
   squad statusline                  Claude Code status line: shows and records Claude's usage
   squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
   squad git <args>                  git writes for agents (switch/add/commit/merge...; no push/force/delete)
@@ -71,6 +71,7 @@ find_repo() {
 S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=()
 TEAM_BASE="team/integration"
 SETUP_CMD=""
+REVIEW_ROUNDS=5
 LEAD=""
 
 load_conf() {
@@ -85,6 +86,8 @@ load_conf() {
       "") continue ;;
       base)  [ -n "$rest" ] && TEAM_BASE=$rest ;;
       setup) SETUP_CMD=$rest ;;
+      rounds) [[ "$rest" =~ ^[1-9][0-9]?$ ]] || die "team.conf line $line_no: 'rounds' needs a number from 1 to 99."
+              REVIEW_ROUNDS=$rest ;;
       seat)
         read -r name kind role reviews rest <<<"$rest" || true
         [ -n "${role:-}" ] || die "team.conf line $line_no: expected 'seat <name> <agent> <role> <reviews> [args]'."
@@ -203,6 +206,7 @@ render() { # <template> <dest>
   text=$(cat "$1"; echo x); text=${text%x}
   text=${text//"\$TEAM_DIR"/"$TEAM_DIR"}
   text=${text//"\$TEAM_BASE"/"$TEAM_BASE"}
+  text=${text//"\$REVIEW_ROUNDS"/"$REVIEW_ROUNDS"}
   text=${text//"herdr agent "/"$herdr_bin agent "}
   text=${text//"squad done "/"$SQUAD_HOME/bin/squad done "}
   local git_bin="$SQUAD_HOME/bin/squad git" sub
@@ -214,8 +218,9 @@ render() { # <template> <dest>
 
 render_team_files() {
   local f
-  mkdir -p "$TEAM_DIR/roles"
+  mkdir -p "$TEAM_DIR/roles" "$TEAM_DIR/tasks"
   render "$TEMPLATES/PROTOCOL.md" "$TEAM_DIR/PROTOCOL.md"
+  render "$TEMPLATES/TASK.md" "$TEAM_DIR/tasks/_TEMPLATE.md"
   for f in "$TEMPLATES"/roles/*.md; do render "$f" "$TEAM_DIR/roles/$(basename "$f")"; done
 }
 
@@ -263,11 +268,14 @@ bar() {
   printf '%s %3s%%' "$out" "$pct"
 }
 
-usage_line() { # one line for every vendor with data
+usage_line() { # one line: Claude always, another vendor only when it has data
   local name json line="" r5 when
   for name in Claude Codex; do
     if [ "$name" = Claude ]; then json=$(usage_claude); else json=$(usage_codex); fi
-    [ -n "$json" ] || { line="$line$name —   "; continue; }
+    if [ -z "$json" ]; then
+      [ "$name" = Claude ] && line="$line$name —   "
+      continue
+    fi
     line="$line$name 5h $(bar "$(jq -r .p5 <<<"$json")" "$(jq -r .r5 <<<"$json")") 7d $(bar "$(jq -r .p7 <<<"$json")" "$(jq -r .r7 <<<"$json")")"
     # nearly used up: when does it come back?
     r5=$(jq -r --argjson now "$(date +%s)" 'if (.p5 // 0) >= 80 and (.r5 // 0) > $now then .r5 else empty end' <<<"$json")
@@ -300,22 +308,52 @@ cmd_statusline() {
   fi
 }
 
-# squad watch — the live strip in the team tab: usage per vendor, each task's
-# state, each seat's state and the last event. Refreshes every 20 s.
+# squad watch — the live board in the team tab, refreshed every 20 s:
+#   plan usage · progress of the whole goal · every task with its state and
+#   owner · every seat's state and the last event.
+# Colour only on a terminal (and never with NO_COLOR), so --once stays plain.
 watch_once() {
-  local agents_json tasks states="" i n state ev mark
+  local agents_json states="" i n state ev mark color=0
+  [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && color=1
   agents_json=$(herdr_team agent list 2>/dev/null) || agents_json='{"result":{"agents":[]}}'
   n=$(seat_count)
   for ((i = 0; i < n; i++)); do
     state=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_status][0] // "off"' <<<"$agents_json")
     case "$state" in working) mark="●" ;; blocked) mark="!" ;; idle|done) mark="○" ;; *) mark="·" ;; esac
+    if [ "$color" = 1 ]; then
+      case "$state" in working) mark=$'\033[36m●\033[0m' ;; blocked) mark=$'\033[1;31m!\033[0m' ;; esac
+    fi
     states="$states${S_NAME[$i]} $mark  "
   done
-  tasks=$(awk -F'|' '/^\| *T-[0-9]/ {gsub(/^ +| +$/, "", $2); gsub(/^ +| +$/, "", $4); gsub(/^ +| +$/, "", $5); printf "%s %s %s · ", $2, $4, $5}' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
   ev=$(tail -1 "$TEAM_DIR/events.log" 2>/dev/null || true)  # no events yet on a fresh team
   printf '\033[H\033[2J'
   printf ' %s\n' "$(usage_line)"
-  printf ' %s\n' "${tasks% · }"
+  # the status table of TASKS.md: | ID | Title | Owner | Status | Depends on |
+  awk -F'|' -v color="$color" '
+    function trim(x) { gsub(/^ +| +$/, "", x); return x }
+    function paint(code, text) { return color == 1 ? "\033[" code "m" text "\033[0m" : text }
+    /^\| *T-[0-9]/ {
+      id = trim($2); owner = trim($4); st = trim($5); total++
+      if (st == "merged")            { merged++;  chip = paint("32", "✔ " id) }
+      else if (st ~ /^review/)       { review++;  chip = paint("35", "◆ " id " " st " " owner) }
+      else if (st == "test")         { test++;    chip = paint("34", "▲ " id " test " owner) }
+      else if (st == "dev")          { dev++;     chip = paint("36", "● " id " dev " owner) }
+      else if (st == "blocked")      { blocked++; chip = paint("1;31", "! " id " blocked " owner) }
+      else                           { todo++;    chip = paint("2", "○ " id) }
+      chips = chips (chips == "" ? "" : "   ") chip
+    }
+    END {
+      if (total == 0) { print " no tasks yet"; exit }
+      cells = int(merged * 20 / total); bar = ""
+      for (k = 0; k < 20; k++) bar = bar (k < cells ? "▓" : "░")
+      printf " %s %d/%d merged", paint("32", bar), merged, total
+      if (review)  printf " · review %d", review
+      if (test)    printf " · test %d", test
+      if (dev)     printf " · dev %d", dev
+      if (todo)    printf " · todo %d", todo
+      if (blocked) printf " · %s", paint("1;31", "blocked " blocked)
+      printf "\n %s\n", chips
+    }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true
   printf ' %s%s\n' "$states" "${ev:+  last: $ev}"
 }
 
@@ -381,14 +419,18 @@ cmd_git() {
   exec git "$@"
 }
 
-# squad permissions — one-time machine setup: Codex rules so 'squad herdr',
-# 'squad git' and 'squad done' never ask, and Claude Code's status line set to
-# 'squad statusline' (plan usage) unless you already have one.
+# squad permissions — one-time machine setup: Claude Code's status line set to
+# 'squad statusline' (plan usage) unless you already have one. On a machine
+# with Codex it also adds the rules so 'squad herdr', 'squad git' and
+# 'squad done' never ask.
 cmd_permissions() {
   local rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
   local sub rule
-  mkdir -p "$(dirname "$rules")"
+  # Codex rules only on a machine that has Codex (a team may still seat it)
+  command -v codex >/dev/null 2>&1 || rules=""
+  [ -z "$rules" ] || mkdir -p "$(dirname "$rules")"
   for sub in herdr git "done"; do
+    [ -n "$rules" ] || break
     rule="prefix_rule(pattern=[\"$SQUAD_HOME/bin/squad\", \"$sub\"], decision=\"allow\")"
     if grep -qxF "$rule" "$rules" 2>/dev/null; then say "ok       Codex may run 'squad $sub' ($rules)"; continue; fi
     printf '%s\n' "$rule" >>"$rules"
@@ -434,7 +476,7 @@ cmd_init() {
   elif [ -f "$USER_CONF" ]; then conf_src=$USER_CONF
   else conf_src=$(preset_path default); fi
 
-  mkdir -p "$TEAM_DIR/roles" "$TEAM_DIR/reports"
+  mkdir -p "$TEAM_DIR/roles" "$TEAM_DIR/reports" "$TEAM_DIR/tasks"
   say "Setting up $TEAM_DIR"
   local new_conf=0; [ -e "$TEAM_DIR/team.conf" ] || new_conf=1
   copy_if_missing "$conf_src" "$TEAM_DIR/team.conf"
@@ -448,6 +490,8 @@ cmd_init() {
   fi
   copy_if_missing "$TEMPLATES/SPEC.md" "$TEAM_DIR/SPEC.md"
   copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
+  copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
+  copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
 
   # Keep team files out of commits without touching the tracked .gitignore.
   local exclude; exclude="$(cd "$REPO" && git rev-parse --git-common-dir)/info/exclude"
@@ -458,11 +502,11 @@ cmd_init() {
   load_conf
   # Protocol and roles belong to the tool: refresh them so upgrades take effect.
   render_team_files
-  say "  updated  .team/PROTOCOL.md and .team/roles/"
+  say "  updated  .team/PROTOCOL.md, .team/roles/ and .team/tasks/_TEMPLATE.md"
   write_roster
   say ""
   say "Team of $(seat_count) seats defined in .team/team.conf (from ${conf_src/#$HOME/~})."
-  say "Next: start herdr in this repository and run 'squad up'."
+  say "Next: write your goal in .team/GOAL.md, start herdr in this repository and run 'squad up'."
 }
 
 cmd_new() {
@@ -577,14 +621,14 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
   # A restarted team (approved spec on disk) resumes from the files instead of
   # starting over: agents have no memory, everything is in .team/ and git.
   local lead_msg
-  lead_msg="You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1 by asking me what we are building."
+  lead_msg="You are the lead of an agent team. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead) now, then begin Phase 1: read $TEAM_DIR/GOAL.md (ask me for the goal only if it is empty), write the spec and continue without waiting for me."
   if grep -qE '^Status: *APPROVED' "$TEAM_DIR/SPEC.md" 2>/dev/null; then
     lead_msg="You are the lead of an agent team that is resuming after a restart; nobody remembers earlier work, it is all in files. Read $TEAM_DIR/PROTOCOL.md, $TEAM_DIR/ROSTER.md and $(role_file lead), then $TEAM_DIR/SPEC.md (already approved), $TEAM_DIR/TASKS.md, the reports in $TEAM_DIR/reports/ and $TEAM_DIR/events.log. Tell me in a few lines where things stand and what you will do next, then continue Phase 3 from the current state: never redo merged tasks, and check git for work on task branches that TASKS.md does not show yet."
   fi
   local k; for ((k = 0; k < n; k++)); do [ "${S_NAME[$k]}" = "$LEAD" ] && break; done
   if loads_role "${S_KIND[$k]}"; then
     # the role is in the lead's system prompt: one short line to start it
-    lead_msg="Start: ask me what we are building."
+    lead_msg="Start: read GOAL.md (ask me for the goal only if it is empty), write the spec, then run the team until everything is green."
     grep -qE '^Status: *APPROVED' "$TEAM_DIR/SPEC.md" 2>/dev/null \
       && lead_msg="Resume after a restart: read SPEC.md (approved), TASKS.md, reports/ and events.log, tell me where things stand, then continue Phase 3."
   fi
@@ -653,8 +697,8 @@ make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
     if [ "${width:-0}" -ge 220 ]; then mode=mission; elif [ "${width:-0}" -lt 120 ]; then mode=focus; else mode="talk"; fi
   fi
   herdr tab rename "$tab" team >/dev/null 2>&1 || true
-  # live strip: 4 rows at the bottom of the first tab
-  ratio=$(awk -v h="${height:-40}" 'BEGIN { r = 1 - 5 / h; if (r < 0.75) r = 0.75; if (r > 0.95) r = 0.95; printf "%.3f", r }')
+  # live board: 5 rows at the bottom of the first tab
+  ratio=$(awk -v h="${height:-40}" 'BEGIN { r = 1 - 6 / h; if (r < 0.75) r = 0.75; if (r > 0.95) r = 0.95; printf "%.3f", r }')
   strip=$(split "$root" down "$WT_ROOT/integration" "$ratio")
   herdr pane rename "$strip" watch >/dev/null 2>&1 || true
   herdr pane run "$strip" "$SQUAD_HOME/bin/squad watch" >/dev/null
@@ -759,6 +803,8 @@ start_seat() { # <index> <pane>
   # …and the repository's git directory: a worktree's commits and merges write
   # there, outside the worktree, so without it every commit asks first.
   case "$kind" in claude|codex) agent_args+=(--add-dir "$TEAM_DIR" --add-dir "$GIT_COMMON") ;; esac
+  # the lead reviews each task where it was built: the devs' worktrees
+  if [ "${S_ROLE[$i]}" = lead ] && [ "$kind" = claude ]; then agent_args+=(--add-dir "$WT_ROOT"); fi
   # the seat's identity, protocol and role as a system prompt
   if loads_role "$kind"; then
     local seat_file; seat_file=$(write_seat_file "$i")
@@ -896,8 +942,9 @@ cmd_up() {
   fi
 
   say ""
-  say "Team is up. Go to the '$LEAD' pane and say what you want built."
-  say "It writes .team/SPEC.md and waits for your approval before anyone writes code."
+  say "Team is up. The '$LEAD' pane reads .team/GOAL.md (or asks you for the goal once),"
+  say "writes the spec, runs the team and reviews every task. It calls you when"
+  say ".team/READY.md says everything is green."
 }
 
 # ---- status / clean ----------------------------------------------------------

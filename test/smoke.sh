@@ -41,6 +41,9 @@ export PATH="$tmp/bin:$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config
 # never touch the real caches/configs: shells often export these explicitly
 export XDG_CACHE_HOME="$tmp/home/.cache" CODEX_HOME="$tmp/home/.codex"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+# The engine tests run on mixed teams (several agent kinds, reviewer seats):
+# they live in test/fixtures/presets. The shipped presets are tested at the end.
+export SQUAD_PRESETS="$here/fixtures/presets"
 unset HERDR_ENV
 
 pass=0; fail=0
@@ -70,7 +73,7 @@ check "claude seats get write access to .team" log_has "agent start dev-a --kind
 check "dev-a runs in its own worktree" log_has "--cwd $tmp/proj-team/dev-a"
 check "reviewers share the integration worktree" test "$(grep -c "pane split.*--cwd $tmp/proj-team/integration" "$MOCK_LOG")" = 2
 check "no typed briefing for seats that load their role" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 1
-check "only the lead gets a start line" log_has "agent prompt lead Start: ask me what we are building."
+check "only the lead gets a start line" log_has "agent prompt lead Start: read GOAL.md (ask me for the goal only if it is empty), write the spec, then run the team until everything is green."
 check "every seat is marked briefed" sh -c "for s in lead dev-a dev-b rev-sol rev-claude tester; do test -f .team/.briefed/\$s || exit 1; done"
 check "a seat file holds its name, protocol and role" sh -c "grep -q 'You are seat .dev-a. (role: dev)' .team/seats/dev-a.md && grep -q 'Team protocol' .team/seats/dev-a.md && grep -q 'Role: dev' .team/seats/dev-a.md"
 check "the lead is briefed last" sh -c "tail -1 '$MOCK_LOG' | grep -q 'agent prompt lead'"
@@ -199,7 +202,7 @@ mkdir -p "$tmp/pnpmrepo" && (cd "$tmp/pnpmrepo" && git init -q && touch pnpm-loc
 # capture first: 'squad … | grep -q' would kill squad mid-write once grep matches
 check "init detects the install command from the lockfile" sh -c "cd '$tmp/pnpmrepo' && out=\$('$squad' init) && echo \"\$out\" | grep -q 'pnpm install --frozen-lockfile'"
 check "init finishes writing every team file" test -f "$tmp/pnpmrepo/.team/TASKS.md" -a -f "$tmp/pnpmrepo/.team/PROTOCOL.md" -a -f "$tmp/pnpmrepo/.team/ROSTER.md"
-check "watch works on a fresh team with no events yet" sh -c "cd '$tmp/pnpmrepo' && '$squad' watch --once | grep -q 'Codex'"
+check "watch works on a fresh team with no events yet" sh -c "cd '$tmp/pnpmrepo' && '$squad' watch --once | grep -q 'Claude'"
 check "the detected command lands in team.conf" grep -qx 'setup pnpm install --frozen-lockfile' "$tmp/pnpmrepo/.team/team.conf"
 check "init keeps a team.conf it did not create" sh -c "cd '$tmp/pnpmrepo' && '$squad' init | grep -q 'kept'"
 
@@ -223,6 +226,44 @@ check "a reviewer of an unknown dev is rejected" refuses "$squad" status
 printf 'seat Lead codex lead -\n' >.team/team.conf
 check "an invalid seat name is rejected" refuses "$squad" status
 check "init keeps an existing team.conf" sh -c "'$squad' init 2>&1 | grep -q 'kept     .team/team.conf'"
+
+# ---- the shipped presets: one Claude lead that plans and reviews, Claude devs, a cheap tester
+unset SQUAD_PRESETS
+rm -f "$XDG_CONFIG_HOME/squad/team.conf"
+shipped="$here/../presets"
+check "the shipped presets use Claude only" refuses grep -qE '^seat +[a-z0-9_-]+ +(codex|opencode|gemini|cursor) ' "$shipped"/default.conf "$shipped"/small.conf "$shipped"/large.conf
+check "every shipped preset has one lead and a tester, and no reviewer seat" sh -c "for f in '$shipped'/*.conf; do test \"\$(grep -cE '^seat .* lead ' \$f)\" = 1 && grep -qE '^seat .* tester ' \$f && ! grep -qE '^seat .* reviewer ' \$f || exit 1; done"
+cd "$tmp"
+check "new creates a project with the shipped default team" "$squad" new proj4
+cd proj4; reset_log
+check "init creates the goal, the decisions log and the task template" test -f .team/GOAL.md -a -f .team/DECISIONS.md -a -f .team/tasks/_TEMPLATE.md
+check "up starts the shipped team" "$squad" up
+check "the lead runs the strongest model and may read the devs' worktrees" grep -qE "^herdr agent start lead --kind claude .* -- --model claude-fable-5-2 --add-dir $tmp/proj4/.team --add-dir [^ ]+ --add-dir $tmp/proj4-team " "$MOCK_LOG"
+check "devs run at medium effort" grep -qE '^herdr agent start dev-a --kind claude .* -- --model claude-opus-5-5 --effort medium ' "$MOCK_LOG"
+check "devs get no access to other worktrees" refuses grep -qE "^herdr agent start dev-a .* --add-dir $tmp/proj4-team " "$MOCK_LOG"
+check "the tester is the cheap seat" grep -qE '^herdr agent start tester --kind claude .* -- --model claude-sonnet-5-5 --effort low ' "$MOCK_LOG"
+check "five seats start, none of another vendor" sh -c "test \"\$(grep -c '^herdr agent start' '$MOCK_LOG')\" = 5 && ! grep -qE '^herdr agent start [^ ]+ --kind (codex|opencode)' '$MOCK_LOG'"
+check "the protocol states the review rounds" grep -qF 'Review rounds before a task goes to the human: 5.' .team/PROTOCOL.md
+check "the lead role reviews every task itself" grep -qF 'You review every task. Nothing is skipped' .team/roles/lead.md
+check "the task template holds the acceptance table" grep -qF '| # | Requirement | How to check it |' .team/tasks/_TEMPLATE.md
+sed -i.bak 's/^rounds .*/rounds 3/' .team/team.conf && rm -f .team/team.conf.bak
+check "rounds in team.conf reaches the role files" sh -c "'$squad' init >/dev/null && grep -qF 'up to 3 rounds' .team/roles/lead.md"
+sed -i.bak 's/^rounds .*/rounds many/' .team/team.conf && rm -f .team/team.conf.bak
+check "an invalid rounds value is rejected" refuses "$squad" status
+sed -i.bak 's/^rounds .*/rounds 5/' .team/team.conf && rm -f .team/team.conf.bak
+cat >.team/TASKS.md <<'TASKS'
+| ID | Title | Owner | Status | Depends on |
+|---|---|---|---|---|
+| T-001 | a | dev-a | merged | - |
+| T-002 | b | dev-b | review-2 | - |
+| T-003 | c | dev-c | dev | T-001 |
+| T-004 | d | dev-a | todo | T-002 |
+TASKS
+board=$("$squad" watch --once)
+check "the board shows the progress of the goal" sh -c "printf '%s' \"\$1\" | grep -qF '1/4 merged · review 1 · dev 1 · todo 1'" _ "$board"
+check "the board shows each task with its state and owner" sh -c "printf '%s' \"\$1\" | grep -qF '◆ T-002 review-2 dev-b' && printf '%s' \"\$1\" | grep -qF '● T-003 dev dev-c' && printf '%s' \"\$1\" | grep -qF '✔ T-001'" _ "$board"
+check "the board is plain text when it is not a terminal" sh -c "! printf '%s' \"\$1\" | grep -q '\[3[0-9]m'" _ "$board"
+check "usage shows no other vendor without data" sh -c "! '$squad' usage | grep -q Codex"
 
 echo
 echo "$pass passed, $fail failed"
