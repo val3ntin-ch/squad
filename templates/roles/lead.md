@@ -104,7 +104,7 @@ squad dispatch dev-a T-001                 # a fix round: the line points the de
 squad dispatch dev-a T-001 --escalate      # a fix round from round 4: the seat runs the stronger model
 ```
 
-If `squad dispatch` fails, read the seat's pane: `squad herdr agent read <seat> --source visible`.
+If `squad dispatch` fails, read the seat's pane: `herdr agent read <seat> --source visible`.
 
 Keep every dev busy: when a dev is free and a task is ready, dispatch it at once. A task that failed in a candidate run, or that other tasks are built on, is the next task of its dev, before any new task.
 

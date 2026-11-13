@@ -16,7 +16,7 @@ echo "herdr $* sock=${HERDR_SOCKET_PATH:-}" >>"$MOCK_LOG"
 nf="$(dirname "$MOCK_LOG")/n"; n=$(cat "$nf" 2>/dev/null || echo 1)
 case "$1 $2" in
   "workspace create") echo '{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"}}}' ;;
-  "pane layout") echo "{\"result\":{\"layout\":{\"area\":{\"width\":${MOCK_WIDTH:-160},\"height\":40}}}}" ;;
+  "pane layout") echo "{\"result\":{\"layout\":{\"area\":{\"width\":${MOCK_WIDTH:-160},\"height\":${MOCK_HEIGHT:-40}}}}}" ;;
   "tab create") n=$((n + 1)); echo "$n" >"$nf"; echo "{\"result\":{\"root_pane\":{\"pane_id\":\"w2:p$n\"}}}" ;;
   "pane split") n=$((n + 1)); echo "$n" >"$nf"; echo "{\"result\":{\"pane\":{\"pane_id\":\"w2:p$n\"}}}" ;;
   # JSON shaped like herdr 0.9.3; set MOCK_AGENTS / MOCK_WS / MOCK_PANES to override
@@ -35,6 +35,8 @@ case "$1 $2" in
   "pane read") echo "${MOCK_PANE_TEXT:-}" ;;
   "agent start")
     if [ "$3" = "${MOCK_FAIL:-}" ]; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
+    # MOCK_FAIL_RESUME=1: the agent refuses an old conversation
+    if [ "${MOCK_FAIL_RESUME:-}" = 1 ] && case " $* " in *" --resume "*|*" -- resume "*) true ;; *) false ;; esac; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
     # MOCK_BUSY=N: the first N starts answer like a shell that is still starting
     bf="$(dirname "$MOCK_LOG")/busy"; b=$(cat "$bf" 2>/dev/null || echo 0)
     if [ "$b" -lt "${MOCK_BUSY:-0}" ]; then echo $((b + 1)) >"$bf"
@@ -288,12 +290,25 @@ sleep 0.5
 wait
 check "heavy runs one command at a time, in arrival order" test "$(tr -d '\n' <"$tmp/order")" = AB
 check "heavy logs start and end with the seat and the task" sh -c "grep -qE ' dev-a T-1 HEAVY_START ' .team/events.log && grep -qE ' dev-a T-1 HEAVY_END rc=0 ' .team/events.log"
-check "the lock names its owner while it runs" sh -c "'$squad' heavy tester T-3 -- sh -c 'cat .team/heavy/lock/owner' | grep -qE '^tester [0-9]+ [0-9]+ sh -c'"
-check "the lock is free after a run" test ! -d .team/heavy/lock
-mkdir -p .team/heavy/lock && echo "dev-c 999999 $(date +%s) pnpm test" >.team/heavy/lock/owner
+check "the lock names its owner while it runs" sh -c "'$squad' heavy tester T-3 -- sh -c 'readlink .team/heavy/lock; cat .team/heavy/lock.cmd' | tr '\n' ' ' | grep -qE '^tester:[0-9]+:[0-9]+ sh -c'"
+check "the lock is free after a run" test ! -L .team/heavy/lock
+ln -s "dev-c:999999:$(date +%s)" .team/heavy/lock
 check "a lock whose owner process is gone is cleared" "$squad" heavy dev-a T-4 -- true
 check "the cleared lock is in the events" ev 'dev-c - HEAVY_STALE'
-check "a run over the time limit is stopped (exit 124) and frees the lock" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy dev-a T-5 -- sleep 20; test \$? = 124 && test ! -d .team/heavy/lock"
+check "a run over the time limit is stopped (exit 124) and frees the lock" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy dev-a T-5 -- sleep 20; test \$? = 124 && test ! -L .team/heavy/lock"
+# a stopped wrapper frees the lock only after its command is gone
+"$squad" heavy dev-a T-6 -- sh -c "sleep 30" >/dev/null 2>&1 & hp=$!
+sleep 1.5; kill -TERM "$hp"; wait "$hp" 2>/dev/null || true
+check "a stopped heavy run leaves no command behind and frees the lock" sh -c "! pgrep -f 'sleep 30' >/dev/null && test ! -L .team/heavy/lock"
+# callers in the same second keep their arrival order while the lock is held
+sleep 60 & holder=$!
+ln -s "tester:$holder:$(date +%s)" .team/heavy/lock; rm -f "$tmp/order"
+"$squad" heavy dev-a T-7 -- sh -c "echo A >>'$tmp/order'" >/dev/null 2>&1 & a=$!
+sleep 0.3
+"$squad" heavy dev-b T-8 -- sh -c "echo B >>'$tmp/order'" >/dev/null 2>&1 & b=$!
+sleep 1.5; kill "$holder"; wait "$holder" 2>/dev/null || true; wait "$a" "$b"
+check "the queue keeps arrival order within one second" test "$(tr -d '\n' <"$tmp/order")" = AB
+check "heavy refuses a task id with a slash or markup" refuses "$squad" heavy dev-a '../x' -- true
 check "heavy refuses an unknown seat" refuses "$squad" heavy nobody -- true
 check "heavy --status says the lock is free" sh -c "'$squad' heavy --status | grep -q 'lock: free'"
 
@@ -306,6 +321,10 @@ check "dispatch fails when the seat never starts, and logs it" sh -c "! MOCK_DYN
 check "dispatch refuses a dev task with no contract from the tester" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a T-101
 check "dispatch --contract goes to the tester only" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a T-101 --contract
 reset_log; rm -f "$tmp/state"
+printf 'RESULT: FAIL\n' >.team/reports/T-100-test.md; reset_log; rm -f "$tmp/state"
+check "a dev sent back after a tester FAIL gets the correction line" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-100 >/dev/null && grep -q 'agent prompt dev-a T-100 needs changes' '$MOCK_LOG'"
+rm -f .team/reports/T-100-test.md; reset_log; rm -f "$tmp/state"
+check "dispatch refuses a task id with markup" refuses env MOCK_DYNAMIC=1 "$squad" dispatch dev-a '<img>'
 check "dispatch --escalate runs the fix on the stronger model" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-100 --escalate >/dev/null && grep -q 'agent prompt dev-a /model claude-fable-5-2' '$MOCK_LOG'"
 reset_log; rm -f "$tmp/state"
 check "the next dispatch puts the seat back on its own model" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-100 >/dev/null && grep -q 'agent prompt dev-a /model claude-opus-5-5' '$MOCK_LOG'"
@@ -351,6 +370,15 @@ check "the lead hears which rows are not verified" grep -q 'not verified: rows 2
 check "BLOCKED always goes through" "$squad" "done" dev-a T-301 BLOCKED
 printf 'RESULT: PASS\nAcceptance:\n| # | Result | Value |\n|---|---|---|\n| 1 | pass | x |\n| 2 | FAIL | y |\n' >.team/reports/T-300-test.md
 check "done refuses the tester's PASS with a failed row" refuses "$squad" "done" tester T-300 PASS
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Value |\n|---|---|---|\n| 1 | pass | Acceptance test exited 0 |\n| 2 | **fail** | y |\n' >.team/reports/T-300-test.md
+check "a bold fail is still a fail" refuses "$squad" "done" tester T-300 PASS
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Value |\n|---|---|---|\n| 1 | pass | Acceptance test exited 0 |\n| 2 | looks fine | y |\n' >.team/reports/T-300-test.md
+check "a result that is none of the five words is refused" sh -c "! '$squad' done tester T-300 PASS 2>&1 | grep -q 'has no valid result' && exit 1 || exit 0"
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Value |\n|---|---|---|\n| 1 | pass | Acceptance test exited 0 |\n| 2 | `pass` | y |\n' >.team/reports/T-300-test.md
+check "evidence that says Acceptance keeps its row, and code-formatted pass counts" "$squad" "done" tester T-300 PASS
+check "done refuses a task id with markup" refuses "$squad" "done" dev-a '<script>' DONE
+reset_log
+check "a reviewer's done with no review file yet still reaches the lead" sh -c "'$squad' done rev-gpt T-302 CHANGES >/dev/null 2>&1; grep -q 'agent prompt lead \[squad\] rev-gpt finished T-302: CHANGES' '$MOCK_LOG' && grep -q ' rev-gpt T-302 CHANGES' .team/events.log"
 check "the tester's contract is logged" sh -c "printf 'CONTRACT\n' >.team/reports/T-300-contract.md && '$squad' done tester T-300 CONTRACT >/dev/null && grep -q ' tester T-300 CONTRACT report=T-300-contract.md' .team/events.log"
 check "the task template has dev check, consumers, outside breaks and red run" sh -c "for h in 'Dev check' 'Consumers to run' 'If a check outside your files breaks' 'Red run'; do grep -q \"## \$h\" .team/tasks/_TEMPLATE.md || exit 1; done"
 check "the protocol defines the five results" grep -qF '`inconclusive`' .team/PROTOCOL.md
@@ -375,6 +403,9 @@ MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null
 check "the lead is told only once" test "$(grep -c 'dev-a is stalled' "$MOCK_LOG")" = 1
 reset_log; rm -rf .team/observer/.alerted
 check "a sign-in error is named" sh -c "MOCK_DYNAMIC=1 MOCK_PANE_TEXT='API Error: 403 · Please run /login' '$squad' watch --once | grep -q 'dev-a ○ login'"
+reset_log; rm -rf .team/observer/.alerted
+check "a pane that only mentions /login is not a sign-in error" sh -c "MOCK_DYNAMIC=1 MOCK_PANE_TEXT='Added the /login route' '$squad' watch --once | grep -qv 'dev-a ○ login'"
+check "the watcher records each running seat's conversation from herdr" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"rev-gpt\",\"agent_status\":\"idle\",\"agent_session\":{\"value\":\"cdx-0001\"}}]}}' '$squad' watch --once >/dev/null && grep -qx cdx-0001 .team/seats/rev-gpt.session"
 reset_log; rm -f .team/observer/.last-pass .team/observer/.pass
 check "the watcher starts the observer's first pass" sh -c "MOCK_DYNAMIC=1 '$squad' watch --once --observe >/dev/null && grep -q 'agent prompt observer Observer pass 1 (first pass)' '$MOCK_LOG' && grep -q ' observer - OBSERVE pass=1' .team/events.log"
 reset_log
@@ -385,6 +416,8 @@ printf '# Now — pass 2\nLargest loss: 45 min\n' >.team/observer/NOW.md; echo 0
 check "a loss over 30 min gets a deep pass on the stronger model" sh -c "MOCK_DYNAMIC=1 '$squad' watch --once --observe >/dev/null; grep -q 'agent prompt observer /model claude-opus-5-5' '$MOCK_LOG' && grep -q 'deep pass' '$MOCK_LOG'"
 echo 0 >.team/observer/.last-pass; reset_log
 check "the pass after a deep pass is back on the observer's own model" sh -c "MOCK_DYNAMIC=1 '$squad' watch --once --observe >/dev/null; grep -q 'agent prompt observer /model claude-sonnet-5-5' '$MOCK_LOG'"
+printf '# Now\nLargest loss: 5 min (T-012, at 14:30)\n' >.team/observer/NOW.md; echo 0 >.team/observer/.last-pass; rm -f .team/observer/.deep-for; reset_log
+check "a small loss next to other numbers gets no deep pass" sh -c "MOCK_DYNAMIC=1 '$squad' watch --once --observe >/dev/null; ! grep -q 'agent prompt observer /model claude-opus' '$MOCK_LOG'"
 
 # 004 · consult and decisions
 cat >"$tmp/bin/codex" <<'CODEX'
@@ -397,6 +430,8 @@ check "consult runs GPT Sol read-only with web search and writes the file" sh -c
 check "consult passes the model, the effort and read-only" grep -qE '^codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium -s read-only --skip-git-repo-check -o [^ ]+/consult/1.md.tmp You are a senior engineer' "$MOCK_LOG"
 check "the consult prompt carries the question, the files and the source order" sh -c "grep -q '^Which contrast rule applies?' '$MOCK_LOG' && grep -q '^- src/a.css' '$MOCK_LOG' && grep -q 'W3C and WCAG' '$MOCK_LOG'"
 check "the consult file names the question and the answer" sh -c "grep -q 'Question: Which contrast rule applies?' .team/consult/1.md && grep -q 'w3.org' .team/consult/1.md"
+"$squad" consult 'first question' >/dev/null; "$squad" consult 'second question' >/dev/null; sleep 2
+check "two consults started together get their own numbers" sh -c "grep -q 'Question: first question' .team/consult/2.md && grep -q 'Question: second question' .team/consult/3.md"
 check "consult is in the events" sh -c "grep -q ' CONSULT n=1 Which contrast' .team/events.log && grep -q ' CONSULT_READY n=1' .team/events.log"
 cat >>.team/DECISIONS.md <<'DEC'
 
@@ -442,6 +477,13 @@ check "the timeline has the task's minutes: total 90, dev 30, test 25, review 8"
 check "the cost tab sums the seat minutes and the usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td></tr>' "$html"
 check "the QA tab counts the tester's FAIL" grep -qE '<tr><td>T-500</td><td>[a-z]+</td><td class=n>[0-9]+</td><td class=n>0</td><td class=n>1</td>' "$html"
 check "the page escapes HTML in the files" sh -c "printf '<script>x</script>\n' >>.team/observer/NOW.md; '$squad' report >/dev/null; ! grep -q '<script>x' '$html'"
+printf 'see http://x"onmouseover="alert(1) now\n' >>.team/observer/NOW.md
+printf '\n## D-9<b>x</b> · t\n- Status: final\n' >>.team/DECISIONS.md
+"$squad" report >/dev/null
+check "a quote in a link cannot add an attribute" refuses grep -q '" *onmouseover=' "$html"
+check "a decision id with markup is escaped" refuses grep -q 'D-9<b>' "$html"
+printf '## S-1 · Batch\n- Status: adopted\n' >.team/observer/SUGGESTIONS.md
+check "the live report runs with no open suggestion" sh -c "printf q | '$squad' report --live | grep -q 'OPEN SUGGESTIONS' "
 check "init copies the lessons file" test -f .team/LESSONS.md
 printf '10:00:00 dev-a T-9 DONE\n10:30:00 tester T-9 PASS\n' >.team/events.log
 check "the report reads an older events.log (time only)" sh -c "'$squad' report >/dev/null && grep -q '<td>T-9</td>' '$html'"
@@ -460,15 +502,21 @@ check "the settings run squad session-id for the seat" sh -c "jq -e '.hooks.Sess
 mkdir -p "$tmp/home/.claude/projects/x" && : >"$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
 echo 22222222-0000-0000-0000-000000000000 >.team/seats/dev-c.session
 mkdir -p "$CODEX_HOME/sessions/2026/11/13"
-printf '{"type":"session_meta","payload":{"id":"cdx-0001","cwd":"%s","source":"cli"}}\n' "$tmp/proj4-team/integration" >"$CODEX_HOME/sessions/2026/11/13/rollout-a.jsonl"
+printf '{"type":"session_meta","payload":{"id":"cdx-0001"}}\n' >"$CODEX_HOME/sessions/2026/11/13/rollout-2026-11-13T10-00-00-cdx-0001.jsonl"
+printf '{"type":"session_meta","payload":{"id":"cdx-other"}}\n' >"$CODEX_HOME/sessions/2026/11/13/rollout-2026-11-13T11-00-00-cdx-other.jsonl"
 layout_up 160
 check "after a restart a Claude seat resumes its own conversation" grep -qE '^herdr agent start dev-b --kind claude .* -- --resume 11111111-2222-3333-4444-555555555555 --model claude-opus-5-5' "$MOCK_LOG"
 check "a seat whose conversation is gone starts fresh and says so" sh -c "grep -qE '^herdr agent start dev-c --kind claude .* -- --model' '$MOCK_LOG' && grep -q ' dev-c - FRESH_START' .team/events.log"
-check "the Codex reviewer resumes its newest session in its folder" grep -qE '^herdr agent start rev-gpt --kind codex .* -- resume cdx-0001 -m gpt-6.1-sol' "$MOCK_LOG"
+check "the Codex reviewer resumes its own recorded session, not a newer one" grep -qE '^herdr agent start rev-gpt --kind codex .* -- resume cdx-0001 -m gpt-6.1-sol' "$MOCK_LOG"
 check "a restart is logged with the resumed seats" grep -qE ' squad - RESTART resumed: .*dev-b' .team/events.log
 reset_log; rm -f .team/.briefed/*
 SQUAD_FRESH=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "up --fresh starts new conversations" refuses grep -qE '^herdr agent start .* (--resume|-- resume) ' "$MOCK_LOG"
+reset_log; rm -f .team/.briefed/*
+MOCK_FAIL_RESUME=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+check "a refused resume falls back to a fresh start once, and says so" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG' && grep -q ' dev-b - FRESH_START resume of' .team/events.log"
+reset_log; rm -f .team/.briefed/*
+check "a layout with no client attached (height 0) still starts" env MOCK_WIDTH=0 MOCK_HEIGHT=0 "$squad" up
 
 echo
 echo "$pass passed, $fail failed"

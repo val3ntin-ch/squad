@@ -237,24 +237,32 @@ copy_if_missing() { # src dst
 # another herdr server's socket and pane). So squad writes the real values into
 # the files agents read, and gives them a herdr wrapper bound to this team's
 # session.
+# Literal replacement with awk (values through the environment, so no escape
+# processing): bash 3.2's ${text//…} takes minutes on the larger templates.
+subst() { # <file> NAME=VALUE... : print <file> with each {{NAME}}-style key replaced; keys and values in SUBST_* env
+  awk '
+    function rep(s, from, to,   out, i) { out = ""; while ((i = index(s, from)) > 0) { out = out substr(s, 1, i - 1) to; s = substr(s, i + length(from)) } return out s }
+    BEGIN { n = ENVIRON["SUBST_N"] + 0; for (k = 1; k <= n; k++) { from[k] = ENVIRON["SUBST_F" k]; to[k] = ENVIRON["SUBST_T" k] } }
+    { l = $0; for (k = 1; k <= n; k++) l = rep(l, from[k], to[k]); print l }' "$1"
+}
+
 render() { # <template> <dest>
-  local text herdr_bin="$SQUAD_HOME/bin/squad herdr"
-  text=$(cat "$1"; echo x); text=${text%x}
-  text=${text//"\$TEAM_DIR"/"$TEAM_DIR"}
-  text=${text//"\$TEAM_BASE"/"$TEAM_BASE"}
-  text=${text//"\$REVIEW_ROUNDS"/"$REVIEW_ROUNDS"}
-  text=${text//"\$HEAVY_TIMEOUT"/"$HEAVY_TIMEOUT"}
-  text=${text//"\$STALL_MINUTES"/"$STALL_MINUTES"}
-  text=${text//"herdr agent "/"$herdr_bin agent "}
-  local git_bin="$SQUAD_HOME/bin/squad git" sub
+  local sq="$SQUAD_HOME/bin/squad" k=0 sub
+  local -a pairs=(
+    "\$TEAM_DIR" "$TEAM_DIR"  "\$TEAM_BASE" "$TEAM_BASE"  "\$REVIEW_ROUNDS" "$REVIEW_ROUNDS"
+    "\$HEAVY_TIMEOUT" "$HEAVY_TIMEOUT"  "\$STALL_MINUTES" "$STALL_MINUTES"
+    "herdr agent " "$sq herdr agent ")
   # every squad command an agent runs: the absolute path, so one permission rule covers it
-  for sub in "done" heavy dispatch merge consult notify decisions report; do
-    text=${text//"squad $sub "/"$SQUAD_HOME/bin/squad $sub "}
-  done
-  for sub in switch add commit merge rebase restore stash; do
-    text=${text//"git $sub "/"$git_bin $sub "}
-  done
-  printf '%s' "$text" >"$2"
+  for sub in "done" heavy dispatch merge consult notify decisions report; do pairs+=("squad $sub " "$sq $sub "); done
+  for sub in switch add commit merge rebase restore stash; do pairs+=("git $sub " "$sq git $sub "); done
+  (
+    while [ "$k" -lt "${#pairs[@]}" ]; do
+      export "SUBST_F$((k / 2 + 1))=${pairs[$k]}" "SUBST_T$((k / 2 + 1))=${pairs[$((k + 1))]}"
+      k=$((k + 2))
+    done
+    export SUBST_N=$((k / 2))
+    subst "$1" >"$2"
+  )
 }
 
 render_team_files() {
@@ -274,6 +282,10 @@ write_herdr_socket() { # remember the herdr session squad runs in, for 'squad he
 # observer and by 'squad report'. Format:
 #   YYYY-MM-DD HH:MM:SS <seat> <task or -> <EVENT> [detail...]
 # Older teams wrote "HH:MM:SS <seat> <task> <status>"; the readers accept both.
+valid_task() { # task ids reach file names, git branches and the report
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "task id '$1' must be letters, digits, '.', '_' or '-' (for example T-001)."
+}
+
 log_event() { # <seat> <task> <EVENT> [detail...]
   local seat=$1 task=$2 ev=$3; shift 3
   mkdir -p "$TEAM_DIR"
@@ -297,37 +309,61 @@ seat_state() { # <agents json> <name> -> herdr agent_status, or "off"
 # entry whose process is gone is cleared by the next caller.
 HEAVY_POLL=${SQUAD_HEAVY_POLL:-5}
 
-kill_tree() { # <pid>: the process and everything it started
-  local c
-  for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
-  kill -TERM "$1" 2>/dev/null || true
+kill_tree() { # <pid> [signal]: the process and everything it started
+  local c sig=${2:-TERM}
+  for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c" "$sig"; done
+  kill "-$sig" "$1" 2>/dev/null || true
 }
 
+stop_tree() { # <pid>: TERM, up to 10 s to exit, then KILL; returns once it is gone
+  local k=0
+  kill_tree "$1" TERM
+  while kill -0 "$1" 2>/dev/null && [ "$k" -lt "${SQUAD_STOP_GRACE:-10}" ]; do sleep 1; k=$((k + 1)); done
+  kill -0 "$1" 2>/dev/null && kill_tree "$1" KILL
+  wait "$1" 2>/dev/null || true
+}
+
+# The lock is a symbolic link whose target is "<seat>:<pid>:<epoch>": ln -s
+# creates it and names its owner in one atomic step, and fails if it exists.
+mutex() { # <dir>: a short critical section; a mutex older than a minute is left over from a crash
+  local m=$1
+  until mkdir "$m" 2>/dev/null; do
+    [ -z "$(find "$m" -maxdepth 0 -mmin +1 2>/dev/null)" ] || rmdir "$m" 2>/dev/null || true
+    sleep 0.2
+  done
+}
+
+heavy_owner() { readlink "$TEAM_DIR/heavy/lock" 2>/dev/null || true; }
+
 heavy_clear_stale() {
-  local q="$TEAM_DIR/heavy/queue" f pid owner age
+  local q="$TEAM_DIR/heavy/queue" f pid val seat since
   for f in "$q"/*; do
     [ -f "$f" ] || continue
     pid=$(basename "$f" | cut -d- -f2)
     kill -0 "$pid" 2>/dev/null || rm -f "$f"
   done
-  owner="$TEAM_DIR/heavy/lock/owner"
-  if [ -d "$TEAM_DIR/heavy/lock" ]; then
-    pid=$(awk '{print $2; exit}' "$owner" 2>/dev/null || true)
-    age=$(( $(date +%s) - $(awk '{print $3; exit}' "$owner" 2>/dev/null || date +%s) ))
-    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null || [ "$age" -gt $(( (HEAVY_TIMEOUT + 5) * 60 )) ]; then
-      [ -f "$owner" ] && log_event "$(awk '{print $1; exit}' "$owner")" - HEAVY_STALE "lock cleared: owner process gone or over time"
-      rm -f "$owner"; rmdir "$TEAM_DIR/heavy/lock" 2>/dev/null || true
+  val=$(heavy_owner)
+  [ -n "$val" ] || return 0
+  IFS=: read -r seat pid since <<<"$val"
+  if ! kill -0 "$pid" 2>/dev/null || [ $(( $(date +%s) - ${since:-0} )) -gt $(( (HEAVY_TIMEOUT + 5) * 60 )) ]; then
+    mutex "$TEAM_DIR/heavy/clean"
+    # still the same stale owner? (another caller may have cleared it and a new run taken the lock)
+    if [ "$(heavy_owner)" = "$val" ]; then
+      rm -f "$TEAM_DIR/heavy/lock" "$TEAM_DIR/heavy/lock.cmd"
+      log_event "$seat" - HEAVY_STALE "lock cleared: owner process gone or over time"
     fi
+    rmdir "$TEAM_DIR/heavy/clean" 2>/dev/null || true
   fi
 }
 
 fmt_hm() { date -r "$1" '+%H:%M' 2>/dev/null || date -d "@$1" '+%H:%M' 2>/dev/null || echo "?"; }
 
 heavy_status() {
-  local owner="$TEAM_DIR/heavy/lock/owner" seat pid since cmd f names=""
-  if [ -f "$owner" ]; then
-    read -r seat pid since cmd <"$owner" || true
-    echo "lock: $seat since $(fmt_hm "$since"): $cmd"
+  local val seat pid since f names=""
+  val=$(heavy_owner)
+  if [ -n "$val" ]; then
+    IFS=: read -r seat pid since <<<"$val"
+    echo "lock: $seat since $(fmt_hm "$since"): $(cat "$TEAM_DIR/heavy/lock.cmd" 2>/dev/null || true)"
   else
     echo "lock: free"
   fi
@@ -335,37 +371,48 @@ heavy_status() {
   [ -z "$names" ] || echo "queue:$names"
 }
 
+heavy_ticket() { # -> the next arrival number (a counter under a mutex: callers in the same second keep their order)
+  local n
+  mutex "$TEAM_DIR/heavy/seq.lock"
+  n=$(( $(cat "$TEAM_DIR/heavy/seq" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >"$TEAM_DIR/heavy/seq"
+  rmdir "$TEAM_DIR/heavy/seq.lock"
+  printf '%012d' "$n"
+}
+
 cmd_heavy() {
   find_repo; load_conf
   [ "${1:-}" = --status ] && { heavy_status; return 0; }
   local seat=${1:-} task=- ; [ $# -gt 0 ] && shift
   [ -n "$seat" ] && [ "$seat" != -- ] || die "usage: squad heavy <seat> [<task>] -- <command...>"
-  if [ "${1:-}" != -- ]; then task=${1:-}; [ $# -gt 0 ] && shift; fi
+  if [ "${1:-}" != -- ]; then task=${1:-}; [ $# -gt 0 ] && shift; valid_task "$task"; fi
   [ "${1:-}" = -- ] || die "usage: squad heavy <seat> [<task>] -- <command...>"
   shift; [ $# -gt 0 ] || die "squad heavy: no command after --"
   seat_index "$seat" >/dev/null || die "no seat named '$seat' in this team."
 
   local q="$TEAM_DIR/heavy/queue" waited=0 start rc
-  HV_LOCK="$TEAM_DIR/heavy/lock"
   mkdir -p "$q"
-  # sortable arrival time; the pid in the name lets the next caller clear a dead waiter
-  HV_ME="$q/$(date +%s)$(printf '%05d' "$((RANDOM % 100000))")-$$-$seat"
+  HV_LOCK="$TEAM_DIR/heavy/lock"
+  # arrival order; the pid in the name lets the next caller clear a dead waiter
+  HV_ME="$q/$(heavy_ticket)-$$-$seat"
   : >"$HV_ME"
   trap 'heavy_release' EXIT
   trap 'heavy_release; exit 130' INT TERM HUP
+  HV_VAL="$seat:$$:$(date +%s)"
   while :; do
     heavy_clear_stale
-    if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && mkdir "$HV_LOCK" 2>/dev/null; then break; fi
+    if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && ln -s "$HV_VAL" "$HV_LOCK" 2>/dev/null; then break; fi
     [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; }
     sleep "$HEAVY_POLL"
+    HV_VAL="$seat:$$:$(date +%s)"
   done
-  rm -f "$HV_ME"
-  printf '%s %s %s %s\n' "$seat" "$$" "$(date +%s)" "$*" >"$HV_LOCK/owner"
+  rm -f "$HV_ME"; HV_ME=""
+  printf '%s\n' "$*" >"$TEAM_DIR/heavy/lock.cmd"
   start=$(date +%s)
   log_event "$seat" "$task" HEAVY_START "$*"
   "$@" & HV_CPID=$!
   local limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((HEAVY_TIMEOUT * 60))}  # seconds override: tests
-  ( sleep "$limit"; echo "squad heavy: stopped after $HEAVY_TIMEOUT min (heavy_timeout in team.conf)" >&2; kill_tree "$HV_CPID" ) &
+  ( sleep "$limit"; echo "squad heavy: stopped after $HEAVY_TIMEOUT min (heavy_timeout in team.conf)" >&2; stop_tree "$HV_CPID" ) &
   HV_WPID=$!
   rc=0; wait "$HV_CPID" || rc=$?
   HV_CPID=""
@@ -375,15 +422,14 @@ cmd_heavy() {
   return "$rc"
 }
 
-HV_ME="" HV_LOCK="" HV_CPID="" HV_WPID=""
+HV_ME="" HV_LOCK="" HV_VAL="" HV_CPID="" HV_WPID=""
 heavy_release() { # globals: the trap runs after cmd_heavy's locals are gone
   [ -z "$HV_ME" ] || rm -f "$HV_ME"
-  if [ -n "$HV_LOCK" ] && [ -f "$HV_LOCK/owner" ] && [ "$(awk '{print $2; exit}' "$HV_LOCK/owner")" = "$$" ]; then
-    rm -f "$HV_LOCK/owner"; rmdir "$HV_LOCK" 2>/dev/null || true
-  fi
-  [ -z "$HV_CPID" ] || kill_tree "$HV_CPID"
-  [ -z "$HV_WPID" ] || kill_tree "$HV_WPID"
-  HV_CPID="" HV_WPID=""
+  # stop the command and its children first: the lock is free only once nothing of the run is left
+  [ -z "$HV_WPID" ] || kill_tree "$HV_WPID" KILL
+  [ -z "$HV_CPID" ] || stop_tree "$HV_CPID"
+  if [ -n "$HV_LOCK" ] && [ "$(heavy_owner)" = "$HV_VAL" ]; then rm -f "$HV_LOCK" "$TEAM_DIR/heavy/lock.cmd"; fi
+  HV_CPID="" HV_WPID="" HV_ME=""
 }
 
 # ---- squad dispatch: clear a seat, give it a task, confirm it started ---------
@@ -405,7 +451,7 @@ wait_for_state() { # <seat> <seconds> <state...>: true once herdr shows one of t
 
 default_task_line() { # <role> <task> <round>
   case "$1" in
-    dev) if [ "$3" -gt 1 ]; then echo "$2 needs changes. Read the newest review in $TEAM_DIR/reports/$2-review-*.md (and $TEAM_DIR/reports/$2-test.md if it failed), fix every finding, update your report."
+    dev) if [ "$3" -gt 1 ] || [ -f "$TEAM_DIR/reports/$2-test.md" ]; then echo "$2 needs changes. Read the newest review in $TEAM_DIR/reports/$2-review-*.md (and $TEAM_DIR/reports/$2-test.md if it failed), fix every finding, update your report."
          else echo "Task $2 is yours. Read $TEAM_DIR/tasks/$2.md and follow your role file."; fi ;;
     tester) echo "Test task $2. Read $TEAM_DIR/tasks/$2.md and follow your role file." ;;
     reviewer) echo "Review task $2, round $3. Read $TEAM_DIR/tasks/$2.md and follow your role file." ;;
@@ -419,14 +465,16 @@ review_round() { # <task> -> the round the next review gets (1 + review files so
   echo $((n + 1))
 }
 
-seat_model_arg() { # <index> -> the --model / -m value in the seat's arguments
-  awk '{ for (i = 1; i < NF; i++) if ($i == "--model" || $i == "-m") { print $(i + 1); exit } }' <<<"${S_ARGS[$1]}"
+seat_model_arg() { # <index> -> the --model / -m value in the seat's arguments, or nothing
+  awk '{ for (i = 1; i <= NF; i++) { if (($i == "--model" || $i == "-m") && i < NF) { print $(i + 1); exit }
+                                     if ($i ~ /^--model=/) { print substr($i, 9); exit } } }' <<<"${S_ARGS[$1]}"
 }
 
 cmd_dispatch() {
   find_repo; load_conf
   local seat=${1:-} task=${2:-} escalate=0 i role kind clear text round
   [ -n "$seat" ] && [ -n "$task" ] || die "usage: squad dispatch <seat> <task> [--escalate] [text...]"
+  valid_task "$task"
   shift 2
   [ "${1:-}" = --escalate ] && { escalate=1; shift; }
   i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
@@ -452,7 +500,9 @@ cmd_dispatch() {
   # model: a fix round from round 4 on runs one tier higher; every other task runs the seat's own model
   local model="" mark="$TEAM_DIR/seats/$seat.escalated"
   if [ "$kind" = claude ]; then
-    if [ "$escalate" = 1 ] && [ -n "$ESCALATE_MODEL" ]; then model=$ESCALATE_MODEL; mkdir -p "$TEAM_DIR/seats"; : >"$mark"
+    # the seat's own model is known only from its arguments: without one, no escalation (it could not be undone)
+    if [ "$escalate" = 1 ] && [ -n "$ESCALATE_MODEL" ] && [ -n "$(seat_model_arg "$i")" ]; then model=$ESCALATE_MODEL; mkdir -p "$TEAM_DIR/seats"; : >"$mark"
+    elif [ "$escalate" = 1 ]; then say "squad dispatch: no --escalate for $seat (no escalate_model, or no --model in its seat line)."
     elif [ -f "$mark" ]; then model=$(seat_model_arg "$i"); rm -f "$mark"; fi
     if [ -n "$model" ]; then
       herdr_team agent prompt "$seat" "/model $model" >/dev/null || true
@@ -475,6 +525,7 @@ cmd_merge() {
   find_repo; load_conf
   local task=${1:-} title
   [ -n "$task" ] || die "usage: squad merge <task>"
+  valid_task "$task"
   git -C "$WT_ROOT/integration" rev-parse --verify -q "task/$task" >/dev/null || die "no branch task/$task."
   title=$(awk -F'|' -v id="$task" '{ gsub(/^ +| +$/, "", $2) } $2 == id { t = $3; gsub(/^ +| +$/, "", t); print t; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
   if ! git -C "$WT_ROOT/integration" merge --no-ff "task/$task" -m "Merge $task${title:+: $title}"; then
@@ -524,15 +575,16 @@ cmd_consult() {
   [ "${cmdv[0]}" = codex ] || die "consult runs Codex ('consult codex …' in team.conf); '${cmdv[0]}' is not supported yet."
   command -v codex >/dev/null 2>&1 || die "codex is not installed: squad consult needs it (or remove the consult step from the lead role)."
   mkdir -p "$dir"
+  # reserve the number: an exclusive create, so two consults started together never share one
   n=$(( $(ls "$dir" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)\.md$/\1/p' | sort -n | tail -1 || true) + 1 ))
+  until ( set -C; printf '# Consult %s (running)\n' "$n" >"$dir/$n.md" ) 2>/dev/null; do n=$((n + 1)); done
   out="$dir/$n.md"; log="$dir/$n.log"
   for f in "$@"; do files="$files
 - $f"; done
-  prompt=$(cat "$TEMPLATES/consult-prompt.md")
-  prompt=${prompt//"{{QUESTION}}"/$question}
-  prompt=${prompt//"{{FILES}}"/${files:-"- (none named; read what you need in the repository)"}}
-  prompt=${prompt//"{{TEAM_DIR}}"/$TEAM_DIR}
-  prompt=${prompt//"{{REPO}}"/$WT_ROOT/integration}
+  prompt=$(SUBST_N=4 SUBST_F1="{{QUESTION}}" SUBST_T1="$question" \
+    SUBST_F2="{{FILES}}" SUBST_T2="${files:-"- (none named; read what you need in the repository)"}" \
+    SUBST_F3="{{TEAM_DIR}}" SUBST_T3="$TEAM_DIR" SUBST_F4="{{REPO}}" SUBST_T4="$WT_ROOT/integration" \
+    subst "$TEMPLATES/consult-prompt.md")
   local cwd="$WT_ROOT/integration"; [ -d "$cwd" ] || cwd=$REPO
   log_event "$LEAD" - CONSULT "n=$n $question"
   run_consult() {
@@ -594,8 +646,11 @@ cmd_decisions() {
 # observer/, reports/, LESSONS.md, READY.md. --live: the same, in a terminal,
 # refreshed every 20 s ('o' opens the HTML page). Default: write the HTML page.
 
-# per task, from events.log: id start end merged dev test review wait rounds fails blocked stalls cost
-task_stats() {
+# per task, from events.log: id state total dev test review wait changes fails blocked stalls cost
+# (ids are escaped for HTML here: events.log is written from agents' input)
+task_stats() { task_stats_raw | html_escape; }
+
+task_stats_raw() {
   local roles="" i
   for ((i = 0; i < $(seat_count); i++)); do roles="$roles ${S_NAME[$i]}=${S_ROLE[$i]}"; done
   awk -v roles="$roles" '
@@ -631,7 +686,7 @@ task_stats() {
     "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
-html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&#39;/g"; }
 
 md_html() { # minimal Markdown -> HTML: headings, lists, tables, code, bold, links
   html_escape | awk '
@@ -693,7 +748,7 @@ HEAD
       while IFS=$'\t' read -r id title fields; do
         status=$(tr '\t' '\n' <<<"$fields" | sed -n 's/^Status=//p')
         case "$status" in final*) k=final ;; *) k=prov ;; esac
-        printf '<div class="card dec" data-k=%s><h3>%s · %s<span class="badge %s">%s</span></h3><dl>\n' "$k" "$id" "$(html_escape <<<"$title")" "$k" "$(html_escape <<<"${status:-no status}")"
+        printf '<div class="card dec" data-k=%s><h3>%s · %s<span class="badge %s">%s</span></h3><dl>\n' "$k" "$(html_escape <<<"$id")" "$(html_escape <<<"$title")" "$k" "$(html_escape <<<"${status:-no status}")"
         while IFS= read -r v; do
           [ -n "$v" ] || continue
           printf '<dt>%s</dt><dd>%s</dd>\n' "${v%%=*}" "$(printf '%s\n' "${v#*=}" | md_html | sed 's#^<p>##; s#</p>$##')"
@@ -757,7 +812,9 @@ report_text() { # the live view: what matters now, in a terminal
   printf ' NOW (observer)\n'
   if [ -s "$TEAM_DIR/observer/NOW.md" ]; then sed -n '1,14p' "$TEAM_DIR/observer/NOW.md" | cut -c1-"$w" | sed 's/^/   /'; else echo "   no pass yet"; fi
   printf '\n OPEN SUGGESTIONS\n'
-  if [ -s "$TEAM_DIR/observer/SUGGESTIONS.md" ]; then grep -iE '^#+ |status: *open' "$TEAM_DIR/observer/SUGGESTIONS.md" | grep -iB1 'open' | grep -E '^#' | head -6 | cut -c1-"$w" | sed 's/^#* */   /'; else echo "   none"; fi
+  local open_s
+  open_s=$(awk '/^## / { t = $0 } tolower($0) ~ /^- status: *open/ && t != "" { sub(/^#+ */, "", t); print "   " t; t = "" }' "$TEAM_DIR/observer/SUGGESTIONS.md" 2>/dev/null | head -6 | cut -c1-"$w" || true)
+  printf '%s\n' "${open_s:-   none}"
   printf '\n DECISIONS OPEN FOR V!\n'
   decisions_tsv | awk -F'\t' '{ s = ""; d = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^Decision=/) d = substr($i, 10) } if (s !~ /^final/) printf "   %s %s — %s\n", $1, $2, d }' | head -8 | cut -c1-"$w"
   printf '\n TASKS (minutes: total · dev · test · review · wait · changes · FAIL)\n'
@@ -897,8 +954,8 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   now=$(date +%s)
   if [ "$state" = working ]; then rm -f "$f"; return 0; fi
   if [ "$state" = off ]; then [ -n "$task" ] && echo dead; return 0; fi
-  text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -40 || true)
-  case "$text" in *"/login"*|*"API Error: 401"*|*"API Error: 403"*|*"OAuth token"*|*"ign in again"*) echo login; return 0 ;; esac
+  text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -12 || true)
+  case "$text" in *"Please run /login"*|*"API Error: 401"*|*"API Error: 403"*|*"OAuth token has expired"*|*"Invalid API key"*) echo login; return 0 ;; esac
   [ "$state" = blocked ] && { echo blocked; return 0; }
   [ -n "$task" ] || { rm -f "$f"; return 0; }
   mkdir -p "$(dirname "$f")"
@@ -935,6 +992,7 @@ watch_once() {
   agents_json=$(herdr_team agent list 2>/dev/null) || agents_json='{"result":{"agents":[]}}'
   n=$(seat_count)
   opens=$(open_tasks)
+  record_sessions "$agents_json"
   # a team that is down (no seat runs) is not in trouble
   local up=0
   for ((i = 0; i < n; i++)); do [ "$(seat_state "$agents_json" "${S_NAME[$i]}")" = off ] || up=1; done
@@ -985,7 +1043,7 @@ watch_once() {
       printf "\n %s\n", chips
     }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true
   printf ' %s%s\n' "$states" "${ev:+  last: $ev}"
-  [ ! -d "$TEAM_DIR/heavy/lock" ] || printf ' %s\n' "$(heavy_status | tr '\n' ' ')"
+  [ ! -L "$TEAM_DIR/heavy/lock" ] || printf ' %s\n' "$(heavy_status | tr '\n' ' ')"
 }
 
 # ---- observer passes --------------------------------------------------------------
@@ -1014,12 +1072,12 @@ observe_tick() {
   # back to the seat's own model after a deep pass
   if [ -f "$dir/.deep" ]; then
     herdr_team agent prompt "$name" "/model $(seat_model_arg "$i")" >/dev/null 2>&1 || true
-    rm -f "$dir/.deep"; sleep 2
+    rm -f "$dir/.deep"; sleep "${SQUAD_MODEL_WAIT:-2}"
   else
-    loss=$(awk -F: '/^Largest loss:/ { gsub(/[^0-9]/, "", $2); print $2; exit }' "$dir/NOW.md" 2>/dev/null || true)
-    if [ -n "$OBSERVER_DEEP_MODEL" ] && [ "${loss:-0}" -gt 30 ] && [ "$(cat "$dir/.deep-for" 2>/dev/null)" != "$((pass - 1))" ]; then
+    loss=$(awk '/^Largest loss:/ { sub(/^Largest loss: */, ""); if (match($0, /^[0-9]+/)) print substr($0, 1, RLENGTH); exit }' "$dir/NOW.md" 2>/dev/null || true)
+    if [ -n "$OBSERVER_DEEP_MODEL" ] && [ -n "$(seat_model_arg "$i")" ] && [ "${loss:-0}" -gt 30 ] && [ "$(cat "$dir/.deep-for" 2>/dev/null)" != "$((pass - 1))" ]; then
       herdr_team agent prompt "$name" "/model $OBSERVER_DEEP_MODEL" >/dev/null 2>&1 || true
-      : >"$dir/.deep"; echo "$((pass - 1))" >"$dir/.deep-for"; sleep 2
+      : >"$dir/.deep"; echo "$((pass - 1))" >"$dir/.deep-for"; sleep "${SQUAD_MODEL_WAIT:-2}"
       due="deep pass: pass $((pass - 1)) found a loss of $loss min; find its cause and the change that prevents it"
     fi
   fi
@@ -1058,13 +1116,14 @@ acceptance_rows() { # <brief> -> the row numbers of its acceptance table
 }
 
 report_rows() { # <report> -> "<number> <result>" from its acceptance table; result is one word
-  awk '/[Aa]cceptance/ { on = 1; next }
-       on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; r = tolower(a[3]); gsub(/ /, "", n); gsub(/^ +| +$/, "", r)
-         if (r ~ /^(not met|not-met|fail|failed)/) r = "fail"
-         else if (r ~ /^(met|pass|passed|ok)/) r = "pass"
-         else if (r ~ /^pending/) r = "pending"
-         else if (r ~ /^unavailable/) r = "unavailable"
-         else r = "inconclusive"
+  awk '/^#+ .*[Aa]cceptance/ || /^\**[Aa]cceptance\**:? *$/ { on = 1; next }
+       on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; r = tolower(a[3]); gsub(/ /, "", n); gsub(/[*`_]/, "", r); gsub(/^ +| +$/, "", r)
+         if (r ~ /^(not met|not-met|fail|failed)( |$)/) r = "fail"
+         else if (r ~ /^(met|pass|passed)( |$)/) r = "pass"
+         else if (r ~ /^pending( |$)/) r = "pending"
+         else if (r ~ /^unavailable( |$)/) r = "unavailable"
+         else if (r ~ /^inconclusive( |$)/) r = "inconclusive"
+         else r = "unknown"
          print n, r; next }
        on && seen_table && !/^\|/ { exit }
        on && /^\|/ { seen_table = 1 }' "$1"
@@ -1088,6 +1147,7 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
     case "$r" in
       "") missing="$missing $n" ;;
       fail) failed="$failed $n" ;;
+      unknown) die "$status refused: acceptance row $n has no valid result. Write one of: pass, fail, pending, unavailable, inconclusive." ;;
       pass) ;;
       *) open="$open $n($r)" ;;
     esac
@@ -1111,13 +1171,15 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
 cmd_done() {
   [ $# -ge 3 ] || die "usage: squad done <seat> <task> <status>"
   local seat=$1 task=$2 status=$3 i role="" report
+  valid_task "$task"
+  [[ "$status" =~ ^[A-Z_]{2,20}$ ]] || die "status '$status' must be one word in capitals (DONE, BLOCKED, PASS, FAIL, APPROVE, CHANGES, CONTRACT)."
   find_repo; load_conf
   i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
   role=${S_ROLE[$i]}
   case "$role" in
     dev) report="$TEAM_DIR/reports/$task-dev.md" ;;
     tester) if [ "$status" = CONTRACT ]; then report="$TEAM_DIR/reports/$task-contract.md"; else report="$TEAM_DIR/reports/$task-test.md"; fi ;;
-    reviewer|lead) report=$(ls -t "$TEAM_DIR/reports/$task"-review-*.md 2>/dev/null | head -1) ;;
+    reviewer|lead) report=$(ls -t "$TEAM_DIR/reports/$task"-review-*.md 2>/dev/null | head -1 || true) ;;
     *) report="" ;;
   esac
   DONE_NOTE=""
@@ -1440,7 +1502,8 @@ make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
   fi
   herdr tab rename "$tab" team >/dev/null 2>&1 || true
   # live board: 5 rows at the bottom of the first tab
-  ratio=$(awk -v h="${height:-40}" 'BEGIN { r = 1 - 6 / h; if (r < 0.75) r = 0.75; if (r > 0.95) r = 0.95; printf "%.3f", r }')
+  [ "${height:-0}" -gt 0 ] 2>/dev/null || height=40
+  ratio=$(awk -v h="$height" 'BEGIN { r = 1 - 6 / h; if (r < 0.75) r = 0.75; if (r > 0.95) r = 0.95; printf "%.3f", r }')
   strip=$(split "$root" down "$WT_ROOT/integration" "$ratio")
   herdr pane rename "$strip" watch >/dev/null 2>&1 || true
   herdr pane run "$strip" "$SQUAD_HOME/bin/squad watch" >/dev/null
@@ -1569,8 +1632,18 @@ cmd_session_id() {
   return 0
 }
 
+record_sessions() { # <agents json>: herdr knows each running seat's conversation; keep it for resume
+  local i n id; n=$(seat_count)
+  mkdir -p "$TEAM_DIR/seats"
+  for ((i = 0; i < n; i++)); do
+    id=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_session.value // empty][0] // empty' <<<"$1" 2>/dev/null || true)
+    [ -n "$id" ] && [ "$id" != "$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null)" ] && printf '%s\n' "$id" >"$TEAM_DIR/seats/${S_NAME[$i]}.session"
+  done
+  return 0
+}
+
 seat_resume_id() { # <index> -> the conversation to resume, or nothing
-  local i=$1 id f cwd n k
+  local i=$1 id f
   case "${S_KIND[$i]}" in
     claude)
       id=$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null) || return 0
@@ -1579,14 +1652,11 @@ seat_resume_id() { # <index> -> the conversation to resume, or nothing
     codex)
       # the newest interactive Codex session started in this seat's folder; only
       # when no other Codex seat shares that folder (it could be the other's)
-      cwd=$(seat_cwd "$i"); n=0
-      for ((k = 0; k < $(seat_count); k++)); do [ "${S_KIND[$k]}" = codex ] && [ "$(seat_cwd "$k")" = "$cwd" ] && n=$((n + 1)); done
-      [ "$n" = 1 ] || return 0
-      [ -d "${CODEX_HOME:-$HOME/.codex}/sessions" ] || return 0
-      find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -mtime -14 -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -200 \
-        | while IFS= read -r f; do
-            head -1 "$f" | jq -r --arg c "$cwd" 'select(.type == "session_meta" and .payload.cwd == $c and (.payload.source // "cli") == "cli") | .payload.id' 2>/dev/null
-          done | head -1 ;;
+      # the id squad recorded for this seat (from herdr, while it ran); its rollout file must still exist
+      id=$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null) || return 0
+      [ -n "$id" ] || return 0
+      [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || return 0
+      [ -n "$(find "${CODEX_HOME:-$HOME/.codex}/sessions" -name "rollout-*$id*.jsonl" -print 2>/dev/null | head -1)" ] && echo "$id" ;;
   esac
   return 0
 }
@@ -1632,8 +1702,22 @@ start_seat() { # <index> <pane>
   elif [ -f "$TEAM_DIR/seats/$name.session" ] && [ "${SQUAD_FRESH:-0}" != 1 ]; then
     log_event "$name" - FRESH_START "its last conversation was not found"
   fi
+  local -a fresh_args=("${start_args[@]}")
   [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
-  if start_agent "${start_args[@]}"; then
+  if [ -n "$resume_id" ] && ! start_agent "${start_args[@]}"; then
+    # the agent refused the old conversation: start it fresh once, and say so
+    log_event "$name" - FRESH_START "resume of $resume_id was refused"
+    say "  $name could not resume $resume_id; starting it fresh"
+    resume_id=""
+    case "$kind" in
+      claude) agent_args=("${agent_args[@]:2}") ;;
+      codex) agent_args=("${agent_args[@]:2}") ;;
+    esac
+    start_args=("${fresh_args[@]}")
+    [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
+    herdr pane run "$pane" "clear" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$resume_id" ] || start_agent "${start_args[@]}"; then
     if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name")
     else say "  started $name ($kind${args:+ $args})"; fi
     STARTED+=("$name")

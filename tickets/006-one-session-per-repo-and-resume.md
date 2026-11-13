@@ -14,7 +14,7 @@ restart (of herdr, of the Mac) every seat comes back with its own conversation, 
 - Out: moving a running team between machines; herdr's own session storage.
 
 ## Done when
-- [ ] `squad up` run outside herdr starts or attaches the session `squad-<repo>` and starts
+- [ ] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: V!'s running team already uses the session `hive`; `session <name>` in team.conf overrides it) and starts
       the team in it; run inside herdr in another repository's session, it stops and prints
       the one command to switch (`squad up` never mixes two repositories in one session).
 - [ ] Two repositories can run teams at the same time, each in its own session, with no
