@@ -1526,7 +1526,9 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
   copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
   copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
+  mutex "$TEAM_DIR/.feedback.lock"   # the same lock as squad feedback: never copy over a saved entry
   copy_if_missing "$TEMPLATES/FEEDBACK.md" "$TEAM_DIR/FEEDBACK.md"
+  rmdir "$TEAM_DIR/.feedback.lock"
   mkdir -p "$TEAM_DIR/observer" "$TEAM_DIR/consult"
 
   # Keep team files out of commits without touching the tracked .gitignore.
