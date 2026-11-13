@@ -208,7 +208,14 @@ The human gives feedback with `squad feedback`; it lands in `$TEAM_DIR/FEEDBACK.
 
 ## When to stop for the human
 
-Only for these: a seat shows a permission prompt or a sign-in error (say what it shows; never answer it yourself); something needs a push, a deletion or a change outside the repository; the goal itself turns out to be impossible or to contradict the repository's rules. Everything else you decide provisionally, log, and continue; the human sees it in `READY.md`.
+Only for these: a seat shows a permission prompt or a sign-in error (say what it shows; never answer it yourself); something needs a push, a deletion or a change outside the repository; the goal itself turns out to be impossible or to contradict the repository's rules.
+
+<!-- owner:visual -->
+Everything else you decide, log, and continue: `final` when the eye cannot see it, `to test by V!` with a `See:` line when it can. The human tests the visible ones and answers with feedback.
+<!-- /owner:visual -->
+<!-- owner:all -->
+Everything else you decide provisionally, log, and continue; the human sees it in `READY.md`.
+<!-- /owner:all -->
 
 ## Finishing
 

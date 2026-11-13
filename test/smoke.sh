@@ -633,7 +633,8 @@ cd "$tmp/proj4"
 # GPT review of 007-008
 cd "$tmp/proj4"
 ( cd "$dc" && "$squad" heavy dev-c T-820 -- sh -c 'sleep 2; cat marker.txt' >"$tmp/run1" 2>/dev/null ) & r1=$!
-sleep 0.7; echo three >"$dc/marker.txt"; git -C "$dc" commit -qam three
+for _ in $(seq 1 100); do grep -q ' dev-c T-820 HEAVY_START ' .team/events.log && break; sleep 0.1; done   # run 1 holds the lock and its snapshot
+echo three >"$dc/marker.txt"; git -C "$dc" commit -qam three
 ( cd "$dc" && "$squad" heavy dev-c T-821 -- cat marker.txt >"$tmp/run2" 2>/dev/null ) & r2=$!
 wait "$r1" "$r2"
 check "a second run of the same seat waits and does not reset the snapshot in use" sh -c "grep -qx one '$tmp/run1' && grep -qx three '$tmp/run2'"
@@ -668,10 +669,10 @@ cd "$tmp/proj4"
 cd "$tmp/proj4"
 check "the heavy lock is one for the machine: another repository sees this run" sh -c "'$squad' heavy tester T-840 -- sh -c 'cd \"$tmp/proj\" && \"$squad\" heavy --status' | grep -q 'lock: tester@proj4 since'"
 rm -f .team/.briefed/*; MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true   # squad clean above removed the worktrees
-sed -i.bak "s#^setup.*#setup sleep 30#" .team/team.conf && rm -f .team/team.conf.bak
+sed -i.bak "s#^setup.*#setup sleep 30.17#" .team/team.conf && rm -f .team/team.conf.bak
 git -C "$tmp/proj4" worktree remove --force "$tmp/proj4-team/.runs/dev-c" 2>/dev/null || true
 setup_out=$(SQUAD_HEAVY_LIMIT_SECONDS=2 "$squad" heavy dev-c T-841 -- true 2>&1 || true)
-check "a snapshot setup over the limit is stopped and nothing runs" sh -c "printf '%s' \"\$1\" | grep -q 'could not prepare the snapshot' && ! pgrep -f 'sleep 30\$' >/dev/null && test ! -L '$HV/lock'" _ "$setup_out"
+check "a snapshot setup over the limit is stopped and nothing runs" sh -c "printf '%s' \"\$1\" | grep -q 'could not prepare the snapshot' && ! pgrep -f 'sleep 30[.]17' >/dev/null && test ! -L '$HV/lock'" _ "$setup_out"
 sed -i.bak "s#^setup.*#setup#" .team/team.conf && rm -f .team/team.conf.bak
 perl -e 'setpgrp(0, 0); exec "sh", "-c", "sleep 46.6 & exit 0"' & lead_pid=$!; wait "$lead_pid" 2>/dev/null || true
 printf '%s %s\n' "$lead_pid" "Mon Jan  1 00:00:00 2001" >"$HV/lock.pgid"; ln -s "dev-a:999999:$(date +%s):600" "$HV/lock"
@@ -721,11 +722,24 @@ check "the To test tab lists the visual decision with where to look, not the fin
 check "the live view lists what to test" sh -c "printf q | '$squad' report --live | grep -q 'D-010 Tooltip gap — look: overlays-tooltip--states'"
 printf '\n## D-012 · No place\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: to test by V!\n' >>.team/DECISIONS.md
 check "a decision to test without a See line is refused" refuses "$squad" decisions --check
+check "with owner visual nothing in the lead role says to decide provisionally" refuses grep -q 'decide provisionally' .team/roles/lead.md
+printf '\n## D-013 · No see, provisional\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: keep the card\n- Why: w\n- Status: provisional — open decision for V!\n' >>.team/DECISIONS.md
+"$squad" report >/dev/null
+check "a decision without a See line keeps its columns in the To test tab" grep -qE '<td>D-013 · No see, provisional</td><td>-</td><td>keep the card</td>' "$html"
+printf 'x\n<!-- owner:all -->\n<!-- owner:visual -->\nin\n<!-- /owner:visual -->\nleak\n<!-- /owner:all -->\n' >"$tmp/nested.md"
+check "nested owner sections are a template error" sh -c "! '$squad' _owner-filter visual <'$tmp/nested.md' >'$tmp/nested.out' 2>/dev/null && ! grep -q leak '$tmp/nested.out'"
+printf 'a\n<!-- owner:all -->\nhidden\n' >"$tmp/open.md"
+check "an unclosed owner section is a template error" refuses "$squad" _owner-filter visual <"$tmp/open.md"
+printf 'a\n<!-- owner:all -->\nold\n<!-- /owner:all -->\n<!-- owner:visual -->\nnew\n<!-- /owner:visual -->\nb\n' >"$tmp/ok.md"
+check "a well-formed template keeps only its mode" sh -c "test \"\$('$squad' _owner-filter visual <'$tmp/ok.md' | tr '\n' ' ')\" = 'a new b '"
 reset_log
 check "squad feedback saves, logs and tells the lead" sh -c "'$squad' feedback 'The tooltip gap looks 1 px too tight in dark' | grep -q 'F-1 saved and sent' && grep -q '^## F-1 · ' .team/FEEDBACK.md && grep -q 'too tight in dark' .team/FEEDBACK.md && grep -q ' owner - FEEDBACK F-1 The tooltip gap' .team/events.log && grep -q 'agent prompt lead \[squad\] Feedback F-1 from V!' '$MOCK_LOG'"
 printf 'Card raised: the shadow is too strong at 390 px\nCompare with the preview.\n' >"$tmp/fb.txt"
 check "squad feedback --file takes a longer note as F-2" sh -c "'$squad' feedback --file '$tmp/fb.txt' >/dev/null && grep -q '^## F-2 · ' .team/FEEDBACK.md && grep -q 'Compare with the preview.' .team/FEEDBACK.md"
 check "empty feedback is refused" refuses "$squad" feedback '   '
+printf '## F-9 · pasted heading\nnote\n' >"$tmp/fb9.txt"; "$squad" feedback --file "$tmp/fb9.txt" >/dev/null
+"$squad" feedback 'after a pasted heading' >/dev/null
+check "feedback ids follow the highest F-number, not a line count" sh -c "grep -q '^## F-3 · ' .team/FEEDBACK.md && grep -B3 'after a pasted heading' .team/FEEDBACK.md | grep -q '^## F-10 · '"
 check "the report shows the open feedback" sh -c "'$squad' report >/dev/null && grep -q 'too tight in dark' '$html'"
 cd "$tmp/old"; printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat tester claude tester -\n' >.team/team.conf
 "$squad" update-conf >/dev/null
