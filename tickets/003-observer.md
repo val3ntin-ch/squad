@@ -1,5 +1,5 @@
 # 003 · Observer seat and tab: stuck seats, timeline, suggestions
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: M
 
 ## Goal

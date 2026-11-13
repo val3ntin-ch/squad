@@ -1,5 +1,5 @@
 # 006 · One herdr session per repository, and resume where the team stopped
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: M
 
 ## Goal

@@ -298,9 +298,9 @@ check "a lock whose owner process is gone is cleared" "$squad" heavy dev-a T-4 -
 check "the cleared lock is in the events" ev 'dev-c - HEAVY_STALE'
 check "a run over the time limit is stopped (exit 124) and frees the lock" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy dev-a T-5 -- sleep 20; test \$? = 124 && test ! -L .team/heavy/lock"
 # a stopped wrapper frees the lock only after its command is gone
-"$squad" heavy dev-a T-6 -- sh -c "sleep 30" >/dev/null 2>&1 & hp=$!
+"$squad" heavy dev-a T-6 -- sh -c "sleep 31.4159" >/dev/null 2>&1 & hp=$!
 sleep 1.5; kill -TERM "$hp"; wait "$hp" 2>/dev/null || true
-check "a stopped heavy run leaves no command behind and frees the lock" sh -c "! pgrep -f 'sleep 30' >/dev/null && test ! -L .team/heavy/lock"
+check "a stopped heavy run leaves no command behind and frees the lock" sh -c "! pgrep -f 'sleep 31.4159' >/dev/null && test ! -L .team/heavy/lock"
 # callers in the same second keep their arrival order while the lock is held
 sleep 60 & holder=$!
 ln -s "tester:$holder:$(date +%s)" .team/heavy/lock; rm -f "$tmp/order"

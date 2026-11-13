@@ -1,5 +1,5 @@
 # 004 · Lead on a real issue: GPT consult with official sources, decisions as HTML
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: M
 
 ## Goal

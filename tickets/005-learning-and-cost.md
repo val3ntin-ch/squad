@@ -1,5 +1,5 @@
 # 005 · Learning and cost: compound step, converge, cost log, rule budget
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: S
 
 ## Goal

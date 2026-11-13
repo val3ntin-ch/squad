@@ -1,5 +1,5 @@
 # 002 · QA and review: GPT reviewer, contract first, five result states, done gate
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: M
 
 ## Goal

@@ -1,5 +1,5 @@
 # 000 · squad v2 (index)
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: L — split into the tickets below
 
 ## Goal
@@ -38,3 +38,11 @@ text and easy to follow by hand:
    in READY.md and the Decisions tab before any push.
 4. GPT seats (reviewer and consult): `gpt-6.1-sol`, reasoning effort medium.
 5. Observer: Sonnet for the regular passes; Opus only when a pass finds a loss over 30 min.
+
+## Verification (13 Nov 2026, final commit)
+Independent verifier (fresh context, read-only): **READY**, no FAIL rows.
+- `bash test/smoke.sh`: 234 passed, bash 5 and /bin/bash 3.2.57. `shellcheck -S warning`: clean.
+- Code review: GPT (Codex, gpt-6.1-sol) and Claude reviewers on `main...v2`: 18 findings, all fixed with tests.
+- needs V! (real herdr, Codex or agents): start of a session from outside herdr; two repositories at once;
+  a new session id after a real `/clear`; a real `codex --search exec` consult; the observer staying read-only
+  (role text only, no tool restriction).

@@ -1,5 +1,5 @@
 # 001 · Machine rules in the script: lock, dispatch, ledger, Stop hook switch
-Status: Approved (V!, 13 Nov 2026)
+Status: Done — awaiting V!'s review (approved 13 Nov 2026)
 Size: M
 
 ## Goal
@@ -12,7 +12,7 @@ log) move into `bin/squad`, so they always work the same way and cannot be skipp
 - Out: the observer (003), QA changes (002), any change to V!'s global hook files.
 
 ## Done when
-- [x] `squad heavy -- <cmd>` runs one heavy command at a time per team: first come, first
+- [x] `squad heavy <seat> [<ID>] -- <cmd>` runs one heavy command at a time per team: first come, first
       served; the lock `.team/heavy/lock` is a link whose target names the seat, the pid and the time (one atomic step), and `.team/heavy/lock.cmd` names the command; a run over the
       time limit (`heavy_timeout` in team.conf, default 20 min) is stopped and released;
       a lock whose owner process is gone is released by the next caller.
