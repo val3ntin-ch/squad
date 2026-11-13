@@ -126,7 +126,7 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 | tester `PASS` | dispatch the reviewer seat if the roster has one, else review it yourself |
 | tester `FAIL` | dispatch the dev again; the line points it at the test report |
 | reviewer `APPROVE` / `CHANGES` | adjudicate (below), then merge or send the dev back |
-| your review: approve | `squad merge <ID>`, then dispatch the next ready task |
+| your review: approve | the task goes into the next candidate; after the tester's PASS on that candidate, `squad merge <ID>` for each of its tasks; dispatch the next ready task meanwhile |
 | your review: changes | dispatch the dev again; after the fix the task goes to the tester again |
 
 The tester goes first on purpose: you only spend your review on work whose checks already pass.
@@ -166,9 +166,9 @@ Checked beyond the table:
 
 Every finding is concrete: where, expected, actual. A finding the dev cannot act on without asking you is not finished. Do not approve with open findings, and do not invent findings to justify a round.
 
-`APPROVE` means every row is met and you saw the evidence. Then `squad merge <ID>`. If it conflicts, it aborts the merge; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
+`APPROVE` means every row is met and you saw the evidence. The task then goes into the next candidate (PROTOCOL, "How much to test"); after the candidate's PASS, `squad merge <ID>`. If it conflicts, it aborts the merge; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
 
-**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task, write it into `READY.md` as an open decision for V! with the reports, and go on with the other tasks.
+**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task: set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for V! with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
 
 ## Keeping your own context clean
 
@@ -193,7 +193,7 @@ Only for these: a seat shows a permission prompt or a sign-in error (say what it
 
 ## Finishing
 
-When every task is merged:
+When every task is merged, or stopped at the round limit and listed for V!:
 
 1. Ask the tester for one full run on `$TEAM_BASE`.
 2. **Converge.** Compare `$TEAM_BASE` with the SPEC and every acceptance table, row by row: the full diff against where it started, every screen or page in the visual check, every row of "Definition of done". Anything missing or wrong becomes a new task through the loop. Repeat until nothing is missing.

@@ -319,6 +319,9 @@ seat_state() { # <agents json> <name> -> herdr agent_status, or "off"
 # names its owner; a run over heavy_timeout minutes is stopped; a lock or queue
 # entry whose process is gone is cleared by the next caller.
 HEAVY_POLL=${SQUAD_HEAVY_POLL:-5}
+# One lock for the whole machine: every team on this computer shares it (two teams' full
+# suites at once make both slow and turn slow tests into false failures).
+HEAVY_DIR=${SQUAD_HEAVY_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/squad/heavy}
 
 kill_tree() { # <pid> [signal]: the process and everything it started
   local c sig=${2:-TERM}
@@ -326,7 +329,7 @@ kill_tree() { # <pid> [signal]: the process and everything it started
   kill "-$sig" "$1" 2>/dev/null || true
 }
 
-proc_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//'; }
+proc_start() { [ -n "${1:-}" ] || return 0; { ps -o lstart= -p "$1" 2>/dev/null || true; } | tr -s ' ' | sed 's/^ //; s/ $//'; }
 
 group_alive() { pgrep -g "$1" >/dev/null 2>&1; }
 
@@ -361,10 +364,10 @@ mutex() { # <dir>: a short critical section; a mutex older than a minute is left
   done
 }
 
-heavy_owner() { readlink "$TEAM_DIR/heavy/lock" 2>/dev/null || true; }
+heavy_owner() { readlink "$HEAVY_DIR/lock" 2>/dev/null || true; }
 
 heavy_clear_stale() {
-  local q="$TEAM_DIR/heavy/queue" f pid val seat since
+  local q="$HEAVY_DIR/queue" f pid val seat since
   for f in "$q"/*; do
     [ -f "$f" ] || continue
     pid=$(basename "$f" | cut -d- -f2)
@@ -376,21 +379,24 @@ heavy_clear_stale() {
   IFS=: read -r seat pid since lim <<<"$val"
   [ -n "$lim" ] || lim=$((HEAVY_TIMEOUT * 60))
   if ! kill -0 "$pid" 2>/dev/null || [ $(( $(date +%s) - ${since:-0} )) -gt $(( lim + 300 )) ]; then
-    mutex "$TEAM_DIR/heavy/clean"
+    mutex "$HEAVY_DIR/clean"
     # still the same stale owner? (another caller may have cleared it and a new run taken the lock)
     if [ "$(heavy_owner)" = "$val" ]; then
       # the owner is gone, its run may not be: end the run's group before the lock is free
       # the group, only if its leader is the same process (a pid can be reused after a reboot or a long time)
       local pg="" pgstart=""
-      read -r pg pgstart <"$TEAM_DIR/heavy/lock.pgid" 2>/dev/null || true
-      [ -z "$pg" ] || [ "$(proc_start "$pg")" = "$pgstart" ] || pg=""
+      read -r pg pgstart <"$HEAVY_DIR/lock.pgid" 2>/dev/null || true
+      # a leader that is gone leaves its group id reserved while members live; a living leader
+      # with another start time is a reused pid
+      local st; st=$(proc_start "$pg")
+      [ -z "$pg" ] || [ -z "$st" ] || [ "$st" = "$pgstart" ] || pg=""
       # an owner that is still alive learns that its run was stopped: it never reports a pass
-      : >"$TEAM_DIR/heavy/stopped.$pid"
+      : >"$HEAVY_DIR/stopped.$pid"
       if [ -n "$pg" ] && group_alive "$pg"; then stop_group "$pg"; fi
-      rm -f "$TEAM_DIR/heavy/lock" "$TEAM_DIR/heavy/lock.cmd" "$TEAM_DIR/heavy/lock.pgid"
+      rm -f "$HEAVY_DIR/lock" "$HEAVY_DIR/lock.cmd" "$HEAVY_DIR/lock.pgid"
       log_event "$seat" - HEAVY_STALE "lock cleared: owner process gone or over time"
     fi
-    rmdir "$TEAM_DIR/heavy/clean" 2>/dev/null || true
+    rmdir "$HEAVY_DIR/clean" 2>/dev/null || true
   fi
 }
 
@@ -401,20 +407,20 @@ heavy_status() {
   val=$(heavy_owner)
   if [ -n "$val" ]; then
     IFS=: read -r seat pid since _ <<<"$val"
-    echo "lock: $seat since $(fmt_hm "$since"): $(cat "$TEAM_DIR/heavy/lock.cmd" 2>/dev/null || true)"
+    echo "lock: $seat since $(fmt_hm "$since"): $(cat "$HEAVY_DIR/lock.cmd" 2>/dev/null || true)"
   else
     echo "lock: free"
   fi
-  for f in "$TEAM_DIR"/heavy/queue/*; do [ -f "$f" ] && names="$names $(basename "$f" | cut -d- -f3-)"; done
+  for f in "$HEAVY_DIR"/queue/*; do [ -f "$f" ] && names="$names $(basename "$f" | cut -d- -f3-)"; done
   [ -z "$names" ] || echo "queue:$names"
 }
 
 heavy_ticket() { # -> the next arrival number (a counter under a mutex: callers in the same second keep their order)
   local n
-  mutex "$TEAM_DIR/heavy/seq.lock"
-  n=$(( $(cat "$TEAM_DIR/heavy/seq" 2>/dev/null || echo 0) + 1 ))
-  echo "$n" >"$TEAM_DIR/heavy/seq"
-  rmdir "$TEAM_DIR/heavy/seq.lock"
+  mutex "$HEAVY_DIR/seq.lock"
+  n=$(( $(cat "$HEAVY_DIR/seq" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >"$HEAVY_DIR/seq"
+  rmdir "$HEAVY_DIR/seq.lock"
   printf '%012d' "$n"
 }
 
@@ -471,15 +477,15 @@ cmd_heavy() {
   run_dir=$(pwd -P)
   local snap_name="" limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
 
-  local q="$TEAM_DIR/heavy/queue" waited=0 start rc
-  mkdir -p "$q"
-  HV_LOCK="$TEAM_DIR/heavy/lock"
+  local q="$HEAVY_DIR/queue" waited=0 start rc
+  mkdir -p "$q" "$TEAM_DIR/heavy"
+  HV_LOCK="$HEAVY_DIR/lock"
   # arrival order; the pid in the name lets the next caller clear a dead waiter
-  HV_ME="$q/$(heavy_ticket)-$$-$seat"
+  HV_ME="$q/$(heavy_ticket)-$$-$seat@$(basename "$REPO")"
   : >"$HV_ME"
   trap 'heavy_release' EXIT
   trap 'heavy_release; exit 130' INT TERM HUP
-  HV_VAL="$seat:$$:$(date +%s):$limit"
+  HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$limit"
   while :; do
     heavy_clear_stale
     # a waiter whose queue entry is gone would wait forever (hive observer, pass 64): stop and say so
@@ -487,28 +493,30 @@ cmd_heavy() {
     if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && ln -s "$HV_VAL" "$HV_LOCK" 2>/dev/null; then break; fi
     [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; }
     sleep "$HEAVY_POLL"
-    HV_VAL="$seat:$$:$(date +%s):$limit"
+    HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$limit"
   done
   rm -f "$HV_ME"; HV_ME=""
   # a dev's run happens in a snapshot of the commit, so the dev can keep working while it runs;
   # prepared under the lock, so a second run of the same seat cannot reset it mid-run
   if [ "${S_ROLE[$si]}" = dev ]; then
     local snap rel
-    snap=$(prepare_snapshot "$seat" "$sha") || die "could not prepare the snapshot of $sha for $seat (log: .team/heavy/$seat.setup.log)."
+    snap=$(HV_LIMIT=$limit prepare_snapshot "$seat" "$sha") || die "could not prepare the snapshot of $sha for $seat (log: .team/heavy/$seat.setup.log)."
+    # a setup that took the whole limit may have lost the lock to the stale cleanup: never run without it
+    [ "$(heavy_owner)" = "$HV_VAL" ] || die "the heavy lock was taken from this run during the snapshot setup; nothing ran."
     rel=""
     case "$run_dir/" in "$(cd "$wt" && pwd -P)"/*) rel=${run_dir#"$(cd "$wt" && pwd -P)"} ;; esac
     run_dir="$snap$rel"
     [ -d "$run_dir" ] || run_dir=$snap
     snap_name=${snap#"$WT_ROOT"/}
   fi
-  printf '@%s (%s min): %s\n' "$sha" "$minutes" "${cmdv[*]}" >"$TEAM_DIR/heavy/lock.cmd"
+  printf '@%s (%s min): %s\n' "$sha" "$minutes" "${cmdv[*]}" >"$HEAVY_DIR/lock.cmd"
   start=$(date +%s)
   log_event "$seat" "$task" HEAVY_START "sha=$sha limit=${minutes}m${shard:+ sample=$shard}${snap_name:+ in=$snap_name} ${cmdv[*]}"
-  rm -f "$TEAM_DIR/heavy/stopped.$$"
+  rm -f "$HEAVY_DIR/stopped.$$"
   ( export SQUAD_SHARD="$shard"; run_in_group "$run_dir" "${cmdv[@]}" ) & HV_CPID=$!
   HV_PGID=$HV_CPID
-  printf '%s %s\n' "$HV_CPID" "$(proc_start "$HV_CPID")" >"$TEAM_DIR/heavy/lock.pgid"
-  ( sleep "$limit"; : >"$TEAM_DIR/heavy/stopped.$$"
+  printf '%s %s\n' "$HV_CPID" "$(proc_start "$HV_CPID")" >"$HEAVY_DIR/lock.pgid"
+  ( sleep "$limit"; : >"$HEAVY_DIR/stopped.$$"
     echo "squad heavy: stopped after $minutes min (heavy_timeout${HEAVY_TIMEOUT_DEV:+ / heavy_timeout_dev} in team.conf)" >&2
     stop_tree "$HV_CPID" ) &
   HV_WPID=$!
@@ -517,14 +525,25 @@ cmd_heavy() {
   # the leader ended; anything left in its group (a child that ignored TERM, a stray background job) ends too
   if group_alive "$HV_PGID"; then stop_group "$HV_PGID"; fi
   # a run that was stopped never counts as passed, whatever its exit code
-  if [ -f "$TEAM_DIR/heavy/stopped.$$" ] || [ $(( $(date +%s) - start )) -ge "$limit" ]; then rc=124; fi
-  rm -f "$TEAM_DIR/heavy/stopped.$$"
+  if [ -f "$HEAVY_DIR/stopped.$$" ] || [ $(( $(date +%s) - start )) -ge "$limit" ]; then rc=124; fi
+  rm -f "$HEAVY_DIR/stopped.$$"
   heavy_release
   log_event "$seat" "$task" HEAVY_END "rc=$rc $(( ($(date +%s) - start + 30) / 60 ))m"
   return "$rc"
 }
 
 HV_ME="" HV_LOCK="" HV_VAL="" HV_CPID="" HV_WPID="" HV_PGID=""
+
+run_limited() { # <seconds> <dir> <command...>: in its own group, recorded for the stale cleanup, stopped at the limit
+  local secs=$1 dir=$2 p k=0; shift 2
+  ( run_in_group "$dir" "$@" ) & p=$!
+  printf '%s %s\n' "$p" "$(proc_start "$p")" >"$HEAVY_DIR/lock.pgid"
+  while kill -0 "$p" 2>/dev/null; do
+    if [ "$k" -ge "$secs" ]; then stop_group "$p"; stop_tree "$p"; return 124; fi
+    sleep 1; k=$((k + 1))
+  done
+  wait "$p"
+}
 
 stop_group() { # <pgid>: TERM, up to the grace, then KILL; returns once the group is empty
   local k=0
@@ -553,7 +572,7 @@ prepare_snapshot() { # <seat> <sha> -> path
     old=$(cat "$TEAM_DIR/heavy/$seat.setup" 2>/dev/null || true)
     if [ "$h" != "$old" ]; then
       say "squad heavy: running setup in ${snap#"$WT_ROOT"/} (log: .team/heavy/$seat.setup.log)" >&2
-      ( cd "$snap" && eval "$SETUP_CMD" ) >"$TEAM_DIR/heavy/$seat.setup.log" 2>&1 || return 1
+      run_limited "${HV_LIMIT:-1200}" "$snap" bash -c "$SETUP_CMD" >"$TEAM_DIR/heavy/$seat.setup.log" 2>&1 || return 1
       echo "$h" >"$TEAM_DIR/heavy/$seat.setup"
     fi
   fi
@@ -565,7 +584,7 @@ heavy_release() { # globals: the trap runs after cmd_heavy's locals are gone
   [ -z "$HV_CPID" ] || stop_tree "$HV_CPID"
   [ -z "$HV_PGID" ] || ! group_alive "$HV_PGID" || stop_group "$HV_PGID"
   [ -z "$HV_WPID" ] || kill_tree "$HV_WPID" KILL
-  if [ -n "$HV_LOCK" ] && [ "$(heavy_owner)" = "$HV_VAL" ]; then rm -f "$HV_LOCK" "$TEAM_DIR/heavy/lock.cmd" "$TEAM_DIR/heavy/lock.pgid"; fi
+  if [ -n "$HV_LOCK" ] && [ "$(heavy_owner)" = "$HV_VAL" ]; then rm -f "$HV_LOCK" "$HEAVY_DIR/lock.cmd" "$HEAVY_DIR/lock.pgid"; fi
   HV_CPID="" HV_WPID="" HV_ME="" HV_PGID=""
 }
 
@@ -651,12 +670,13 @@ cmd_dispatch() {
       sleep 2; wait_for_state "$seat" "$DISPATCH_WAIT" idle "done" || true
     fi
   fi
-  herdr_team agent prompt "$seat" "$text" >/dev/null || die "could not send the task to $seat."
+  # logged before the task is sent: a fast seat's report can never come before its dispatch
+  log_event "$seat" "$task" DISPATCH "round=$round${model:+ model=$model} $(usage_tag)"
+  herdr_team agent prompt "$seat" "$text" >/dev/null || { log_event "$seat" "$task" DISPATCH_FAILED "could not send"; die "could not send the task to $seat."; }
   if ! wait_for_state "$seat" "$DISPATCH_WAIT" working blocked; then
     log_event "$seat" "$task" DISPATCH_FAILED "no work seen in ${DISPATCH_WAIT}s"
     die "$seat did not start on $task within ${DISPATCH_WAIT}s. Read its pane: squad herdr agent read $seat --source visible"
   fi
-  log_event "$seat" "$task" DISPATCH "round=$round${model:+ model=$model} $(usage_tag)"
   say "$seat started on $task (round $round${model:+, $model})."
 }
 
@@ -686,7 +706,7 @@ cmd_merge() {
 open_tasks() { # -> "seat task" for each seat whose last dispatch has no answer yet
   awk '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; t = $4; e = $5 } else { s = $2; t = $3; e = $4 }
          if (e == "DISPATCH") open[s] = t
-         else if (e ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT)$/ && open[s] == t) delete open[s] }
+         else if (e ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT|DISPATCH_FAILED)$/ && open[s] == t) delete open[s] }
        END { for (s in open) print s, open[s] }' "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
@@ -954,7 +974,7 @@ document.querySelectorAll('.f button').forEach(b=>b.onclick=()=>{document.queryS
 document.querySelectorAll('.dec').forEach(c=>c.hidden=!(b.dataset.f==='all'||c.dataset.k===b.dataset.f))});
 </script>
 FOOT
-  } >"$out.tmp" && mv "$out.tmp" "$out"
+  } >"$out.tmp.$$" && mv "$out.tmp.$$" "$out"
   echo "$out"
 }
 
@@ -1196,7 +1216,7 @@ watch_once() {
       printf "\n %s\n", chips
     }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true
   printf ' %s%s\n' "$states" "${ev:+  last: $ev}"
-  [ ! -L "$TEAM_DIR/heavy/lock" ] || printf ' %s\n' "$(heavy_status | tr '\n' ' ')"
+  [ ! -L "$HEAVY_DIR/lock" ] || printf ' %s\n' "$(heavy_status | tr '\n' ' ')"
 }
 
 # ---- observer passes --------------------------------------------------------------
@@ -1468,15 +1488,22 @@ cmd_init() {
 # The preset is the one recorded at init ("# preset: <name>"), else 'default'.
 conf_preset() { sed -n 's/^# preset: *\([A-Za-z0-9_-]*\).*/\1/p' "$1" 2>/dev/null | head -1; }
 
-mark_preset() { # <conf> <name>: record the preset a team.conf came from
-  local tmp; tmp=$(mktemp)
-  { printf '# preset: %s\n' "$2"; grep -v '^# preset:' "$1"; } >"$tmp" && cat "$tmp" >"$1"; rm -f "$tmp"
+mark_preset() { # <conf> <name>: record the preset a team.conf came from (atomic rename)
+  local tmp="$1.tmp.$$"
+  { printf '# preset: %s\n' "$2"; grep -v '^# preset:' "$1" || true; } >"$tmp" && mv "$tmp" "$1"
 }
 
-update_conf() { # [--quiet-if-none]
-  local conf="$TEAM_DIR/team.conf" preset src key rest line role devs adds="" tmp n sum0
-  [ -f "$conf" ] || return 0
-  sum0=$(cksum <"$conf")
+update_conf() { # the whole read, decide and write runs under one mutex
+  [ -f "$TEAM_DIR/team.conf" ] || return 0
+  local rc=0
+  mutex "$TEAM_DIR/.conf.lock"
+  update_conf_locked || rc=$?
+  rmdir "$TEAM_DIR/.conf.lock" 2>/dev/null || true
+  return "$rc"
+}
+
+update_conf_locked() {
+  local conf="$TEAM_DIR/team.conf" preset src key rest line role devs adds="" tmp n
   grep -qE '^[[:space:]]*upgrade[[:space:]]+off([[:space:]]|#|$)' "$conf" && return 0
   preset=$(conf_preset "$conf")
   if [ -z "$preset" ]; then
@@ -1484,7 +1511,7 @@ update_conf() { # [--quiet-if-none]
     local nd nr; nd=$(grep -cE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+dev([[:space:]]|$)' "$conf" || true)
     nr=$(grep -cE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+reviewer([[:space:]]|$)' "$conf" || true)
     if [ "$nd" -le 1 ] && [ "$nr" = 0 ]; then preset=small; elif [ "$nd" -ge 5 ]; then preset=large; else preset=default; fi
-    mark_preset "$conf" "$preset"; sum0=$(cksum <"$conf")
+    mark_preset "$conf" "$preset"
     say "  note     team.conf had no preset mark; squad takes it as '$preset' (from its seats) and wrote '# preset: $preset' at the top. Change that line to choose another."
   fi
   src="$PRESETS/$preset.conf"
@@ -1515,12 +1542,8 @@ update_conf() { # [--quiet-if-none]
     adds="$adds$line"$'\n'
   done
   [ -n "$adds" ] || return 0
-  # write once, under a mutex, and only if no other run changed the file meanwhile
-  mutex "$TEAM_DIR/.conf.lock"
-  if [ "$(cksum <"$conf")" != "$sum0" ]; then rmdir "$TEAM_DIR/.conf.lock"; update_conf; return; fi
   tmp="$conf.tmp.$$"
   { cat "$conf"; printf '\n# added by squad update-conf on %s (preset %s)\n%s' "$(date '+%Y-%m-%d %H:%M')" "$preset" "$adds"; } >"$tmp" && mv "$tmp" "$conf"
-  rmdir "$TEAM_DIR/.conf.lock"
   n=$(printf '%s' "$adds" | grep -c .)
   say "  updated  .team/team.conf: $n line(s) added from preset '$preset' (put 'upgrade off' in it to stop this):"
   printf '%s' "$adds" | sed 's/^/             /'

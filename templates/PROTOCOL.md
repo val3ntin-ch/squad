@@ -71,7 +71,7 @@ Every seat runs on the same computer. A full check run (the whole test suite, a 
 
 - Every heavy run goes through the lock: `squad heavy <your seat name> <ID> -- <command>`. A dev commits first (a WIP commit is fine): `squad heavy` refuses a dev worktree with uncommitted changes, and every run names the commit it proved. A dev's run happens in a snapshot of that commit (`<repo>-team/.runs/<seat>`), so you can keep working while it runs; use paths relative to your worktree, never an absolute path into it. A diagnostic variant is a commit or a separate test file, never an edit made and undone inside the run.
 - A dev runs a sample, not the suite: `squad heavy <your seat name> <ID> --sample -- <runner> --shard={shard}` runs one fixed share of the tests (vitest, jest and playwright take `--shard=k/n`), or a filter on the tests of the task. The whole suite is the tester's. For a command with `&&` or a pipe: `squad heavy <your seat name> <ID> -- bash -c '<command>'`. It waits its turn (first come, first served), names you as the owner, and stops a run after its time limit ($HEAVY_TIMEOUT minutes; a dev's run is shorter, `heavy_timeout_dev`). Never build your own lock or wait loop.
-- `squad heavy --status` shows who holds the lock and who waits.
+- `squad heavy --status` shows who holds the lock and who waits. The lock is one for the whole machine: teams of other repositories on this computer wait in the same queue.
 - A dev runs only the checks of its own task: the tests of the files it changed, the consumers the brief names, and the task's dev check. Never the full suite.
 - The full suite belongs to the tester, and the tester runs one thing at a time.
 - Never start a run while another run of yours is still going. Never start a second run because the first is slow.
@@ -106,7 +106,7 @@ The tester comes first in the queue for a heavy run. A dev never repeats a whole
 4. Keep reports short: the status line, the acceptance table, then at most ten lines of notes. No narrative, no restating of the brief.
 5. When you finish, write the report, then run the `squad done …` command your role file gives. Reply in the terminal with one line that names the report file, and stop. Do not start the next task on your own.
 6. If you are stuck after two real attempts at the same problem, stop and report `BLOCKED` with what you tried.
-7. Never push, never force anything, never delete branches or worktrees, and never edit files under `$TEAM_DIR` other than your own reports.
+7. Never push, never force anything, never delete branches or worktrees, and never edit files under `$TEAM_DIR` other than the ones the "Shared files" table gives your role (the lead: GOAL answers, SPEC, DECISIONS, TASKS, briefs, reviews, LESSONS, READY; the others: their own reports; the observer: `observer/`).
 8. Report what happened, including what you did not do or could not verify. "Not checked: the dark scheme" is useful. A report that implies everything passed is not.
 9. Do not weaken, skip or delete a check to make it pass. Find the cause.
 10. Expected values come from the brief, the SPEC or their references, never from the output you are checking.

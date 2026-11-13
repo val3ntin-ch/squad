@@ -22,3 +22,10 @@ owner, a time limit, a snapshot per dev run, a process group per run, and a samp
 **To decide then:** container runtime (Docker, Podman, OrbStack), how herdr panes attach to a
 container, shared caches (package store, build cache), and whether the heavy lock stays for a
 shared resource such as a browser farm.
+
+## Later: session names that cannot collide
+
+Two repositories with the same folder name (for example `~/a/app` and `~/b/app`) get the same
+herdr session name and workspace label (CodeRabbit, PR #10). Not a risk today: every repository
+of V! has its own name. Fix when needed: `session <name>` in team.conf, or a short hash of the
+path in the default name (that would rename existing sessions such as `hive`).
