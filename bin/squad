@@ -1574,10 +1574,12 @@ report_tab() { # <workspace>: the report, live, in the terminal ('o' opens the H
 # herdr's `agent start` does not wait for the pane's shell: on a shell that is
 # still starting (rc files, plugin managers) it fails at once with
 # agent_pane_busy. Retry that case for up to a minute; anything else is final.
+START_ERR=""
 start_agent() { # <herdr agent start args...>
   local out deadline=$((SECONDS + 60))
   while :; do
-    if out=$(herdr agent start "$@" 2>&1); then return 0; fi
+    if out=$(herdr agent start "$@" 2>&1); then START_ERR=""; return 0; fi
+    START_ERR=$out
     case "$out" in
       *agent_pane_busy*) [ "$SECONDS" -lt "$deadline" ] || { printf '%s\n' "$out" >&2; return 1; }; sleep 1 ;;
       *) printf '%s\n' "$out" >&2; return 1 ;;
@@ -1586,8 +1588,14 @@ start_agent() { # <herdr agent start args...>
 }
 
 # Name the first-run dialog a stuck agent is showing, from its pane's text.
-explain_stuck() { # <name> <pane>
+explain_stuck() { # <name> <pane> [herdr's error]
   local text; text=$(herdr pane read "$2" 2>/dev/null || true)
+  case "${3:-}" in
+    *agent_name_taken*)
+      say "    → another workspace of this herdr session already runs a seat named '$1' (usually a second 'squad up')."
+      say "      Close the extra workspace (squad down closes one), then run 'squad up' once."
+      return 0 ;;
+  esac
   case "$text" in
     *"rust this folder"*|*"o you trust"*|*"afety check"*)
       say "    → it asks whether to trust this folder (first run of this project only)."
@@ -1711,8 +1719,8 @@ start_seat() { # <index> <pane>
       claude) agent_args=(--resume "$resume_id" "${agent_args[@]}") ;;
       codex) agent_args=(resume "$resume_id" "${agent_args[@]}") ;;
     esac
-  elif [ -f "$TEAM_DIR/seats/$name.session" ] && [ "${SQUAD_FRESH:-0}" != 1 ]; then
-    log_event "$name" - FRESH_START "its last conversation was not found"
+  elif [ -f "$TEAM_DIR/seats/$name.started" ] && [ "${SQUAD_FRESH:-0}" != 1 ]; then
+    log_event "$name" - FRESH_START "no saved conversation to resume (none had a message yet, or it was deleted)"
   fi
   local -a fresh_args=("${start_args[@]}")
   [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
@@ -1730,13 +1738,14 @@ start_seat() { # <index> <pane>
     herdr pane run "$pane" "clear" >/dev/null 2>&1 || true
   fi
   if [ -n "$resume_id" ] || start_agent "${start_args[@]}"; then
+    mkdir -p "$TEAM_DIR/seats"; : >"$TEAM_DIR/seats/$name.started"
     if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name")
     else say "  started $name ($kind${args:+ $args})"; fi
     STARTED+=("$name")
   else
     say "  $name did not become ready."
     STUCK_ON_TRUST=0
-    explain_stuck "$name" "$pane"
+    explain_stuck "$name" "$pane" "$START_ERR"
     # Claude and Codex both save trust per repository: one answer covers every
     # seat of that agent, so don't make the human answer the same dialog again
     [ "$STUCK_ON_TRUST" = 1 ] && TRUST_WAIT="$TRUST_WAIT$kind "
@@ -1785,6 +1794,18 @@ check_session() {
   die "this herdr session is not '$SESSION_NAME', the session of $(basename "$REPO"). Each repository runs in its own session: run 'squad up' from a terminal outside herdr, or 'herdr session attach $SESSION_NAME' and 'squad up' there. (To keep this session, add 'session <its name>' to .team/team.conf.)"
 }
 
+# One 'squad up' at a time per team: worktrees and npm installs take minutes,
+# and a second run in that time creates a second workspace (seen on tonus).
+up_lock() {
+  local f="$TEAM_DIR/up.pid" pid
+  pid=$(cat "$f" 2>/dev/null || true)
+  if [ -n "$pid" ] && [ "$pid" != "$$" ] && kill -0 "$pid" 2>/dev/null; then
+    die "another 'squad up' for this team is running (pid $pid; started from outside herdr, it logs to .team/up.log). Wait for it to finish; the team appears in herdr's workspace '$(basename "$REPO") team'."
+  fi
+  echo "$$" >"$f"
+  trap 'rm -f "$TEAM_DIR/up.pid"' EXIT
+}
+
 cmd_up() {
   find_repo
   [ -f "$TEAM_DIR/team.conf" ] || cmd_init
@@ -1792,6 +1813,7 @@ cmd_up() {
   if [ "${HERDR_ENV:-}" != 1 ]; then up_from_outside; return; fi
   require_herdr
   check_session
+  up_lock
   mkdir -p "$TEAM_DIR/reports"
   render_team_files
   write_herdr_socket

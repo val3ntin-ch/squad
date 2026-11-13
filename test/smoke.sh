@@ -35,6 +35,7 @@ case "$1 $2" in
   "pane read") echo "${MOCK_PANE_TEXT:-}" ;;
   "agent start")
     if [ "$3" = "${MOCK_FAIL:-}" ]; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
+    if [ "$3" = "${MOCK_TAKEN:-}" ]; then echo "{\"error\":{\"code\":\"agent_name_taken\",\"message\":\"agent name $3 is already used\"}}" >&2; exit 1; fi
     # MOCK_FAIL_RESUME=1: the agent refuses an old conversation
     if [ "${MOCK_FAIL_RESUME:-}" = 1 ] && case " $* " in *" --resume "*|*" -- resume "*) true ;; *) false ;; esac; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
     # MOCK_BUSY=N: the first N starts answer like a shell that is still starting
@@ -141,7 +142,8 @@ layout_up() { # <width> -> fresh team workspace laid out at that width
   MOCK_WIDTH=$1 "$squad" up >/dev/null 2>&1
 }
 layout_up 160
-check "talk layout at 160 columns" grep -qF "layout: talk" <(MOCK_WIDTH=160 "$squad" up 2>/dev/null; true)
+talk_out=$(MOCK_WIDTH=160 "$squad" up 2>/dev/null || true)
+check "talk layout at 160 columns" grep -qF "layout: talk" <<<"$talk_out"
 check "talk: the strip runs squad watch" grep -qF "$squad_abs watch" "$MOCK_LOG"
 check "talk: reviewers and tester get a review tab" grep -q 'tab create --workspace w2 --label review' "$MOCK_LOG"
 check "talk: lazygit gets a changes tab" grep -q 'tab create --workspace w2 --label changes' "$MOCK_LOG"
@@ -521,6 +523,12 @@ MOCK_FAIL_RESUME=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "a refused resume falls back to a fresh start once, and says so" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG' && grep -q ' dev-b - FRESH_START resume of' .team/events.log"
 reset_log; rm -f .team/.briefed/*
 check "a layout with no client attached (height 0) still starts" env MOCK_WIDTH=0 MOCK_HEIGHT=0 "$squad" up
+sleep 30 & other_up=$!; echo "$other_up" >.team/up.pid
+check "a second squad up refuses while one runs" sh -c "'$squad' up 2>&1 | grep -q \"another 'squad up' for this team is running (pid $other_up\""
+kill "$other_up"; wait "$other_up" 2>/dev/null || true; rm -f .team/up.pid
+reset_log; rm -f .team/.briefed/*
+check "a seat name taken in another workspace is named as such" sh -c "MOCK_TAKEN=dev-b '$squad' up 2>&1 | grep -q 'already runs a seat named .dev-b. (usually a second .squad up.)'"
+check "up removes its lock when it ends" test ! -f .team/up.pid
 
 echo
 echo "$pass passed, $fail failed"
