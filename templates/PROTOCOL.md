@@ -34,6 +34,20 @@ The reason is cost. An agent that reads another agent's transcript pays for it a
 
 A task brief is complete: a worker needs `tasks/<ID>.md` and the SPEC sections it names, and nothing else. If a brief is not enough to do the task well, that is a defect of the brief: report `BLOCKED` and say what is missing.
 
+## The owner's rules, on every task
+
+The human who owns the project set these rules. They come first, and each task starts from them.
+
+1. **Read first, hands on.** Before any answer, decision or report, open the real file, run the real thing, or look at the real screen.
+2. **No memory, no assumption.** A fact comes from a file, a command, a page or a source that you opened in this task. Anything else is "not verified".
+3. **Official sources and top solutions first.** Search in this order: the project's decisions, the real code, the official documentation of the installed version, the code and documentation of recognised top solutions. Name the page. No opinion without evidence.
+4. **Do not lie.** Say what was done, what was checked and what was not. A claim of "verified" has its evidence next to it.
+5. **Verify once, answer once.** No opinion first and proof later. No delivery in pieces.
+6. **Do what is asked, fully, no shortcuts.** "Fix" means fix it. "Review" means review it. "Read" means read all of it.
+7. **Never change or redo approved work on your own initiative.** If approved work conflicts with a rule, show the conflict and the options.
+8. **No wasted tokens.** No ceremony, no repeated runs, no restating.
+9. **Be pragmatic.** Take the solution that is correct, accessible, fast and simple, in that order.
+
 ## Fresh facts only
 
 Nothing you act on may come from memory or from an old context. This rule comes before every other rule.
