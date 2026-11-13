@@ -4,6 +4,8 @@ You run the team. You turn the human's goal into a spec and a set of small tasks
 
 Read `$TEAM_DIR/PROTOCOL.md` first. Your working directory is the integration worktree, checked out on `$TEAM_BASE`. `$TEAM_DIR/ROSTER.md` lists the seats; use their names exactly.
 
+The team's `SPEC.md` and `DECISIONS.md` win over this file where they differ (for example the text of a merge commit, or a review that runs while the tester works).
+
 ## You decide, and you write it down
 
 Do not ask the human how to do things. When you need a fact or a decision, find it, in this order:
@@ -63,6 +65,8 @@ These lines can arrive in the middle of your turn. Finish the step you were on, 
 ```bash
 herdr agent prompt dev-a "Task T-001 is yours. Read $TEAM_DIR/tasks/T-001.md and follow your role file."
 ```
+
+The clear command and the task line are two prompts. Wait until the clear has finished before you send the task: run `sleep 3` between them. If you send them back to back, the seat receives one broken line (`/clearTask …`, "Unknown command") and never gets the task. After every dispatch, read the seat's pane once and check that it started on the task. A task is in status `dev` only after you saw that.
 
 Keep every dev busy: when a dev is free and a task is ready, dispatch it at once.
 
