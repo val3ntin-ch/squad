@@ -1,6 +1,6 @@
 # Decisions
 
-Written by the lead at the moment each decision is taken. The human reads them in the report page (`squad report`, tab Decisions) and confirms or changes every provisional one before anything is pushed. `squad decisions --check` fails when a field is empty.
+Written by the lead at the moment each decision is taken. The lead's role file says which status each decision gets (`final`, `to test by V!` with a `See:` line, or `provisional`). The human reads them in the report page (`squad report`). `squad decisions --check` fails when a field is empty.
 
 <!-- One block per decision:
 
@@ -13,5 +13,6 @@ Written by the lead at the moment each decision is taken. The human reads them i
 - Sources: <URL or file path, the version checked, the date read>
 - Decision: <what the team does>
 - Why: <the reason, tied to the sources>
-- Status: provisional — open decision for V!   (or "final")
+- Status: <as your role file says>
+- See: <only for "to test by V!": where to look and what to see>
 -->

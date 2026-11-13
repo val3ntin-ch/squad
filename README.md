@@ -65,6 +65,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
+| `squad feedback "<text>"` | Your feedback after testing: saved in `.team/FEEDBACK.md`, logged, sent to the lead, who turns it into a task or a decision. |
 | `squad update-conf` | Adds the settings and seats a new squad version needs to `.team/team.conf` and says what it added. `squad up` and `squad init` run it; a file that has everything is left alone. |
 | `squad presets` | Lists the built-in teams. |
 | `squad doctor` | Checks what is installed. |
@@ -114,6 +115,7 @@ setup pnpm install --frozen-lockfile
 - **consult** is the command for the lead's second opinion on a real issue.
 - **heavy_timeout** is how many minutes one heavy run may hold the lock (one lock for the whole machine, in `~/.cache/squad/heavy`: teams of several repositories share it); **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/.runs/<seat>`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
 - **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
+- **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by V!`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
 - **observe_minutes** is the longest gap between two observer passes.
@@ -241,7 +243,7 @@ Claude asks once whether to trust a new repository. `squad up` starts one seat, 
 
 ## Status of this project
 
-Version 0.9.0 (squad v2). This version adds the GPT reviewer, the tester's contract, the observer, the report page, the lead's GPT consult, `squad heavy`, `squad dispatch`, `squad merge`, the gate in `squad done`, one herdr session per repository and resume. `test/smoke.sh` covers squad's own logic against a stand-in for herdr, Claude and Codex.
+Version 0.9.1 (squad v2). 0.9.1: the owner tests what can be seen and gives feedback (`owner visual`, `squad feedback`, the report's To test tab). This version adds the GPT reviewer, the tester's contract, the observer, the report page, the lead's GPT consult, `squad heavy`, `squad dispatch`, `squad merge`, the gate in `squad done`, one herdr session per repository and resume. `test/smoke.sh` covers squad's own logic against a stand-in for herdr, Claude and Codex.
 
 Not yet run end to end with real agents in this shape. Not verified on real herdr: the start of a session from outside herdr (the team is started through herdr's API while `squad up` attaches the session), and resume of a Codex seat through `herdr agent start … -- resume <id>`. Version 0.7.0 ran end to end on herdr 0.9.3 with its earlier team.
 
