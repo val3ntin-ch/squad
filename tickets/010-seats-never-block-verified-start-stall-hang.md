@@ -1,5 +1,5 @@
 # 010 · Seats never block on prompts, verified starts, true stalls, hung runs stopped
-Status: Draft — waiting for approval
+Status: Approved (V!, 14 Nov 2026; dev and tester seats unchanged)
 Size: M
 
 ## Goal
@@ -27,17 +27,17 @@ official docs (sources below).
   containers (roadmap).
 
 ## Done when
-- [ ] Shipped presets and `update-conf`: the Codex reviewer starts with `-a never` and the playwright
+- [x] Shipped presets and `update-conf`: the Codex reviewer starts with `-a never` and the playwright
       MCP server and plugin off; the observer starts with `--permission-mode dontAsk` and an allow list
       (read, read-only git, squad commands); dev and tester seats are unchanged.
-- [ ] `squad dispatch` sends only when the seat shows its ready prompt and no menu, and says "started"
+- [x] `squad dispatch` sends only when the seat shows its ready prompt and no menu, and says "started"
       only when the pane shows a running turn or the task left the input line; otherwise it resends
       once, then logs `DISPATCH_NOT_STARTED` and fails.
-- [ ] A seat that owns a live heavy run is never STALLED; `squad heavy` refreshes
+- [x] A seat that owns a live heavy run is never STALLED; `squad heavy` refreshes
       `seats/<seat>.heartbeat`; STALLED uses the newest of its events, heartbeat and working time.
-- [ ] A heavy run whose output size and process-group CPU time do not change for `heavy_silent_minutes`
+- [x] A heavy run whose output size and process-group CPU time do not change for `heavy_silent_minutes`
       is stopped as a group, logged `HUNG`, exits 124, and frees the lock; the 20-min cap stays.
-- [ ] A task with any earlier dev event (e.g. DONE-FOR-SWITCH) is dispatched without a contract; a
+- [x] A task with any earlier dev event (e.g. DONE-FOR-SWITCH) is dispatched without a contract; a
       dev idle with no open task for `idle_minutes` gives the lead one line; tests pass under bash 5 and 3.2.
 
 ## Sources (opened and read by the research agent, 13 Nov 2026)
@@ -55,3 +55,6 @@ official docs (sources below).
    allow rule into a refusal; it needs a per-project allow list first.
 2. Not verified live: an interactive Codex seat with `-a never` (only config parsing was tested).
 3. For hive, the new seat arguments arrive through `update-conf` at the next `squad up`.
+
+## Evidence (14 Nov 2026)
+`bash test/smoke.sh`: 320 passed under bash 5 and /bin/bash 3.2.57; `shellcheck -S warning`: clean. Smoke: 'the reviewer starts with -a never', 'the observer's settings allow only its own folder and read commands', 'update-conf adds -a never to a Codex reviewer and dontAsk to an observer', 'dispatch refuses a seat that shows a menu instead of its prompt', 'dispatch sends once the seat is at its prompt and sees the turn start', 'a task stopped for a switch (DONE-FOR-SWITCH) goes on without a contract', 'a run with no output and no CPU is stopped as hung', 'a run that keeps printing is not hung', 'a seat with a live heavy run (fresh heartbeat) is not stalled', 'an idle dev with no task is told to the lead once'. Not verified live: a Codex seat with `-a never`; the ready-prompt marks on real panes.

@@ -28,7 +28,11 @@ case "$1 $2" in
   "agent prompt") if [ "${MOCK_DYNAMIC:-}" = 1 ] && [ "$3" = dev-a ]; then
                     case "$4" in /*) echo idle ;; *) if [ "${MOCK_NEVER_WORK:-}" = 1 ]; then echo idle; else echo working; fi ;; esac >"$(dirname "$MOCK_LOG")/state"; fi
                   echo '{}' ;;
-  "agent read") echo "${MOCK_PANE_TEXT:-}" ;;
+  "agent read") if [ -n "${MOCK_PANE_TEXT:-}" ]; then echo "$MOCK_PANE_TEXT"
+                elif [ "${MOCK_DYNAMIC:-}" = 1 ]; then st=$(cat "$(dirname "$MOCK_LOG")/state" 2>/dev/null || echo idle)
+                  if [ "$st" = working ]; then printf '✻ Working… (esc to interrupt)\n❯ \n'; else printf 'Claude Code\n❯ \n'; fi
+                fi ;;
+  "agent send-keys") echo '{}' ;;
   "session list") echo "${MOCK_SESSIONS:-{\}}" ;;
   "workspace list") if [ -n "${MOCK_WS:-}" ]; then echo "$MOCK_WS"; else echo '{"result":{"workspaces":[]}}'; fi ;;
   "pane list") if [ -n "${MOCK_PANES:-}" ]; then echo "$MOCK_PANES"; else echo '{"result":{"panes":[]}}'; fi ;;
@@ -244,7 +248,7 @@ check "init keeps an existing team.conf" sh -c "'$squad' init 2>&1 | grep -q 'ke
 unset SQUAD_PRESETS
 rm -f "$XDG_CONFIG_HOME/squad/team.conf"
 shipped="$here/../presets"
-check "the shipped default has a GPT Sol reviewer at medium effort" grep -qE '^seat +rev-gpt +codex +reviewer +dev-a,dev-b,dev-c +-m gpt-6.1-sol -c model_reasoning_effort=medium$' "$shipped/default.conf"
+check "the shipped default has a GPT Sol reviewer at medium effort" grep -qE '^seat +rev-gpt +codex +reviewer +dev-a,dev-b,dev-c +-m gpt-6.1-sol -c model_reasoning_effort=medium -a never$' "$shipped/default.conf"
 check "the shipped default has an observer on Sonnet" grep -qE '^seat +observer +claude +observer +- +--model claude-sonnet-5-5' "$shipped/default.conf"
 check "every shipped preset has one lead and a tester" sh -c "for f in '$shipped'/*.conf; do test \"\$(grep -cE '^seat .* lead ' \$f)\" = 1 && grep -qE '^seat .* tester ' \$f || exit 1; done"
 check "every shipped preset turns the verify hook off and consults GPT Sol" sh -c "for f in '$shipped'/*.conf; do grep -qx 'verify_hook off' \$f && grep -q '^consult codex --search exec -m gpt-6.1-sol' \$f || exit 1; done"
@@ -340,7 +344,7 @@ reset_log; rm -f "$tmp/state"; printf 'x\n' >.team/reports/T-100-contract.md
 check "dispatch gives dev-a its task once it is idle again" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-100
 check "dispatch sends the clear first, then the task line" sh -c "grep -n 'agent prompt dev-a' '$MOCK_LOG' | head -1 | grep -q '/clear' && grep -q 'agent prompt dev-a Task T-100 is yours. Read $tmp/proj4/.team/tasks/T-100.md' '$MOCK_LOG'"
 check "dispatch logs the event with the round" ev ' dev-a T-100 DISPATCH round=1'
-check "dispatch fails when the seat never starts, and logs it" sh -c "! MOCK_DYNAMIC=1 MOCK_NEVER_WORK=1 SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-100 2>/dev/null && grep -q ' dev-a T-100 DISPATCH_FAILED' .team/events.log"
+check "dispatch fails when the seat never starts, and logs it" sh -c "! MOCK_DYNAMIC=1 MOCK_NEVER_WORK=1 SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-100 2>/dev/null && grep -q ' dev-a T-100 DISPATCH_NOT_STARTED' .team/events.log"
 check "dispatch refuses a dev task with no contract from the tester" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a T-101
 printf '19:09:44 dev-a T-150 DONE\n' >>.team/events.log; reset_log; rm -f "$tmp/state"
 check "a task already under way (an older squad) goes on without a contract" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-150
@@ -751,6 +755,41 @@ cd "$tmp/old"; printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat de
 "$squad" update-conf >/dev/null
 check "update-conf gives an older team owner visual" grep -qx 'owner visual' .team/team.conf
 cd "$tmp/proj4"
+
+# ---- 010 · seats never block, verified starts, true stalls, hung runs ----------------------
+cd "$tmp/proj4"
+check "the shipped observer never waits on a prompt (dontAsk), the tester is unchanged" sh -c "grep -qE '^seat +observer .* --permission-mode dontAsk$' '$here/../presets/default.conf' && ! grep -qE '^seat +tester .*permission-mode' '$here/../presets/default.conf'"
+reset_log; rm -f .team/.briefed/*; MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true
+check "the reviewer starts with -a never" grep -qE '^herdr agent start rev-gpt --kind codex .* -a never ' "$MOCK_LOG"
+check "the observer's settings allow only its own folder and read commands" sh -c "jq -e '.permissions.allow | (map(select(startswith(\"Edit(\"))) == [\"Edit(/$tmp/proj4/.team/observer/**)\"]) and (map(select(test(\"heavy --status\"))) | length == 1)' .team/seats/observer.settings.json"
+check "a dev's settings carry no allow list" sh -c "jq -e 'has(\"permissions\") | not' .team/seats/dev-a.settings.json"
+cd "$tmp/old"; printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat rev claude reviewer dev-a\nseat rev-x codex reviewer dev-a -m gpt-6.1-sol\nseat obs claude observer - --model claude-sonnet-5-5\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "update-conf adds -a never to a Codex reviewer and dontAsk to an observer" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never' .team/team.conf && grep -qx 'seat obs claude observer - --model claude-sonnet-5-5 --permission-mode dontAsk' .team/team.conf && grep -qx 'seat rev claude reviewer dev-a' .team/team.conf"
+"$squad" update-conf >/dev/null
+check "and only once" test "$(grep -c -- '-a never' .team/team.conf)" = 1
+cd "$tmp/proj4"; printf 'x\n' >.team/reports/T-850-contract.md; reset_log; rm -f "$tmp/state"
+check "dispatch refuses a seat that shows a menu instead of its prompt" sh -c "! MOCK_DYNAMIC=1 MOCK_PANE_TEXT='Allow the playwright MCP server to run tool?  enter to submit | esc to cancel' SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-850 2>&1 | grep -q 'not at its prompt' && exit 1; ! grep -q 'agent prompt dev-a Task T-850' '$MOCK_LOG'"
+reset_log; rm -f "$tmp/state"
+check "dispatch sends once the seat is at its prompt and sees the turn start" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-850
+printf '%s dev-a T-851 DONE-FOR-SWITCH\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log; reset_log; rm -f "$tmp/state"
+check "a task stopped for a switch (DONE-FOR-SWITCH) goes on without a contract" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-851
+rc=0; SQUAD_SILENT_SECONDS=3 SQUAD_WATCH_TICK=1 "$squad" heavy tester T-852 -- sleep 47.3 >/dev/null 2>&1 || rc=$?
+check "a run with no output and no CPU is stopped as hung" sh -c "test $rc = 124 && grep -q ' tester T-852 HUNG ' .team/events.log && ! pgrep -f 'sleep 47[.]3' >/dev/null && test ! -L '$HV/lock'"
+rc=0; out=$(SQUAD_SILENT_SECONDS=3 SQUAD_WATCH_TICK=1 "$squad" heavy tester T-853 -- sh -c 'for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done' 2>&1) || rc=$?
+check "a run that keeps printing is not hung, and its output reaches the caller" sh -c "test $rc = 0 && printf '%s' \"\$1\" | grep -q 'tick 6' && ! printf '%s' \"\$1\" | grep -q 'Killed'" _ "$out"
+printf '%s tester T-854 DISPATCH round=1\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+mkdir -p .team/observer/.seen && echo $(( $(date +%s) - 3600 )) >.team/observer/.seen/tester; date +%s >.team/seats/tester.heartbeat
+reset_log; rm -rf .team/observer/.alerted
+agents_t='{"result":{"agents":[{"name":"tester","agent_status":"idle"},{"name":"lead","agent_status":"working"}]}}'
+check "a seat with a live heavy run (fresh heartbeat) is not stalled" sh -c "MOCK_AGENTS='$agents_t' '$squad' watch --once | grep -v 'stalled' | grep -q 'tester ○'"
+rm -f .team/seats/tester.heartbeat; echo $(( $(date +%s) - 3600 )) >.team/observer/.seen/tester
+check "without the heartbeat the same seat is stalled" sh -c "MOCK_AGENTS='$agents_t' '$squad' watch --once | grep -q 'tester ○ stalled'"
+reset_log; rm -rf .team/observer/.idle
+agents_d='{"result":{"agents":[{"name":"dev-b","agent_status":"idle"},{"name":"lead","agent_status":"working"}]}}'
+mkdir -p .team/observer/.idle && echo $(( $(date +%s) - 600 )) >.team/observer/.idle/dev-b
+MOCK_AGENTS="$agents_d" "$squad" watch --once >/dev/null; MOCK_AGENTS="$agents_d" "$squad" watch --once >/dev/null
+check "an idle dev with no task is told to the lead once" sh -c "test \$(grep -c 'agent prompt lead \[squad\] dev-b has had no task' '$MOCK_LOG') = 1 && grep -q ' dev-b - IDLE ' .team/events.log"
 
 echo
 echo "$pass passed, $fail failed"
