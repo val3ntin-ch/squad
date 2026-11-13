@@ -779,6 +779,9 @@ check "dispatch sends once the seat is at its prompt and sees the turn start" en
 printf '%s dev-a T-851 DONE-FOR-SWITCH\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log; reset_log; rm -f "$tmp/state"
 check "a task stopped for a switch (DONE-FOR-SWITCH) goes on without a contract" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-851
 rc=0; SQUAD_SILENT_SECONDS=3 SQUAD_WATCH_TICK=1 "$squad" heavy tester T-852 -- sleep 47.3 >/dev/null 2>&1 || rc=$?
+cp .team/team.conf "$tmp/conf.keep2"; sed -i.bak 's/^idle_minutes .*/idle_minutes 010/' .team/team.conf && rm -f .team/team.conf.bak
+check "a minute value with a leading zero is read as decimal" sh -c "'$squad' watch --once >/dev/null 2>&1"
+cp "$tmp/conf.keep2" .team/team.conf
 check "a run with no output and no CPU is stopped as hung" sh -c "test $rc = 124 && grep -q ' tester T-852 HUNG ' .team/events.log && ! pgrep -f 'sleep 47[.]3' >/dev/null && test ! -L '$HV/lock'"
 rc=0; out=$(SQUAD_SILENT_SECONDS=3 SQUAD_WATCH_TICK=1 "$squad" heavy tester T-853 -- sh -c 'for i in 1 2 3 4 5 6; do echo tick $i; sleep 1; done' 2>&1) || rc=$?
 check "a run that keeps printing is not hung, and its output reaches the caller" sh -c "test $rc = 0 && printf '%s' \"\$1\" | grep -q 'tick 6' && ! printf '%s' \"\$1\" | grep -q 'Killed'" _ "$out"
@@ -802,6 +805,8 @@ check "a numbered picker is a menu, not a ready prompt" sh -c "! MOCK_PANE_TEXT=
   2. Opus' SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-860 >/dev/null 2>&1 && ! grep -q 'agent prompt dev-a Task T-860' '$MOCK_LOG'"
 reset_log
 rm -f "$tmp/state"
+reset_log
+check "a stranded /clear in the input line is not a ready prompt" sh -c "! MOCK_PANE_TEXT='❯ /clear' SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-860 >/dev/null 2>&1 && ! grep -q 'agent prompt dev-a Task T-860' '$MOCK_LOG'"
 check "a task that already ran and ended counts as started" env MOCK_DYNAMIC=1 MOCK_NEVER_WORK=1 MOCK_PANE_TEXT="> Task T-860 is yours. Read $tmp/proj4/.team/tasks/T-860.md and follow your role file.
 Done.
 ❯ " SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-860
@@ -815,6 +820,11 @@ mkdir -p .team/observer/.seen && echo $(( $(date +%s) - 3600 )) >.team/observer/
 check "a stale lock with a dead owner does not make a seat busy" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"tester\",\"agent_status\":\"idle\"},{\"name\":\"lead\",\"agent_status\":\"working\"}]}}' '$squad' watch --once | grep -q 'tester ○ stalled'"
 rm -f "$HV/lock"
 cd "$tmp/old"; printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat rev-x codex reviewer dev-a -m gpt-6.1-sol  # the GPT reviewer\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\n  seat obs2 claude observer - --model x\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "an indented observer seat gets dontAsk too" grep -qx 'seat obs2 claude observer - --model x --permission-mode dontAsk' .team/team.conf
+printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat rev-x codex reviewer dev-a -m gpt-6.1-sol  # the GPT reviewer\n' >.team/team.conf
 "$squad" update-conf >/dev/null
 check "a seat line with a comment gets its flag before the comment" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never  # the GPT reviewer' .team/team.conf && '$squad' status | grep -q 'rev-x .*-a never'"
 cd "$tmp/proj4"
