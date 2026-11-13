@@ -371,9 +371,12 @@ run_in_group() {
 # The lock is a symbolic link whose target is "<seat>:<pid>:<epoch>": ln -s
 # creates it and names its owner in one atomic step, and fails if it exists.
 mutex() { # <dir>: a short critical section; a mutex older than a minute is left over from a crash
-  local m=$1
+  # bounded (about 2 min, past the 1-min stale rule): a folder that cannot be written fails, never hangs
+  local m=$1 tries=0 max=${SQUAD_MUTEX_TRIES:-600}
   until mkdir "$m" 2>/dev/null; do
     [ -z "$(find "$m" -maxdepth 0 -mmin +1 2>/dev/null)" ] || rmdir "$m" 2>/dev/null || true
+    tries=$((tries + 1))
+    [ "$tries" -lt "$max" ] || die "cannot create the lock $m (is its folder writable?)."
     sleep 0.2
   done
 }
