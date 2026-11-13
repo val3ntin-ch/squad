@@ -499,7 +499,7 @@ printf '# Now — pass 3\nLargest loss: 12 min\nT-500 waited 5 min for the teste
 printf '## S-1 · Batch the tester queue\n- Status: open\n- Problem: queue\n' >.team/observer/SUGGESTIONS.md
 html=$("$squad" report)
 check "report writes one HTML page" test -s "$html"
-check "the page has the six tabs" sh -c "for t in Decisions Observer Timeline QA Cost Events; do grep -q \"data-t=\$t\" '$html' || exit 1; done"
+check "the page has its seven tabs, To test first" sh -c "for t in To-test Decisions Observer Timeline QA Cost Events; do grep -q \"data-t=.\$t.\" '$html' || exit 1; done"
 check "the page shows each decision with its status and the GPT consult" sh -c "grep -q 'D-001' '$html' && grep -q 'open decision for V!' '$html' && grep -q 'GPT consult (consult/1.md)' '$html'"
 check "the page shows the observer's now and suggestions" sh -c "grep -q 'T-500 waited 5 min for the tester' '$html' && grep -q 'Batch the tester queue' '$html'"
 check "the timeline has the task's minutes: total 90, dev 30, test 25, review 8" grep -qE '<tr><td>T-500</td><td>merged</td><td class=n>90</td><td class=n>30</td><td class=n>25</td><td class=n>8</td>' "$html"
@@ -678,6 +678,59 @@ printf '%s %s\n' "$lead_pid" "Mon Jan  1 00:00:00 2001" >"$HV/lock.pgid"; ln -s 
 "$squad" heavy tester T-842 -- true >/dev/null 2>&1
 check "a dead leader's surviving group members are stopped before the lock is free" sh -c "! pgrep -f 'sleep 46[.]6' >/dev/null"
 check "the roadmap keeps the containers reminder" grep -qF 'one container per seat' "$here/../docs/ROADMAP.md"
+
+# ---- 009 · the owner tests what can be seen and gives feedback ---------------------------
+cd "$tmp/proj4"
+check "the shipped presets set owner visual" sh -c "grep -qx 'owner visual' '$here/../presets/default.conf'"
+"$squad" init >/dev/null 2>&1
+check "with owner visual the lead decides what the eye cannot see" sh -c "grep -q 'A decision the eye cannot see' .team/roles/lead.md && ! grep -q 'The human owns every decision' .team/roles/lead.md && ! grep -q 'owner:' .team/roles/lead.md"
+cp .team/team.conf "$tmp/conf.keep"; sed -i.bak 's/^owner .*/owner all/' .team/team.conf && rm -f .team/team.conf.bak; grep -q '^owner ' .team/team.conf || echo 'owner all' >>.team/team.conf
+"$squad" init >/dev/null 2>&1
+check "with owner all the v2 text stays" sh -c "grep -q 'The human owns every decision' .team/roles/lead.md && ! grep -q 'A decision the eye cannot see' .team/roles/lead.md"
+cp "$tmp/conf.keep" .team/team.conf; "$squad" init >/dev/null 2>&1
+cat >.team/DECISIONS.md <<'DEC'
+# Decisions
+
+## D-010 · Tooltip gap
+- Time: 2026-11-13 20:00
+- Question: 11 or 12 px?
+- Options: 1. 11 2. 12
+- Claude: 11, measured
+- GPT: none: not a real issue
+- Sources: reference/hive-ui-v1.1.html, computed
+- Decision: 11 px
+- Why: the preview wins
+- Status: to test by V!
+- See: overlays-tooltip--states, 1280 px, light and dark: the gap equals the preview's
+
+## D-011 · Date picker wait
+- Time: 2026-11-13 20:01
+- Question: how long to wait
+- Options: 1. 1 s 2. settle helper
+- Claude: settle helper
+- GPT: none: not a real issue
+- Sources: react-aria 3.53.1 source
+- Decision: settle helper
+- Why: frames, not time
+- Status: final
+DEC
+check "a decision to test with its See line passes the check" "$squad" decisions --check
+check "the ledger names it to-test" grep -q ' - DECISION D-010 to-test' .team/events.log
+html=$("$squad" report)
+check "the To test tab lists the visual decision with where to look, not the final one" sh -c "sed -n '/id=To-test/,/<\\/section>/p' '$html' | grep -q 'overlays-tooltip--states' && ! sed -n '/id=To-test/,/<\\/section>/p' '$html' | grep -q 'D-011'"
+check "the live view lists what to test" sh -c "printf q | '$squad' report --live | grep -q 'D-010 Tooltip gap — look: overlays-tooltip--states'"
+printf '\n## D-012 · No place\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: to test by V!\n' >>.team/DECISIONS.md
+check "a decision to test without a See line is refused" refuses "$squad" decisions --check
+reset_log
+check "squad feedback saves, logs and tells the lead" sh -c "'$squad' feedback 'The tooltip gap looks 1 px too tight in dark' | grep -q 'F-1 saved and sent' && grep -q '^## F-1 · ' .team/FEEDBACK.md && grep -q 'too tight in dark' .team/FEEDBACK.md && grep -q ' owner - FEEDBACK F-1 The tooltip gap' .team/events.log && grep -q 'agent prompt lead \[squad\] Feedback F-1 from V!' '$MOCK_LOG'"
+printf 'Card raised: the shadow is too strong at 390 px\nCompare with the preview.\n' >"$tmp/fb.txt"
+check "squad feedback --file takes a longer note as F-2" sh -c "'$squad' feedback --file '$tmp/fb.txt' >/dev/null && grep -q '^## F-2 · ' .team/FEEDBACK.md && grep -q 'Compare with the preview.' .team/FEEDBACK.md"
+check "empty feedback is refused" refuses "$squad" feedback '   '
+check "the report shows the open feedback" sh -c "'$squad' report >/dev/null && grep -q 'too tight in dark' '$html'"
+cd "$tmp/old"; printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat tester claude tester -\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "update-conf gives an older team owner visual" grep -qx 'owner visual' .team/team.conf
+cd "$tmp/proj4"
 
 echo
 echo "$pass passed, $fail failed"

@@ -1,5 +1,5 @@
 # 009 · The owner tests the visual items and gives feedback
-Status: Draft — waiting for approval
+Status: Approved (V!, 13 Nov 2026)
 Size: S
 
 ## Goal
@@ -15,16 +15,16 @@ of what to test, and one command to give feedback that the team turns into work.
   through update-conf); a feedback form in the HTML page.
 
 ## Done when
-- [ ] With `owner visual`, the rendered lead role says: decisions the eye cannot see are the lead's
+- [x] With `owner visual`, the rendered lead role says: decisions the eye cannot see are the lead's
       and final once sourced; only a visible difference is "To test by V!", with where to see it
       (story, page or screen) and its expected value; with `owner all` the v2 text stays.
-- [ ] A decision block may carry `- See: <story id, URL or screen>`; the report's "To test" list
+- [x] A decision block may carry `- See: <story id, URL or screen>`; the report's "To test" list
       (HTML tab and live view) shows each decision with status `to test by V!` and its See line.
-- [ ] `squad feedback "<text>"` (or `squad feedback --file <path>`) appends a dated entry to
+- [x] `squad feedback "<text>"` (or `squad feedback --file <path>`) appends a dated entry to
       `.team/FEEDBACK.md`, logs `FEEDBACK` in events.log and tells the lead in one line; the lead
       role turns each entry into a brief or a decision, and marks the entry done with the task id.
-- [ ] `squad update-conf` adds `owner visual` to older teams; the shipped presets have it.
-- [ ] `bash test/smoke.sh` and `shellcheck` pass under bash 5 and 3.2.
+- [x] `squad update-conf` adds `owner visual` to older teams; the shipped presets have it.
+- [x] `bash test/smoke.sh` and `shellcheck` pass under bash 5 and 3.2.
 
 ## Plan
 - `bin/squad`: `owner` in load_conf and render (`$OWNER_MODE` sections), `cmd_feedback`,
@@ -40,3 +40,7 @@ of what to test, and one command to give feedback that the team turns into work.
 1. "Visual" means anything the eye can see in the product: the look, layout, motion, copy on screen.
 2. GLOBAL.md's "all decisions belong to V!" still holds outside squad teams (architecture, product,
    privacy, legal decisions in V!'s own sessions).
+
+## Evidence (13 Nov 2026)
+`bash test/smoke.sh`: 299 passed under bash 5 and /bin/bash 3.2.57; `shellcheck -S warning`: clean.
+Smoke: 'with owner visual the lead decides what the eye cannot see', 'with owner all the v2 text stays', 'the To test tab lists the visual decision with where to look, not the final one', 'the live view lists what to test', 'a decision to test without a See line is refused', 'squad feedback saves, logs and tells the lead', 'squad feedback --file takes a longer note as F-2', 'the report shows the open feedback', 'update-conf gives an older team owner visual'.

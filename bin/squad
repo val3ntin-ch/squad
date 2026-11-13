@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.9.0"
+VERSION="0.9.1"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -56,6 +56,7 @@ Usage:
   squad notify "<where>" "<rule>"   tell the seats at work that a rule changed (the lead)
   squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
   squad decisions [--check]         list the decisions; --check: every field filled
+  squad feedback "<text>"           your feedback after testing what can be seen: saved, logged, sent to the lead
 
 A team is defined in .team/team.conf. 'squad init' copies your personal
 default ($USER_CONF) if it exists, otherwise the
@@ -88,6 +89,7 @@ LEAD=""
 HEAVY_TIMEOUT=20        # minutes a heavy run may hold the lock
 HEAVY_TIMEOUT_DEV=""    # minutes for a dev seat's run (default: heavy_timeout)
 SAMPLE_PERCENT=10       # squad heavy --sample: the share of the tests one dev run takes
+OWNER_MODE=all          # visual: the human tests what can be seen and gives feedback; the lead decides the rest
 VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (V!'s global Stop hook skips them)
 STALL_MINUTES=15        # a seat with an open task and no work for this long is stalled
 OBSERVE_MINUTES=20      # the longest gap between two observer passes
@@ -116,6 +118,7 @@ load_conf() {
       verify_hook) case "$rest" in on|off) VERIFY_HOOK=$rest ;; *) die "team.conf line $line_no: 'verify_hook' is on or off." ;; esac ;;
       # read by update_conf from the file itself; here it is only checked
       upgrade) case "$rest" in on|off) ;; *) die "team.conf line $line_no: 'upgrade' is on or off." ;; esac ;;
+      owner) case "$rest" in visual|all) OWNER_MODE=$rest ;; *) die "team.conf line $line_no: 'owner' is visual or all." ;; esac ;;
       sample_percent) [[ "$rest" =~ ^[1-9][0-9]?$ ]] || die "team.conf line $line_no: 'sample_percent' is a number from 1 to 99."
                       SAMPLE_PERCENT=$rest ;;
       escalate_model) ESCALATE_MODEL=$rest ;;
@@ -254,6 +257,13 @@ subst() { # <file> NAME=VALUE... : print <file> with each {{NAME}}-style key rep
     { l = $0; for (k = 1; k <= n; k++) l = rep(l, from[k], to[k]); print l }' "$1"
 }
 
+owner_filter() { # keep the <!-- owner:MODE --> sections of this team's owner mode, drop the others and the markers
+  awk -v m="$OWNER_MODE" '
+    /^<!-- owner:[a-z]+ -->$/ { sec = $0; sub(/^<!-- owner:/, "", sec); sub(/ -->$/, "", sec); next }
+    /^<!-- \/owner:[a-z]+ -->$/ { sec = ""; next }
+    sec == "" || sec == m { print }'
+}
+
 render() { # <template> <dest>
   local sq="$SQUAD_HOME/bin/squad" k=0 sub
   local -a pairs=(
@@ -269,7 +279,7 @@ render() { # <template> <dest>
       k=$((k + 2))
     done
     export SUBST_N=$((k / 2))
-    subst "$1" >"$2"
+    subst "$1" | owner_filter >"$2"
   )
 }
 
@@ -779,7 +789,7 @@ cmd_consult() {
 #   ## D-001 · <title>
 #   - Time: / - Question: / - Options: / - Claude: / - GPT: / - Sources: /
 #   - Decision: / - Why: / - Status: provisional — open decision for V! | final
-DECISION_FIELDS="Time Question Options Claude GPT Sources Decision Why Status"
+DECISION_FIELDS="Time Question Options Claude GPT Sources Decision Why Status See"   # See: optional
 
 decisions_tsv() { # DECISIONS.md -> one line per decision: id \t title \t field=value ... (tabs)
   awk -v fields="$DECISION_FIELDS" '
@@ -799,15 +809,19 @@ cmd_decisions() {
   [ "${1:-}" = --check ] || { decisions_tsv | awk -F'\t' '{ s = ""; for (i = 3; i <= NF; i++) if ($i ~ /^Status=/) s = substr($i, 8); printf "%-6s %-14s %s\n", $1, substr(s, 1, 13), $2 }'; return 0; }
   local bad
   bad=$(decisions_tsv | awk -F'\t' '{ for (i = 3; i <= NF; i++) { split($i, kv, "="); val = substr($i, length(kv[1]) + 2)
-           if (val ~ /^ *$/) print $1 ": no " kv[1]
-           if (kv[1] == "Status" && val !~ /^(provisional|final)/) print $1 ": Status must start with provisional or final" } }')
+           if (val ~ /^ *$/ && kv[1] != "See") print $1 ": no " kv[1]
+           if (kv[1] == "Status" && val !~ /^(provisional|final|to test)/) print $1 ": Status must start with provisional, final or to test"
+           if (kv[1] == "Status" && val ~ /^to test/) need_see = 1
+           if (kv[1] == "See") see = val }
+         if (need_see && see ~ /^ *$/) print $1 ": a decision to test needs a See line (where to look)"
+         need_see = 0; see = "" }')
   [ -z "$bad" ] || { printf '%s\n' "$bad" >&2; die "DECISIONS.md: fill every field of each decision (fields: $DECISION_FIELDS)."; }
   # every decision, and every change of its status, goes into the ledger once
   local id st
   while IFS=$'\t' read -r id st; do
     [ -n "$id" ] || continue
     grep -qF " - DECISION $id $st" "$TEAM_DIR/events.log" 2>/dev/null || log_event "$LEAD" - DECISION "$id $st"
-  done < <(decisions_tsv | awk -F'\t' '{ s = ""; for (i = 3; i <= NF; i++) if ($i ~ /^Status=/) { s = substr($i, 8); sub(/ .*/, "", s) } print $1 "\t" s }')
+  done < <(decisions_tsv | awk -F'\t' '{ s = ""; for (i = 3; i <= NF; i++) if ($i ~ /^Status=/) { s = substr($i, 8); if (s ~ /^to test/) s = "to-test"; else sub(/ .*/, "", s) } print $1 "\t" s }')
   say "DECISIONS.md: $(decisions_tsv | grep -c . || true) decision(s), every field filled."
 }
 
@@ -912,15 +926,31 @@ HEAD
     printf '<header><h1>squad · %s</h1><p class=sub>Built %s from %s. Open again after <code>squad report</code>; the report tab in herdr refreshes by itself.</p>\n' \
       "$(basename "$REPO" | html_escape)" "$(date '+%Y-%m-%d %H:%M')" "$(echo "$TEAM_DIR" | html_escape)"
     echo '<nav role=tablist>'
-    for k in Decisions Observer Timeline QA Cost Events; do printf '<button role=tab data-t=%s>%s</button>' "$k" "$k"; done
+    for k in "To test" Decisions Observer Timeline QA Cost Events; do printf '<button role=tab data-t="%s">%s</button>' "${k// /-}" "$k"; done
     echo '</nav></header><main>'
+
+    # To test: what the human looks at, where, and the feedback still open
+    echo '<section id=To-test><div class=card><h3>To test</h3><p class=sub>Decisions that change what you see. Look where it says, then answer with <code>squad feedback "…"</code>.</p>'
+    local tt; tt=$(decisions_tsv | awk -F'\t' '{ s = ""; see = ""; d = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^See=/) see = substr($i, 5); if ($i ~ /^Decision=/) d = substr($i, 10) }
+        if (s ~ /^(to test|provisional)/) print $1 "\t" $2 "\t" see "\t" d }')
+    if [ -n "$tt" ]; then
+      echo '<div class=tw><table><tr><th>Decision</th><th>Where to look</th><th>What was decided</th></tr>'
+      while IFS=$'\t' read -r id title see d; do
+        printf '<tr><td>%s · %s</td><td>%s</td><td>%s</td></tr>\n' "$(html_escape <<<"$id")" "$(html_escape <<<"$title")" "$(html_escape <<<"${see:-—}")" "$(html_escape <<<"$d")"
+      done <<<"$tt"
+      echo '</table></div>'
+    else
+      echo '<p class=empty>Nothing to test right now.</p>'
+    fi
+    echo '</div><div class=card><h3>Your feedback</h3>'; report_section_file "$TEAM_DIR/FEEDBACK.md" "No feedback yet."
+    echo '</div></section>'
 
     # Decisions
     echo '<section id=Decisions><div class=f><button data-f=all aria-pressed=true>All</button><button data-f=prov aria-pressed=false>Open for V!</button><button data-f=final aria-pressed=false>Final</button></div>'
     if [ -n "$(decisions_tsv)" ]; then
       while IFS=$'\t' read -r id title fields; do
         status=$(tr '\t' '\n' <<<"$fields" | sed -n 's/^Status=//p')
-        case "$status" in final*) k=final ;; *) k=prov ;; esac
+        case "$status" in final*) k=final ;; *) k=prov ;; esac   # provisional and "to test" both wait for V!
         printf '<div class="card dec" data-k=%s><h3>%s · %s<span class="badge %s">%s</span></h3><dl>\n' "$k" "$(html_escape <<<"$id")" "$(html_escape <<<"$title")" "$k" "$(html_escape <<<"${status:-no status}")"
         while IFS= read -r v; do
           [ -n "$v" ] || continue
@@ -969,7 +999,7 @@ HEAD
 <script>
 const tabs=[...document.querySelectorAll('nav button')],secs=[...document.querySelectorAll('main section')];
 function show(t){tabs.forEach(b=>b.setAttribute('aria-selected',b.dataset.t===t));secs.forEach(s=>s.hidden=s.id!==t);try{localStorage.setItem('squad-tab',t)}catch(e){}}
-tabs.forEach(b=>b.onclick=()=>show(b.dataset.t));let t='Decisions';try{t=localStorage.getItem('squad-tab')||t}catch(e){}show(t);
+tabs.forEach(b=>b.onclick=()=>show(b.dataset.t));let t='To-test';try{t=localStorage.getItem('squad-tab')||t}catch(e){}show(t);
 document.querySelectorAll('.f button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.f button').forEach(x=>x.setAttribute('aria-pressed',x===b));
 document.querySelectorAll('.dec').forEach(c=>c.hidden=!(b.dataset.f==='all'||c.dataset.k===b.dataset.f))});
 </script>
@@ -988,8 +1018,12 @@ report_text() { # the live view: what matters now, in a terminal
   local open_s
   open_s=$(awk '/^## / { t = $0 } tolower($0) ~ /^- status: *open/ && t != "" { sub(/^#+ */, "", t); print "   " t; t = "" }' "$TEAM_DIR/observer/SUGGESTIONS.md" 2>/dev/null | head -6 | cut -c1-"$w" || true)
   printf '%s\n' "${open_s:-   none}"
-  printf '\n DECISIONS OPEN FOR V!\n'
-  decisions_tsv | awk -F'\t' '{ s = ""; d = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^Decision=/) d = substr($i, 10) } if (s !~ /^final/) printf "   %s %s — %s\n", $1, $2, d }' | head -8 | cut -c1-"$w"
+  printf '\n TO TEST BY V! (then: squad feedback "...")\n'
+  local tt
+  tt=$(decisions_tsv | awk -F'\t' '{ s = ""; see = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^See=/) see = substr($i, 5) } if (s !~ /^final/) printf "   %s %s — look: %s\n", $1, $2, (see == "" ? "?" : see) }' | head -8 | cut -c1-"$w" || true)
+  printf '%s\n' "${tt:-   nothing to test}"
+  local fb; fb=$(grep -c '^- Status: open' "$TEAM_DIR/FEEDBACK.md" 2>/dev/null || true)
+  [ "${fb:-0}" = 0 ] || printf '   your feedback still open: %s\n' "$fb"
   printf '\n TASKS (minutes: total · dev · test · review · wait | changes · FAIL | cost: Claude · Codex 5h points)\n'
   task_stats | tail -12 | awk -F'\t' '{ printf "   %-8s %-7s %4d · %4d · %4d · %4d · %4d | %d · %d | %d · %d\n", $1, $2, $3, $4, $5, $6, $7, $8, $9, $12, $13 }'
   printf '\n LAST EVENTS\n'
@@ -1012,6 +1046,30 @@ cmd_report() {
     --open) open_url "$(report_html)" ;;
     *) report_html ;;
   esac
+}
+
+# ---- squad feedback: the human's answer after testing what can be seen ---------------
+# squad feedback "<text>" | squad feedback --file <path>
+cmd_feedback() {
+  find_repo; load_conf
+  local text n
+  case "${1:-}" in
+    --file) [ -f "${2:-}" ] || die "usage: squad feedback --file <path>"; text=$(cat "$2") ;;
+    "") die "usage: squad feedback \"<what you saw and what you want>\"  (or --file <path>)" ;;
+    *) text="$*" ;;
+  esac
+  [ -n "${text//[[:space:]]/}" ] || die "the feedback is empty."
+  [ -f "$TEAM_DIR/FEEDBACK.md" ] || cp "$TEMPLATES/FEEDBACK.md" "$TEAM_DIR/FEEDBACK.md"
+  mutex "$TEAM_DIR/.feedback.lock"
+  n=$(( $(grep -c '^## F-' "$TEAM_DIR/FEEDBACK.md" || true) + 1 ))
+  printf '\n## F-%s · %s\n\n%s\n\n- Status: open\n' "$n" "$(date '+%Y-%m-%d %H:%M')" "$text" >>"$TEAM_DIR/FEEDBACK.md"
+  rmdir "$TEAM_DIR/.feedback.lock"
+  log_event owner - FEEDBACK "F-$n $(printf '%s' "$text" | head -1 | cut -c1-80)"
+  if herdr_team agent prompt "$LEAD" "[squad] Feedback F-$n from V! in $TEAM_DIR/FEEDBACK.md: $(printf '%s' "$text" | head -1 | cut -c1-120). Turn it into a brief or a decision, then mark F-$n done with its id. (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
+    say "F-$n saved and sent to $LEAD."
+  else
+    say "F-$n saved in .team/FEEDBACK.md; the lead could not be reached now and will read it at its next start."
+  fi
 }
 
 # ---- the verify switch -----------------------------------------------------------
@@ -1462,6 +1520,7 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
   copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
   copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
+  copy_if_missing "$TEMPLATES/FEEDBACK.md" "$TEAM_DIR/FEEDBACK.md"
   mkdir -p "$TEAM_DIR/observer" "$TEAM_DIR/consult"
 
   # Keep team files out of commits without touching the tracked .gitignore.
@@ -2272,6 +2331,7 @@ case "$cmd" in
   notify)  cmd_notify "$@" ;;
   consult) cmd_consult "$@" ;;
   decisions) cmd_decisions "$@" ;;
+  feedback) cmd_feedback "$@" ;;
   report)  cmd_report "$@" ;;
   session-id) cmd_session_id "$@" ;;
   permissions) cmd_permissions ;;

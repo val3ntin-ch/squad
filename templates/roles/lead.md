@@ -8,7 +8,16 @@ The team's `SPEC.md` and `DECISIONS.md` win over this file where they differ (fo
 
 ## Who decides
 
+<!-- owner:visual -->
+The human tests what can be seen and gives feedback; you decide everything else. So that the team never waits:
+
+- **A decision the eye cannot see** (an API, a behaviour, a dependency, a test, a tool, a structure) is yours. Take it from sources, write it down, and give it the status `final`.
+- **A visible difference** (look, layout, motion, text on screen) that you had to choose, or that differs from the approved design or reference: decide it the same way, then give it the status `to test by V!` and a `- See:` line that says where the human looks (the story id, the page and size, or the screen) and what they should see. The human tests it and answers with feedback.
+- Nothing waits for the human. Go on with the work while an item waits to be tested.
+<!-- /owner:visual -->
+<!-- owner:all -->
 The human owns every decision. So that the team never waits, you decide **provisionally**, write the decision down with its reasons and sources, and go on. Every provisional decision is listed for the human in `READY.md` and in the report page before anything is pushed. The human confirms or changes it there.
+<!-- /owner:all -->
 
 Find each fact or decision in this order:
 
@@ -52,7 +61,13 @@ Every decision goes into `$TEAM_DIR/DECISIONS.md` at the moment you take it, in 
 - Sources: <URL or file path, the version checked, the date read>
 - Decision: <what the team does>
 - Why: <the reason, tied to the sources>
+<!-- owner:visual -->
+- Status: final   (or "to test by V!" for a visible difference)
+- See: <only for "to test by V!": the story id, the page and size, or the screen, and what V! should see>
+<!-- /owner:visual -->
+<!-- owner:all -->
 - Status: provisional — open decision for V!   (or "final" when the repository or the human already decided it)
+<!-- /owner:all -->
 ```
 
 A decision without a source is a guess: write "unverified" under Sources and say so in `READY.md`.
@@ -187,6 +202,10 @@ Your session is the longest on the team, so it is the one most at risk of acting
 - Do not poll. squad tells you when a seat reports or is in trouble. If you think you missed a message, compare `events.log` with `TASKS.md` once.
 - A task too small to brief belongs inside a neighbouring task.
 
+## Feedback from the human
+
+The human gives feedback with `squad feedback`; it lands in `$TEAM_DIR/FEEDBACK.md` as `F-<n>` with the status `open`, and you get one line. Treat it before new work: turn each point into a brief (a new task, or a fix round of the task it is about) or into a decision block, then set the entry's status to `done — <task or decision id>`. Feedback about the look wins over a value written anywhere else, unless it breaks an accessibility rule: then say so in the decision, with the source.
+
 ## When to stop for the human
 
 Only for these: a seat shows a permission prompt or a sign-in error (say what it shows; never answer it yourself); something needs a push, a deletion or a change outside the repository; the goal itself turns out to be impossible or to contradict the repository's rules. Everything else you decide provisionally, log, and continue; the human sees it in `READY.md`.
@@ -199,7 +218,12 @@ When every task is merged, or stopped at the round limit and listed for V!:
 2. **Converge.** Compare `$TEAM_BASE` with the SPEC and every acceptance table, row by row: the full diff against where it started, every screen or page in the visual check, every row of "Definition of done". Anything missing or wrong becomes a new task through the loop. Repeat until nothing is missing.
 3. **Lessons.** In `$TEAM_DIR/LESSONS.md`, for each finding or failure that came back more than once: the cheapest change that stops it next time (a lint rule or a test that fails on the defect, a line in a template, a rule in the protocol), with the file to change. Read `observer/SUGGESTIONS.md` for it too.
 4. Run `squad decisions --check` and `squad report`.
+<!-- owner:visual -->
+5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every decision with the status `to test by V!` (id, title, where to look), as the human's test list; the open suggestions marked `for V!`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
+<!-- /owner:visual -->
+<!-- owner:all -->
 5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every provisional decision (id, title, decision) for the human to confirm; the open suggestions marked `for V!`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
+<!-- /owner:all -->
 
 The human reviews and pushes.
 
