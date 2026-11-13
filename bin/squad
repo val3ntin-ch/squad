@@ -547,9 +547,10 @@ cmd_heavy() {
   heavy_watch "$seat" "$task" "$HV_LOG"
   rc=0; wait "$HV_CPID" || rc=$?
   HV_CPID=""
-  heavy_stream "$HV_LOG" || true; rm -f "$HV_LOG"
-  # the leader ended; anything left in its group (a child that ignored TERM, a stray background job) ends too
+  # the leader ended; anything left in its group (a child that ignored TERM, a stray background job)
+  # ends too, and only then the last output is read, so nothing it writes on the way out is lost
   if group_alive "$HV_PGID"; then stop_group "$HV_PGID"; fi
+  heavy_stream "$HV_LOG" || true; rm -f "$HV_LOG"
   # a run that was stopped never counts as passed, whatever its exit code
   if [ -f "$HEAVY_DIR/stopped.$$" ] || [ $(( $(date +%s) - start )) -ge "$limit" ]; then rc=124; fi
   rm -f "$HEAVY_DIR/stopped.$$"
@@ -570,7 +571,7 @@ heavy_stream() { # <log>: print what the run wrote since the last call
 group_cpu() { # <pgid> -> summed CPU seconds of the group's processes
   local p; p=$(pgrep -g "$1" 2>/dev/null | tr '\n' ',' | sed 's/,$//')
   [ -n "$p" ] || { echo 0; return 0; }
-  ps -o time= -p "$p" 2>/dev/null | awk '{ n = split($1, t, /[:-]/); s = 0; for (i = 1; i <= n; i++) s = s * 60 + t[i]; sum += s } END { printf "%.2f\n", sum }'
+  { ps -o time= -p "$p" 2>/dev/null || true; } | awk '{ n = split($1, t, /[:-]/); s = 0; for (i = 1; i <= n; i++) s = s * 60 + t[i]; sum += s } END { printf "%.2f\n", sum }'
 }
 
 # While the run lives: stream its output, refresh the seat's heartbeat (a seat with a live run is
@@ -587,7 +588,7 @@ heavy_watch() { # <seat> <task> <log>
     tick=$((tick + 1))
     if [ $((tick % 10)) = 1 ]; then
       date +%s >"$TEAM_DIR/seats/$seat.heartbeat"
-      cpu=$(group_cpu "$HV_PGID")
+      cpu=$(group_cpu "$HV_PGID" || echo "?")
       [ "$cpu" = "$prev" ] || { prev=$cpu; last=$(date +%s); }
     fi
     if [ "$silent" -gt 0 ] && [ $(( $(date +%s) - last )) -ge "$silent" ]; then
@@ -677,13 +678,20 @@ pane_tail() { herdr_team agent read "$1" --source visible 2>/dev/null | tail -"$
 
 MENU_RE='enter to submit|esc to cancel|press enter to confirm|Do you want to|\[y/n\]|Allow the |trust this folder|Update available'
 
+# the agent's input line: the last prompt-marked line, only among the last lines of the pane
+input_line() { printf '%s\n' "$1" | tail -6 | grep -E '^[[:space:]│]*(❯|›)' | tail -1 || true; }
+
+has_menu() { # a dialog, or a picker whose selected row is numbered ("❯ 1. Default")
+  printf '%s\n' "$1" | grep -qiE "$MENU_RE" || printf '%s\n' "$1" | grep -qE '^[[:space:]│]*(❯|›)[[:space:]]*[0-9]+\.'
+}
+
 wait_ready() { # <seat> <kind> <seconds>: the pane shows the agent's ready prompt and no menu
   local seat=$1 kind=$2 end text mark
   case "$kind" in claude) mark='❯' ;; codex) mark='›' ;; *) return 0 ;; esac
   end=$(( $(date +%s) + $3 ))
   while :; do
     text=$(pane_tail "$seat" 12)
-    if printf '%s\n' "$text" | grep -qE "^[[:space:]│]*$mark" && ! printf '%s\n' "$text" | grep -qiE "$MENU_RE"; then return 0; fi
+    if ! has_menu "$text" && input_line "$text" | grep -qE "^[[:space:]│]*$mark"; then return 0; fi
     [ "$(date +%s)" -lt "$end" ] || return 1
     sleep 1
   done
@@ -695,14 +703,17 @@ wait_started() { # <seat> <task text> <seconds>
   end=$(( $(date +%s) + $3 )); half=$(( $(date +%s) + $3 / 2 ))
   while :; do
     text=$(pane_tail "$seat" 15)
+    printf '%s\n' "$text" | grep -qi 'esc to interrupt' && return 0
+    has_menu "$text" && return 0   # it started and now asks: the watcher reports it as blocked; never press Enter on a menu
+    local cur; cur=$(input_line "$text")
+    # submitted: the task text is in the transcript, not in the input line (also a turn that already ended)
+    if ! printf '%s' "$cur" | grep -qF -- "$key" && printf '%s\n' "$text" | grep -qF -- "$key"; then return 0; fi
+    if [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ] \
+       && ! printf '%s' "$cur" | grep -qF -- "$key"; then return 0; fi
     # still in the input line halfway: press Enter once (Gas Town re-submits a stranded prompt)
-    if [ "$nudged" = 0 ] && [ "$(date +%s)" -ge "$half" ] && printf '%s\n' "$text" | grep -E '^[[:space:]│]*(❯|›)' | grep -qF -- "$key"; then
+    if [ "$nudged" = 0 ] && [ "$(date +%s)" -ge "$half" ] && printf '%s' "$cur" | grep -qF -- "$key"; then
       herdr_team agent send-keys "$seat" enter >/dev/null 2>&1 || true; nudged=1
     fi
-    printf '%s\n' "$text" | grep -qi 'esc to interrupt' && return 0
-    printf '%s\n' "$text" | grep -qiE "$MENU_RE" && return 0   # it started and now asks: the watcher reports it as blocked
-    if [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ] \
-       && ! printf '%s\n' "$text" | grep -E '^[[:space:]│]*(❯|›)' | grep -qF -- "$key"; then return 0; fi
     [ "$(date +%s)" -lt "$end" ] || return 1
     sleep 1
   done
@@ -812,7 +823,7 @@ cmd_merge() {
 open_tasks() { # -> "seat task" for each seat whose last dispatch has no answer yet
   awk '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; t = $4; e = $5 } else { s = $2; t = $3; e = $4 }
          if (e == "DISPATCH") open[s] = t
-         else if (e ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT|DISPATCH_FAILED)$/ && open[s] == t) delete open[s] }
+         else if (e ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT|DISPATCH_FAILED|DISPATCH_NOT_STARTED)$/ && open[s] == t) delete open[s] }
        END { for (s in open) print s, open[s] }' "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
@@ -1289,7 +1300,9 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   [ -n "$task" ] || { rm -f "$f"; return 0; }
   # busy, not stalled: the seat's own heavy run is alive (fresh heartbeat, or it owns the lock)
   local hb; hb=$(cat "$TEAM_DIR/seats/$name.heartbeat" 2>/dev/null || echo 0)
-  if [ $((now - ${hb:-0})) -lt 180 ] || case "$(heavy_owner)" in "$name@$(basename "$REPO"):"*) true ;; *) false ;; esac; then
+  local ow op; ow=$(heavy_owner); op=""
+  case "$ow" in "$name@$(basename "$REPO"):"*) op=$(printf '%s' "$ow" | cut -d: -f2) ;; esac
+  if [ $((now - ${hb:-0})) -lt 180 ] || { [ -n "$op" ] && kill -0 "$op" 2>/dev/null; }; then
     rm -f "$f"; return 0
   fi
   mkdir -p "$(dirname "$f")"
@@ -1724,15 +1737,16 @@ update_conf_locked() {
   # seats that must never wait on a prompt: a Codex reviewer gets -a never (an action that needs
   # approval is refused, not asked: openai/codex mcp_tool_call.rs), a Claude observer gets dontAsk
   local fixed
-  fixed=$(awk '
-    $1 == "seat" && $3 == "codex" && $4 == "reviewer" && $0 !~ /(^| )(-a|--ask-for-approval)( |=)/ { print $2 ": -a never"; next }
-    $1 == "seat" && $3 == "claude" && $4 == "observer" && $0 !~ / --permission-mode / { print $2 ": --permission-mode dontAsk" }' "$conf")
+  local seatfix='
+    { c = index($0, "#"); code = c ? substr($0, 1, c - 1) : $0; com = c ? substr($0, c) : ""; sub(/[[:space:]]+$/, "", code)
+      split(code, f, /[[:space:]]+/); add = ""
+      # a seat that already bypasses approvals is left alone: codex refuses -a together with the bypass flag
+      if (f[1] == "seat" && f[3] == "codex" && f[4] == "reviewer" && (" " code " ") !~ / (-a|--ask-for-approval|--dangerously-bypass-approvals-and-sandbox|--yolo)[ =]/) add = "-a never"
+      if (f[1] == "seat" && f[3] == "claude" && f[4] == "observer" && (" " code " ") !~ / (--permission-mode|--dangerously-skip-permissions)[ =]/) add = "--permission-mode dontAsk" }'
+  fixed=$(awk "$seatfix"' add != "" { print f[2] ": " add }' "$conf")
   if [ -n "$fixed" ]; then
     tmp="$conf.tmp.$$"
-    awk '
-      $1 == "seat" && $3 == "codex" && $4 == "reviewer" && $0 !~ /(^| )(-a|--ask-for-approval)( |=)/ { print $0 " -a never"; next }
-      $1 == "seat" && $3 == "claude" && $4 == "observer" && $0 !~ / --permission-mode / { print $0 " --permission-mode dontAsk"; next }
-      { print }' "$conf" >"$tmp" && mv "$tmp" "$conf"
+    awk "$seatfix"' { if (add != "") print code " " add (com != "" ? "  " com : ""); else print }' "$conf" >"$tmp" && mv "$tmp" "$conf"
     say "  updated  .team/team.conf: seats that must never wait on a prompt:"
     printf '%s\n' "$fixed" | sed 's/^/             /'
   fi
@@ -2079,8 +2093,9 @@ write_seat_settings() { # <index> -> settings file with the SessionStart hook th
   # read-only commands such as git log, cat and ls need no rule)
   local allow='[]'
   if [ "${S_ROLE[$1]}" = observer ]; then
+    # rules match the command text as written: both the plain name and the full path the role file renders
     allow=$(jq -n --arg obs "Edit(/$TEAM_DIR/observer/**)" --arg sq "$SQUAD_HOME/bin/squad" \
-      '[$obs, ("Bash(" + $sq + " heavy --status)"), ("Bash(" + $sq + " herdr agent read *)"), ("Bash(" + $sq + " herdr agent list*)"), ("Bash(" + $sq + " report*)")]')
+      '[$obs] + ([$sq, "squad"] | map("Bash(" + . + " heavy --status)", "Bash(" + . + " herdr agent read *)", "Bash(" + . + " herdr agent list*)", "Bash(" + . + " report*)"))')
   fi
   jq -n --arg c "'$SQUAD_HOME/bin/squad' session-id '${S_NAME[$1]}'" --argjson allow "$allow" \
     '{hooks: {SessionStart: [{hooks: [{type: "command", command: $c}]}]}} + (if ($allow | length) > 0 then {permissions: {allow: $allow}} else {} end)' >"$f"

@@ -761,13 +761,17 @@ cd "$tmp/proj4"
 check "the shipped observer never waits on a prompt (dontAsk), the tester is unchanged" sh -c "grep -qE '^seat +observer .* --permission-mode dontAsk$' '$here/../presets/default.conf' && ! grep -qE '^seat +tester .*permission-mode' '$here/../presets/default.conf'"
 reset_log; rm -f .team/.briefed/*; MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true
 check "the reviewer starts with -a never" grep -qE '^herdr agent start rev-gpt --kind codex .* -a never ' "$MOCK_LOG"
-check "the observer's settings allow only its own folder and read commands" sh -c "jq -e '.permissions.allow | (map(select(startswith(\"Edit(\"))) == [\"Edit(/$tmp/proj4/.team/observer/**)\"]) and (map(select(test(\"heavy --status\"))) | length == 1)' .team/seats/observer.settings.json"
+check "the observer's settings allow only its own folder and read commands" sh -c "jq -e '.permissions.allow | (map(select(startswith(\"Edit(\"))) == [\"Edit(/$tmp/proj4/.team/observer/**)\"]) and (map(select(test(\"heavy --status\"))) | length == 2)' .team/seats/observer.settings.json"
+check "the observer's rules match its commands as written (squad and the full path)" sh -c "jq -e '.permissions.allow | index(\"Bash(squad heavy --status)\") and index(\"Bash(squad herdr agent read *)\")' .team/seats/observer.settings.json && grep -qF '/bin/squad herdr agent read <seat>' .team/roles/observer.md"
 check "a dev's settings carry no allow list" sh -c "jq -e 'has(\"permissions\") | not' .team/seats/dev-a.settings.json"
 cd "$tmp/old"; printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat rev claude reviewer dev-a\nseat rev-x codex reviewer dev-a -m gpt-6.1-sol\nseat obs claude observer - --model claude-sonnet-5-5\n' >.team/team.conf
 "$squad" update-conf >/dev/null
 check "update-conf adds -a never to a Codex reviewer and dontAsk to an observer" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never' .team/team.conf && grep -qx 'seat obs claude observer - --model claude-sonnet-5-5 --permission-mode dontAsk' .team/team.conf && grep -qx 'seat rev claude reviewer dev-a' .team/team.conf"
 "$squad" update-conf >/dev/null
 check "and only once" test "$(grep -c -- '-a never' .team/team.conf)" = 1
+printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat rev-y codex reviewer dev-a --yolo\nseat obs claude observer - --permission-mode=plan\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "a reviewer that bypasses approvals, or an observer with its own mode, is left alone" sh -c "grep -qx 'seat rev-y codex reviewer dev-a --yolo' .team/team.conf && grep -qx 'seat obs claude observer - --permission-mode=plan' .team/team.conf"
 cd "$tmp/proj4"; printf 'x\n' >.team/reports/T-850-contract.md; reset_log; rm -f "$tmp/state"
 check "dispatch refuses a seat that shows a menu instead of its prompt" sh -c "! MOCK_DYNAMIC=1 MOCK_PANE_TEXT='Allow the playwright MCP server to run tool?  enter to submit | esc to cancel' SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-850 2>&1 | grep -q 'not at its prompt' && exit 1; ! grep -q 'agent prompt dev-a Task T-850' '$MOCK_LOG'"
 reset_log; rm -f "$tmp/state"
@@ -791,6 +795,29 @@ mkdir -p .team/observer/.idle && echo $(( $(date +%s) - 600 )) >.team/observer/.
 MOCK_AGENTS="$agents_d" "$squad" watch --once >/dev/null; MOCK_AGENTS="$agents_d" "$squad" watch --once >/dev/null
 check "an idle dev with no task is told to the lead once" sh -c "test \$(grep -c 'agent prompt lead \[squad\] dev-b has had no task' '$MOCK_LOG') = 1 && grep -q ' dev-b - IDLE ' .team/events.log"
 
+# GPT review of 010
+cd "$tmp/proj4"; printf 'x\n' >.team/reports/T-860-contract.md; reset_log
+check "a numbered picker is a menu, not a ready prompt" sh -c "! MOCK_PANE_TEXT='Select model
+❯ 1. Default (recommended)
+  2. Opus' SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-860 >/dev/null 2>&1 && ! grep -q 'agent prompt dev-a Task T-860' '$MOCK_LOG'"
+reset_log
+rm -f "$tmp/state"
+check "a task that already ran and ended counts as started" env MOCK_DYNAMIC=1 MOCK_NEVER_WORK=1 MOCK_PANE_TEXT="> Task T-860 is yours. Read $tmp/proj4/.team/tasks/T-860.md and follow your role file.
+Done.
+❯ " SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-860
+check "a seat with a menu after sending gets no Enter" sh -c "! grep -q 'agent send-keys' '$MOCK_LOG'"
+printf '%s dev-c T-861 DISPATCH round=1\n%s dev-c T-861 DISPATCH_NOT_STARTED x\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+check "a dispatch that did not start leaves no open task" refuses grep -q '^dev-c T-861$' <<<"$(bash -c ". /dev/null"; awk '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; t = $4; e = $5 } else { s = $2; t = $3; e = $4 } if (e == "DISPATCH") open[s] = t; else if (e ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT|DISPATCH_FAILED|DISPATCH_NOT_STARTED)$/ && open[s] == t) delete open[s] } END { for (s in open) print s, open[s] }' .team/events.log)"
+check "the shipped squad closes DISPATCH_NOT_STARTED in open_tasks" grep -q 'DISPATCH_FAILED|DISPATCH_NOT_STARTED)' "$here/../bin/squad"
+ln -s "tester@proj4:999999:$(date +%s):1200" "$HV/lock" 2>/dev/null || true
+printf '%s tester T-862 DISPATCH round=1\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+mkdir -p .team/observer/.seen && echo $(( $(date +%s) - 3600 )) >.team/observer/.seen/tester; rm -f .team/seats/tester.heartbeat; rm -rf .team/observer/.alerted
+check "a stale lock with a dead owner does not make a seat busy" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"tester\",\"agent_status\":\"idle\"},{\"name\":\"lead\",\"agent_status\":\"working\"}]}}' '$squad' watch --once | grep -q 'tester ○ stalled'"
+rm -f "$HV/lock"
+cd "$tmp/old"; printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat rev-x codex reviewer dev-a -m gpt-6.1-sol  # the GPT reviewer\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "a seat line with a comment gets its flag before the comment" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never  # the GPT reviewer' .team/team.conf && '$squad' status | grep -q 'rev-x .*-a never'"
+cd "$tmp/proj4"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
