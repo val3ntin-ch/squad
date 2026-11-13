@@ -3,7 +3,7 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-VERSION="0.8.0"
+VERSION="0.9.0"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
 
@@ -29,7 +29,8 @@ squad $VERSION - a team of coding agents on your repository, inside herdr
 Usage:
   squad new <dir> [--preset NAME]   create a new project with git and a team
   squad init [--preset NAME]        add a team to the current repository
-  squad up                          start the team (run inside herdr)
+  squad up [--fresh]                start or resume the team in this repository's own herdr session
+                                    (from any terminal; --fresh: new conversations, no resume)
   squad brief                       start the lead again (and brief seats that need it)
   squad status                      show seats, agent states and the task table
   squad down                        stop the team (close its herdr workspace)
@@ -39,11 +40,20 @@ Usage:
   squad presets                     list the built-in team presets
   squad permissions                 once per machine: Claude's usage status line
   squad herdr <args>                herdr, bound to this team's session (used by agents)
-  squad watch                       live board: plan usage, progress, tasks, seats (runs in the team tab)
+  squad watch [--observe]           live board: usage, tasks, seats and their trouble (team tab);
+                                    --observe also starts the observer's passes (observer tab)
+  squad report [--live|--open]      the report page: decisions, observer, timeline, QA, cost
+                                    (.team/report.html; --live is the report tab)
   squad usage                       one line of plan usage
   squad statusline                  Claude Code status line: shows and records Claude's usage
   squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
   squad git <args>                  git writes for agents (switch/add/commit/merge...; no push/force/delete)
+  squad heavy <seat> [task] -- cmd  run a heavy command: one at a time, first come first served (agents)
+  squad dispatch <seat> <task>      clear a seat, give it the task, confirm it started (the lead)
+  squad merge <task>                merge an approved task into the integration branch (the lead)
+  squad notify "<where>" "<rule>"   tell the seats at work that a rule changed (the lead)
+  squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
+  squad decisions [--check]         list the decisions; --check: every field filled
 
 A team is defined in .team/team.conf. 'squad init' copies your personal
 default ($USER_CONF) if it exists, otherwise the
@@ -73,6 +83,14 @@ TEAM_BASE="team/integration"
 SETUP_CMD=""
 REVIEW_ROUNDS=5
 LEAD=""
+HEAVY_TIMEOUT=20        # minutes a heavy run may hold the lock
+VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (V!'s global Stop hook skips them)
+STALL_MINUTES=15        # a seat with an open task and no work for this long is stalled
+OBSERVE_MINUTES=20      # the longest gap between two observer passes
+ESCALATE_MODEL=""       # model for a fix round from round 4 on (claude seats)
+OBSERVER_DEEP_MODEL=""  # model for an observer pass that found a large loss
+CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
+SESSION_NAME=""         # herdr session of this team (default: the repository's name)
 
 load_conf() {
   local conf="$TEAM_DIR/team.conf" kw name kind role reviews rest n=0 line_no=0
@@ -88,11 +106,21 @@ load_conf() {
       setup) SETUP_CMD=$rest ;;
       rounds) [[ "$rest" =~ ^[1-9][0-9]?$ ]] || die "team.conf line $line_no: 'rounds' needs a number from 1 to 99."
               REVIEW_ROUNDS=$rest ;;
+      heavy_timeout|stall_minutes|observe_minutes)
+              [[ "$rest" =~ ^[1-9][0-9]{0,2}$ ]] || die "team.conf line $line_no: '$kw' needs a number of minutes (1 to 999)."
+              case "$kw" in heavy_timeout) HEAVY_TIMEOUT=$rest ;; stall_minutes) STALL_MINUTES=$rest ;; *) OBSERVE_MINUTES=$rest ;; esac ;;
+      verify_hook) case "$rest" in on|off) VERIFY_HOOK=$rest ;; *) die "team.conf line $line_no: 'verify_hook' is on or off." ;; esac ;;
+      escalate_model) ESCALATE_MODEL=$rest ;;
+      observer_deep_model) OBSERVER_DEEP_MODEL=$rest ;;
+      consult) [ -n "$rest" ] || die "team.conf line $line_no: 'consult' needs a command, e.g. consult codex --search exec -m gpt-6.1-sol"
+               CONSULT_CMD=$rest ;;
+      session) [[ "$rest" =~ ^[A-Za-z0-9._-]+$ ]] || die "team.conf line $line_no: 'session' is a herdr session name (letters, digits, . _ -)."
+               SESSION_NAME=$rest ;;
       seat)
         read -r name kind role reviews rest <<<"$rest" || true
         [ -n "${role:-}" ] || die "team.conf line $line_no: expected 'seat <name> <agent> <role> <reviews> [args]'."
         [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || die "team.conf line $line_no: seat name '$name' must be lowercase letters, digits, - or _."
-        case "$role" in lead|dev|reviewer|tester) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer or tester." ;; esac
+        case "$role" in lead|dev|reviewer|tester|observer) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer, tester or observer." ;; esac
         local i
         for ((i = 0; i < n; i++)); do
           [ "${S_NAME[$i]}" != "$name" ] || die "team.conf line $line_no: seat '$name' is defined twice."
@@ -109,6 +137,7 @@ load_conf() {
     if [ "${S_ROLE[$i]}" = lead ]; then leads=$((leads + 1)); LEAD=${S_NAME[$i]}; fi
   done
   [ "$leads" = 1 ] || die "team.conf must define exactly one seat with the role 'lead' (found $leads)."
+  [ -n "$SESSION_NAME" ] || SESSION_NAME=$(basename "$REPO" | tr -c 'A-Za-z0-9._\n-' '-')
 
   # Every name a reviewer points at must be a dev.
   local r target found j
@@ -135,12 +164,19 @@ role_file() { # role -> path
     dev) echo "$TEAM_DIR/roles/dev.md" ;;
     reviewer) echo "$TEAM_DIR/roles/reviewer.md" ;;
     tester) echo "$TEAM_DIR/roles/tester.md" ;;
+    observer) echo "$TEAM_DIR/roles/observer.md" ;;
   esac
+}
+
+seat_index() { # name -> index, or fail
+  local i n; n=$(seat_count)
+  for ((i = 0; i < n; i++)); do [ "${S_NAME[$i]}" = "$1" ] && { echo "$i"; return 0; }; done
+  return 1
 }
 
 seat_cwd() { # index -> working directory
   case "${S_ROLE[$1]}" in
-    lead|reviewer) echo "$WT_ROOT/integration" ;;
+    lead|reviewer|observer) echo "$WT_ROOT/integration" ;;
     *) echo "$WT_ROOT/${S_NAME[$1]}" ;;
   esac
 }
@@ -207,9 +243,14 @@ render() { # <template> <dest>
   text=${text//"\$TEAM_DIR"/"$TEAM_DIR"}
   text=${text//"\$TEAM_BASE"/"$TEAM_BASE"}
   text=${text//"\$REVIEW_ROUNDS"/"$REVIEW_ROUNDS"}
+  text=${text//"\$HEAVY_TIMEOUT"/"$HEAVY_TIMEOUT"}
+  text=${text//"\$STALL_MINUTES"/"$STALL_MINUTES"}
   text=${text//"herdr agent "/"$herdr_bin agent "}
-  text=${text//"squad done "/"$SQUAD_HOME/bin/squad done "}
   local git_bin="$SQUAD_HOME/bin/squad git" sub
+  # every squad command an agent runs: the absolute path, so one permission rule covers it
+  for sub in "done" heavy dispatch merge consult notify decisions report; do
+    text=${text//"squad $sub "/"$SQUAD_HOME/bin/squad $sub "}
+  done
   for sub in switch add commit merge rebase restore stash; do
     text=${text//"git $sub "/"$git_bin $sub "}
   done
@@ -226,6 +267,538 @@ render_team_files() {
 
 write_herdr_socket() { # remember the herdr session squad runs in, for 'squad herdr'
   printf '%s\n' "${HERDR_SOCKET_PATH:-}" >"$TEAM_DIR/herdr.sock"
+}
+
+# ---- the ledger ----------------------------------------------------------------
+# .team/events.log: one line per event, read by the lead after a restart, by the
+# observer and by 'squad report'. Format:
+#   YYYY-MM-DD HH:MM:SS <seat> <task or -> <EVENT> [detail...]
+# Older teams wrote "HH:MM:SS <seat> <task> <status>"; the readers accept both.
+log_event() { # <seat> <task> <EVENT> [detail...]
+  local seat=$1 task=$2 ev=$3; shift 3
+  mkdir -p "$TEAM_DIR"
+  printf '%s %s %s %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$seat" "${task:--}" "$ev" "${*:+ $*}" >>"$TEAM_DIR/events.log"
+}
+
+usage_tag() { # "u=<Claude 5h %>/<7d %>" for cost lines, or nothing
+  local json; json=$(usage_claude)
+  [ -n "$json" ] || return 0
+  jq -r '"u=\(.p5 // "?" | tostring | split(".")[0])/\(.p7 // "?" | tostring | split(".")[0])"' <<<"$json" 2>/dev/null || true
+}
+
+seat_state() { # <agents json> <name> -> herdr agent_status, or "off"
+  jq -r --arg n "$2" '[.result.agents[] | select(.name == $n) | .agent_status][0] // "off"' <<<"$1"
+}
+
+# ---- squad heavy: one heavy run at a time on this machine --------------------
+# squad heavy <seat> [<task>] -- <command...>
+# First come, first served (a queue file per waiter, sorted by arrival); the lock
+# names its owner; a run over heavy_timeout minutes is stopped; a lock or queue
+# entry whose process is gone is cleared by the next caller.
+HEAVY_POLL=${SQUAD_HEAVY_POLL:-5}
+
+kill_tree() { # <pid>: the process and everything it started
+  local c
+  for c in $(pgrep -P "$1" 2>/dev/null); do kill_tree "$c"; done
+  kill -TERM "$1" 2>/dev/null || true
+}
+
+heavy_clear_stale() {
+  local q="$TEAM_DIR/heavy/queue" f pid owner age
+  for f in "$q"/*; do
+    [ -f "$f" ] || continue
+    pid=$(basename "$f" | cut -d- -f2)
+    kill -0 "$pid" 2>/dev/null || rm -f "$f"
+  done
+  owner="$TEAM_DIR/heavy/lock/owner"
+  if [ -d "$TEAM_DIR/heavy/lock" ]; then
+    pid=$(awk '{print $2; exit}' "$owner" 2>/dev/null || true)
+    age=$(( $(date +%s) - $(awk '{print $3; exit}' "$owner" 2>/dev/null || date +%s) ))
+    if [ -z "$pid" ] || ! kill -0 "$pid" 2>/dev/null || [ "$age" -gt $(( (HEAVY_TIMEOUT + 5) * 60 )) ]; then
+      [ -f "$owner" ] && log_event "$(awk '{print $1; exit}' "$owner")" - HEAVY_STALE "lock cleared: owner process gone or over time"
+      rm -f "$owner"; rmdir "$TEAM_DIR/heavy/lock" 2>/dev/null || true
+    fi
+  fi
+}
+
+fmt_hm() { date -r "$1" '+%H:%M' 2>/dev/null || date -d "@$1" '+%H:%M' 2>/dev/null || echo "?"; }
+
+heavy_status() {
+  local owner="$TEAM_DIR/heavy/lock/owner" seat pid since cmd f names=""
+  if [ -f "$owner" ]; then
+    read -r seat pid since cmd <"$owner" || true
+    echo "lock: $seat since $(fmt_hm "$since"): $cmd"
+  else
+    echo "lock: free"
+  fi
+  for f in "$TEAM_DIR"/heavy/queue/*; do [ -f "$f" ] && names="$names $(basename "$f" | cut -d- -f3-)"; done
+  [ -z "$names" ] || echo "queue:$names"
+}
+
+cmd_heavy() {
+  find_repo; load_conf
+  [ "${1:-}" = --status ] && { heavy_status; return 0; }
+  local seat=${1:-} task=- ; [ $# -gt 0 ] && shift
+  [ -n "$seat" ] && [ "$seat" != -- ] || die "usage: squad heavy <seat> [<task>] -- <command...>"
+  if [ "${1:-}" != -- ]; then task=${1:-}; [ $# -gt 0 ] && shift; fi
+  [ "${1:-}" = -- ] || die "usage: squad heavy <seat> [<task>] -- <command...>"
+  shift; [ $# -gt 0 ] || die "squad heavy: no command after --"
+  seat_index "$seat" >/dev/null || die "no seat named '$seat' in this team."
+
+  local q="$TEAM_DIR/heavy/queue" waited=0 start rc
+  HV_LOCK="$TEAM_DIR/heavy/lock"
+  mkdir -p "$q"
+  # sortable arrival time; the pid in the name lets the next caller clear a dead waiter
+  HV_ME="$q/$(date +%s)$(printf '%05d' "$((RANDOM % 100000))")-$$-$seat"
+  : >"$HV_ME"
+  trap 'heavy_release' EXIT
+  trap 'heavy_release; exit 130' INT TERM HUP
+  while :; do
+    heavy_clear_stale
+    if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && mkdir "$HV_LOCK" 2>/dev/null; then break; fi
+    [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; }
+    sleep "$HEAVY_POLL"
+  done
+  rm -f "$HV_ME"
+  printf '%s %s %s %s\n' "$seat" "$$" "$(date +%s)" "$*" >"$HV_LOCK/owner"
+  start=$(date +%s)
+  log_event "$seat" "$task" HEAVY_START "$*"
+  "$@" & HV_CPID=$!
+  local limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((HEAVY_TIMEOUT * 60))}  # seconds override: tests
+  ( sleep "$limit"; echo "squad heavy: stopped after $HEAVY_TIMEOUT min (heavy_timeout in team.conf)" >&2; kill_tree "$HV_CPID" ) &
+  HV_WPID=$!
+  rc=0; wait "$HV_CPID" || rc=$?
+  HV_CPID=""
+  [ $(( $(date +%s) - start )) -lt "$limit" ] || rc=124
+  heavy_release
+  log_event "$seat" "$task" HEAVY_END "rc=$rc $(( ($(date +%s) - start + 30) / 60 ))m"
+  return "$rc"
+}
+
+HV_ME="" HV_LOCK="" HV_CPID="" HV_WPID=""
+heavy_release() { # globals: the trap runs after cmd_heavy's locals are gone
+  [ -z "$HV_ME" ] || rm -f "$HV_ME"
+  if [ -n "$HV_LOCK" ] && [ -f "$HV_LOCK/owner" ] && [ "$(awk '{print $2; exit}' "$HV_LOCK/owner")" = "$$" ]; then
+    rm -f "$HV_LOCK/owner"; rmdir "$HV_LOCK" 2>/dev/null || true
+  fi
+  [ -z "$HV_CPID" ] || kill_tree "$HV_CPID"
+  [ -z "$HV_WPID" ] || kill_tree "$HV_WPID"
+  HV_CPID="" HV_WPID=""
+}
+
+# ---- squad dispatch: clear a seat, give it a task, confirm it started ---------
+# squad dispatch <seat> <task> [--escalate] [text...]
+# The lead's one command for every hand-out. Replaces "send the clear, sleep,
+# send the task, read the pane": a seat that got "/clearTask …" never started.
+DISPATCH_WAIT=${SQUAD_DISPATCH_WAIT:-60}
+
+wait_for_state() { # <seat> <seconds> <state...>: true once herdr shows one of them
+  local seat=$1 secs=$2 end s; shift 2
+  end=$(( $(date +%s) + secs ))
+  while :; do
+    s=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")
+    case " $* " in *" $s "*) return 0 ;; esac
+    [ "$(date +%s)" -lt "$end" ] || return 1
+    sleep 1
+  done
+}
+
+default_task_line() { # <role> <task> <round>
+  case "$1" in
+    dev) if [ "$3" -gt 1 ]; then echo "$2 needs changes. Read the newest review in $TEAM_DIR/reports/$2-review-*.md (and $TEAM_DIR/reports/$2-test.md if it failed), fix every finding, update your report."
+         else echo "Task $2 is yours. Read $TEAM_DIR/tasks/$2.md and follow your role file."; fi ;;
+    tester) echo "Test task $2. Read $TEAM_DIR/tasks/$2.md and follow your role file." ;;
+    reviewer) echo "Review task $2, round $3. Read $TEAM_DIR/tasks/$2.md and follow your role file." ;;
+    *) echo "Task $2: read $TEAM_DIR/tasks/$2.md." ;;
+  esac
+}
+
+review_round() { # <task> -> the round the next review gets (1 + review files so far)
+  local n=0 f
+  for f in "$TEAM_DIR/reports/$1"-review-*.md; do [ -f "$f" ] && n=$((n + 1)); done
+  echo $((n + 1))
+}
+
+seat_model_arg() { # <index> -> the --model / -m value in the seat's arguments
+  awk '{ for (i = 1; i < NF; i++) if ($i == "--model" || $i == "-m") { print $(i + 1); exit } }' <<<"${S_ARGS[$1]}"
+}
+
+cmd_dispatch() {
+  find_repo; load_conf
+  local seat=${1:-} task=${2:-} escalate=0 i role kind clear text round
+  [ -n "$seat" ] && [ -n "$task" ] || die "usage: squad dispatch <seat> <task> [--escalate] [text...]"
+  shift 2
+  [ "${1:-}" = --escalate ] && { escalate=1; shift; }
+  i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
+  role=${S_ROLE[$i]}; kind=${S_KIND[$i]}
+  [ "$seat" != "$LEAD" ] || die "the lead does not dispatch to itself."
+  round=$(review_round "$task")
+  # the contract comes first: a dev starts only on a table the tester agreed
+  if [ "$role" = dev ] && has_role tester && [ ! -f "$TEAM_DIR/reports/$task-contract.md" ]; then
+    die "no contract for $task yet: send the tester 'squad dispatch <tester> $task --contract' first ($TEAM_DIR/reports/$task-contract.md)."
+  fi
+  if [ "${1:-}" = --contract ]; then
+    [ "$role" = tester ] || die "--contract goes to the tester."
+    shift; text="Contract for task $task: read $TEAM_DIR/tasks/$task.md and follow 'The contract' in your role file."
+  else
+    text=${*:-$(default_task_line "$role" "$task" "$round")}
+  fi
+  clear=$(clear_cmd "$kind")
+  if [ "$clear" != "-" ]; then
+    herdr_team agent prompt "$seat" "$clear" >/dev/null || die "could not reach $seat."
+    sleep 2
+    wait_for_state "$seat" "$DISPATCH_WAIT" idle "done" || die "$seat did not come back to idle after $clear (see its pane)."
+  fi
+  # model: a fix round from round 4 on runs one tier higher; every other task runs the seat's own model
+  local model="" mark="$TEAM_DIR/seats/$seat.escalated"
+  if [ "$kind" = claude ]; then
+    if [ "$escalate" = 1 ] && [ -n "$ESCALATE_MODEL" ]; then model=$ESCALATE_MODEL; mkdir -p "$TEAM_DIR/seats"; : >"$mark"
+    elif [ -f "$mark" ]; then model=$(seat_model_arg "$i"); rm -f "$mark"; fi
+    if [ -n "$model" ]; then
+      herdr_team agent prompt "$seat" "/model $model" >/dev/null || true
+      sleep 2; wait_for_state "$seat" "$DISPATCH_WAIT" idle "done" || true
+    fi
+  fi
+  herdr_team agent prompt "$seat" "$text" >/dev/null || die "could not send the task to $seat."
+  if ! wait_for_state "$seat" "$DISPATCH_WAIT" working blocked; then
+    log_event "$seat" "$task" DISPATCH_FAILED "no work seen in ${DISPATCH_WAIT}s"
+    die "$seat did not start on $task within ${DISPATCH_WAIT}s. Read its pane: squad herdr agent read $seat --source visible"
+  fi
+  log_event "$seat" "$task" DISPATCH "round=$round${model:+ model=$model} $(usage_tag)"
+  say "$seat started on $task (round $round${model:+, $model})."
+}
+
+has_role() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = "$1" ] && return 0; done; return 1; }
+
+# ---- squad merge: merge an approved task into the integration branch ---------
+cmd_merge() {
+  find_repo; load_conf
+  local task=${1:-} title
+  [ -n "$task" ] || die "usage: squad merge <task>"
+  git -C "$WT_ROOT/integration" rev-parse --verify -q "task/$task" >/dev/null || die "no branch task/$task."
+  title=$(awk -F'|' -v id="$task" '{ gsub(/^ +| +$/, "", $2) } $2 == id { t = $3; gsub(/^ +| +$/, "", t); print t; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
+  if ! git -C "$WT_ROOT/integration" merge --no-ff "task/$task" -m "Merge $task${title:+: $title}"; then
+    git -C "$WT_ROOT/integration" merge --abort 2>/dev/null || true
+    log_event "$LEAD" "$task" MERGE_CONFLICT
+    die "merge of task/$task conflicts; aborted. Give the owning dev a task to bring $TEAM_BASE into task/$task."
+  fi
+  log_event "$LEAD" "$task" MERGE "$(git -C "$WT_ROOT/integration" rev-parse --short HEAD)"
+  say "merged task/$task into $TEAM_BASE."
+}
+
+# ---- squad notify: tell the seats at work that a rule changed ---------------
+# squad notify "<file and section>" "<the new rule in one sentence>"
+open_tasks() { # -> "seat task" for each seat whose last dispatch has no answer yet
+  awk '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; t = $4; e = $5 } else { s = $2; t = $3; e = $4 }
+         if (e == "DISPATCH") open[s] = t
+         else if (e ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT)$/ && open[s] == t) delete open[s] }
+       END { for (s in open) print s, open[s] }' "$TEAM_DIR/events.log" 2>/dev/null || true
+}
+
+cmd_notify() {
+  find_repo; load_conf
+  [ $# -ge 2 ] || die "usage: squad notify \"<file and section>\" \"<the new rule in one sentence>\""
+  local where=$1 rule=$2 seat task n=0
+  while read -r seat task; do
+    [ -n "$seat" ] || continue
+    herdr_team agent prompt "$seat" "[squad] Rule changed at $(date +%H:%M) in $where: $rule (Finish your current step, then follow it.)" >/dev/null && n=$((n + 1))
+  done < <(open_tasks)
+  log_event "$LEAD" - RULE "$where: $rule"
+  say "told $n seat(s) at work."
+}
+
+# ---- squad consult: a second, independent brain for a real issue ---------------
+# squad consult [--wait] "<question>" [file...]
+# Runs the consult model (default: GPT Sol, medium effort, with web search) read-only
+# in the integration worktree. It brainstorms from official sources and writes
+# .team/consult/<n>.md. Without --wait it runs in the background and tells the
+# lead when the file is there.
+cmd_consult() {
+  find_repo; load_conf
+  local wait=0; [ "${1:-}" = --wait ] && { wait=1; shift; }
+  [ $# -ge 1 ] && [ -n "$1" ] || die "usage: squad consult [--wait] \"<question>\" [file...]"
+  local question=$1; shift
+  local dir="$TEAM_DIR/consult" n out log prompt f files=""
+  local -a cmdv
+  read -r -a cmdv <<<"$CONSULT_CMD"
+  [ "${cmdv[0]}" = codex ] || die "consult runs Codex ('consult codex …' in team.conf); '${cmdv[0]}' is not supported yet."
+  command -v codex >/dev/null 2>&1 || die "codex is not installed: squad consult needs it (or remove the consult step from the lead role)."
+  mkdir -p "$dir"
+  n=$(( $(ls "$dir" 2>/dev/null | sed -n 's/^\([0-9][0-9]*\)\.md$/\1/p' | sort -n | tail -1 || true) + 1 ))
+  out="$dir/$n.md"; log="$dir/$n.log"
+  for f in "$@"; do files="$files
+- $f"; done
+  prompt=$(cat "$TEMPLATES/consult-prompt.md")
+  prompt=${prompt//"{{QUESTION}}"/$question}
+  prompt=${prompt//"{{FILES}}"/${files:-"- (none named; read what you need in the repository)"}}
+  prompt=${prompt//"{{TEAM_DIR}}"/$TEAM_DIR}
+  prompt=${prompt//"{{REPO}}"/$WT_ROOT/integration}
+  local cwd="$WT_ROOT/integration"; [ -d "$cwd" ] || cwd=$REPO
+  log_event "$LEAD" - CONSULT "n=$n $question"
+  run_consult() {
+    local rc=0
+    ( cd "$cwd" && "${cmdv[@]}" -s read-only --skip-git-repo-check -o "$out.tmp" "$prompt" ) >"$log" 2>&1 || rc=$?
+    if [ "$rc" = 0 ] && [ -s "$out.tmp" ]; then
+      { printf '# Consult %s\n\n- Question: %s\n- Asked: %s\n- Model: %s\n\n' "$n" "$question" "$(date '+%Y-%m-%d %H:%M')" "$CONSULT_CMD"; cat "$out.tmp"; } >"$out"
+      rm -f "$out.tmp"
+      log_event "$LEAD" - CONSULT_READY "n=$n"
+      [ "$wait" = 1 ] || herdr_team agent prompt "$LEAD" "[squad] consult $n is ready: $out. Compare it with your own options, then decide and write the decision block. (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+    else
+      log_event "$LEAD" - CONSULT_FAILED "n=$n rc=$rc"
+      [ "$wait" = 1 ] || herdr_team agent prompt "$LEAD" "[squad] consult $n failed (exit $rc): $log. Decide without it and write 'GPT: consult failed' in the decision." >/dev/null 2>&1 || true
+      return 1
+    fi
+  }
+  if [ "$wait" = 1 ]; then
+    run_consult || die "consult $n failed; see $log"
+    say "$out"
+  else
+    run_consult </dev/null >/dev/null 2>&1 &
+    say "consult $n started in the background; you get a line when $out is written. Work on other steps meanwhile."
+  fi
+}
+
+# ---- decisions -----------------------------------------------------------------------
+# One block per decision in DECISIONS.md:
+#   ## D-001 · <title>
+#   - Time: / - Question: / - Options: / - Claude: / - GPT: / - Sources: /
+#   - Decision: / - Why: / - Status: provisional — open decision for V! | final
+DECISION_FIELDS="Time Question Options Claude GPT Sources Decision Why Status"
+
+decisions_tsv() { # DECISIONS.md -> one line per decision: id \t title \t field=value ... (tabs)
+  awk -v fields="$DECISION_FIELDS" '
+    function flush() { if (id != "") { line = id "\t" title; for (k = 1; k <= nf; k++) line = line "\t" f[k] "=" v[f[k]]; print line } }
+    BEGIN { nf = split(fields, f, " ") }
+    /<!--/ { incomment = 1 }
+    incomment { if ($0 ~ /-->/) incomment = 0; next }
+    /^## D-[0-9]+/ { flush(); delete v; id = $2; title = $0; sub(/^## D-[0-9]+ *[·:-]? */, "", title); last = ""; next }
+    /^## / { flush(); id = ""; next }
+    id != "" && /^- [A-Za-z]+:/ { key = $2; sub(/:$/, "", key); val = $0; sub(/^- [A-Za-z]+: */, "", val); gsub(/\t/, " ", val); v[key] = val; last = key; next }
+    id != "" && /^  +[^ ]/ && last != "" { t = $0; sub(/^ +/, "", t); v[last] = v[last] " " t; next }
+    END { flush() }' "$TEAM_DIR/DECISIONS.md" 2>/dev/null
+}
+
+cmd_decisions() {
+  find_repo; load_conf
+  [ "${1:-}" = --check ] || { decisions_tsv | awk -F'\t' '{ s = ""; for (i = 3; i <= NF; i++) if ($i ~ /^Status=/) s = substr($i, 8); printf "%-6s %-14s %s\n", $1, substr(s, 1, 13), $2 }'; return 0; }
+  local bad
+  bad=$(decisions_tsv | awk -F'\t' '{ for (i = 3; i <= NF; i++) { split($i, kv, "="); val = substr($i, length(kv[1]) + 2)
+           if (val ~ /^ *$/) print $1 ": no " kv[1]
+           if (kv[1] == "Status" && val !~ /^(provisional|final)/) print $1 ": Status must start with provisional or final" } }')
+  [ -z "$bad" ] || { printf '%s\n' "$bad" >&2; die "DECISIONS.md: fill every field of each decision (fields: $DECISION_FIELDS)."; }
+  say "DECISIONS.md: $(decisions_tsv | grep -c . || true) decision(s), every field filled."
+}
+
+# ---- squad report: one page with everything V! needs to follow the team ---------
+# Built only from the team's plain files: events.log, DECISIONS.md, consult/,
+# observer/, reports/, LESSONS.md, READY.md. --live: the same, in a terminal,
+# refreshed every 20 s ('o' opens the HTML page). Default: write the HTML page.
+
+# per task, from events.log: id start end merged dev test review wait rounds fails blocked stalls cost
+task_stats() {
+  local roles="" i
+  for ((i = 0; i < $(seat_count); i++)); do roles="$roles ${S_NAME[$i]}=${S_ROLE[$i]}"; done
+  awk -v roles="$roles" '
+    function dfc(y, m, d,   era, yoe, doy) { y -= (m <= 2); era = int((y >= 0 ? y : y - 399) / 400); yoe = y - era * 400
+      doy = int((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5) + d - 1; return era * 146097 + yoe * 365 + int(yoe / 4) - int(yoe / 100) + doy }
+    BEGIN { n = split(roles, r, " "); for (k = 1; k <= n; k++) { split(r[k], kv, "="); role[kv[1]] = kv[2] } }
+    {
+      if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { split($1, d, "-"); split($2, t, ":"); day = dfc(d[1] + 0, d[2] + 0, d[3] + 0); s = $3; id = $4; ev = $5; f0 = 6 }
+      else { split($1, t, ":"); if (t[1] * 3600 + t[2] * 60 + t[3] < prevsec) oldday++; day = oldday; s = $2; id = $3; ev = $4; f0 = 5 }
+      prevsec = t[1] * 3600 + t[2] * 60 + t[3]
+      now = day * 86400 + prevsec
+      u = ""; for (k = f0; k <= NF; k++) if ($k ~ /^u=/) { u = substr($k, 3); split(u, uu, "/"); u = uu[1] + 0 }
+      if (id == "-" || id == "") next
+      if (!(id in first)) { first[id] = now; order[++nt] = id }
+      last[id] = now
+      key = s SUBSEP id
+      if (ev == "DISPATCH") { open[key] = now; ou[key] = u; if (role[s] == "dev") disp[id]++ }
+      else if (ev ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT)$/ && (key in open)) {
+        dur = now - open[key]; st = role[s]
+        if (st == "dev") dev[id] += dur; else if (st == "tester") tst[id] += dur; else rev[id] += dur
+        if (u != "" && ou[key] != "" && u >= ou[key]) cost[id] += u - ou[key]
+        delete open[key]
+      }
+      if (ev == "FAIL") fails[id]++
+      if (ev == "BLOCKED") blk[id]++
+      if (ev == "CHANGES") chg[id]++
+      if (ev == "STALLED" || ev == "DEAD" || ev == "LOGIN") stl[id]++
+      if (ev == "MERGE") merged[id] = now
+    }
+    END { for (k = 1; k <= nt; k++) { id = order[k]; end = (id in merged) ? merged[id] : last[id]; tot = end - first[id]
+            w = tot - dev[id] - tst[id] - rev[id]; if (w < 0) w = 0
+            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, cost[id] + 0 } }' \
+    "$TEAM_DIR/events.log" 2>/dev/null || true
+}
+
+html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+md_html() { # minimal Markdown -> HTML: headings, lists, tables, code, bold, links
+  html_escape | awk '
+    function inline(x) { gsub(/`[^`]+`/, "<code>&</code>", x); gsub(/<code>`/, "<code>", x); gsub(/`<\/code>/, "</code>", x)
+      while (match(x, /\*\*[^*]+\*\*/)) x = substr(x, 1, RSTART - 1) "<b>" substr(x, RSTART + 2, RLENGTH - 4) "</b>" substr(x, RSTART + RLENGTH)
+      o = ""; while (match(x, /https?:\/\/[^ )<]+/)) { u = substr(x, RSTART, RLENGTH); o = o substr(x, 1, RSTART - 1) "<a href=\"" u "\">" u "</a>"; x = substr(x, RSTART + RLENGTH) }
+      return o x }
+    function close_all() { if (inl) print "</ul>"; if (intab) print "</table></div>"; inl = 0; intab = 0 }
+    /^#+ / { close_all(); h = match($0, /^#+/); lvl = RLENGTH + 1; if (lvl > 6) lvl = 6; print "<h" lvl ">" inline(substr($0, RLENGTH + 2)) "</h" lvl ">"; next }
+    /^\|/ { if ($0 ~ /^\|[-: |]+\|$/) next
+            if (!intab) { close_all(); print "<div class=tw><table>"; intab = 1; tag = "th" } else tag = "td"
+            n = split($0, c, "|"); row = "<tr>"; for (k = 2; k < n; k++) row = row "<" tag ">" inline(c[k]) "</" tag ">"; print row "</tr>"; next }
+    /^ *[-*] / { if (intab) close_all(); if (!inl) { print "<ul>"; inl = 1 } t = $0; sub(/^ *[-*] /, "", t); print "<li>" inline(t) "</li>"; next }
+    /^ *[0-9]+\. / { if (intab) close_all(); if (!inl) { print "<ul>"; inl = 1 } t = $0; sub(/^ *[0-9]+\. /, "", t); print "<li>" inline(t) "</li>"; next }
+    /^ *$/ { close_all(); next }
+    { close_all(); print "<p>" inline($0) "</p>" }
+    END { close_all() }'
+}
+
+report_section_file() { # <file> <empty text>
+  if [ -s "$1" ]; then md_html <"$1"; else printf '<p class=empty>%s</p>\n' "$2"; fi
+}
+
+report_html() {
+  local out="$TEAM_DIR/report.html" id title status fields k v cf
+  {
+    cat <<'HEAD'
+<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>squad report</title>
+<style>
+:root{--bg:#f7f7f5;--fg:#1d1d1b;--mut:#6b6b66;--card:#fff;--line:#e3e2dd;--acc:#2f5bd3;--warn:#b25b00;--ok:#1f7a4a;--bad:#b3261e;color-scheme:light}
+@media (prefers-color-scheme:dark){:root{--bg:#141413;--fg:#ecebe6;--mut:#a3a29b;--card:#1e1e1c;--line:#34332f;--acc:#8fa8ff;--warn:#f0a35a;--ok:#5cc58e;--bad:#ff8a80;color-scheme:dark}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{padding:20px 16px 0;max-width:1100px;margin:auto}h1{margin:0 0 4px;font-size:22px}.sub{color:var(--mut);margin:0 0 12px}
+nav{display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--line);padding-bottom:8px}
+nav button,.f button{font:inherit;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:999px;padding:6px 14px;cursor:pointer;min-height:36px}
+nav button[aria-selected=true],.f button[aria-pressed=true]{background:var(--acc);border-color:var(--acc);color:#fff}
+main{max-width:1100px;margin:auto;padding:16px}section[hidden]{display:none}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:0 0 12px}
+.card h3{margin:0 0 8px;font-size:16px}dl{display:grid;grid-template-columns:max-content 1fr;gap:4px 14px;margin:0}dt{color:var(--mut)}dd{margin:0;overflow-wrap:anywhere}
+.badge{display:inline-block;font-size:12px;padding:2px 8px;border-radius:999px;border:1px solid currentColor;margin-left:6px}
+.prov{color:var(--warn)}.final{color:var(--ok)}.empty{color:var(--mut)}
+.tw{overflow-x:auto}table{border-collapse:collapse;width:100%;margin:8px 0}th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--mut);font-weight:600}
+td.n{text-align:right;font-variant-numeric:tabular-nums}code{font-size:13px;background:color-mix(in srgb,var(--line) 50%,transparent);padding:1px 4px;border-radius:4px}
+details{margin-top:8px}summary{cursor:pointer;color:var(--acc)}.f{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}a{color:var(--acc)}
+pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+@media (prefers-reduced-motion:no-preference){nav button,.f button{transition:background .15s}}
+</style>
+HEAD
+    printf '<header><h1>squad · %s</h1><p class=sub>Built %s from %s. Open again after <code>squad report</code>; the report tab in herdr refreshes by itself.</p>\n' \
+      "$(basename "$REPO" | html_escape)" "$(date '+%Y-%m-%d %H:%M')" "$(echo "$TEAM_DIR" | html_escape)"
+    echo '<nav role=tablist>'
+    for k in Decisions Observer Timeline QA Cost Events; do printf '<button role=tab data-t=%s>%s</button>' "$k" "$k"; done
+    echo '</nav></header><main>'
+
+    # Decisions
+    echo '<section id=Decisions><div class=f><button data-f=all aria-pressed=true>All</button><button data-f=prov aria-pressed=false>Open for V!</button><button data-f=final aria-pressed=false>Final</button></div>'
+    if [ -n "$(decisions_tsv)" ]; then
+      while IFS=$'\t' read -r id title fields; do
+        status=$(tr '\t' '\n' <<<"$fields" | sed -n 's/^Status=//p')
+        case "$status" in final*) k=final ;; *) k=prov ;; esac
+        printf '<div class="card dec" data-k=%s><h3>%s · %s<span class="badge %s">%s</span></h3><dl>\n' "$k" "$id" "$(html_escape <<<"$title")" "$k" "$(html_escape <<<"${status:-no status}")"
+        while IFS= read -r v; do
+          [ -n "$v" ] || continue
+          printf '<dt>%s</dt><dd>%s</dd>\n' "${v%%=*}" "$(printf '%s\n' "${v#*=}" | md_html | sed 's#^<p>##; s#</p>$##')"
+        done < <(tr '\t' '\n' <<<"$fields")
+        echo '</dl>'
+        for cf in $(tr '\t' '\n' <<<"$fields" | sed -n 's/^GPT=//p' | grep -oE 'consult/[0-9]+\.md' || true); do
+          [ -f "$TEAM_DIR/$cf" ] && { printf '<details><summary>GPT consult (%s)</summary>' "$cf"; md_html <"$TEAM_DIR/$cf"; echo '</details>'; }
+        done
+        echo '</div>'
+      done < <(decisions_tsv)
+    else
+      echo '<p class=empty>No decisions recorded yet (DECISIONS.md).</p>'
+    fi
+    echo '</section>'
+
+    # Observer
+    echo '<section id=Observer><div class=card><h3>Now</h3>'; report_section_file "$TEAM_DIR/observer/NOW.md" "The observer has not written a pass yet."
+    echo '</div><div class=card><h3>Suggestions</h3>'; report_section_file "$TEAM_DIR/observer/SUGGESTIONS.md" "No suggestions yet."
+    echo '</div><div class=card><h3>Lessons for the next run</h3>'; report_section_file "$TEAM_DIR/LESSONS.md" "No lessons yet (written at the end of a run)."
+    echo '</div></section>'
+
+    # Timeline and Cost from the same numbers
+    echo '<section id=Timeline><div class=card><h3>Minutes per task</h3><p class=sub>From events.log: dispatch to report per seat; wait = the rest (queues, the lead, the human).</p><div class=tw><table><tr><th>Task</th><th>State</th><th>Total</th><th>Dev</th><th>Test</th><th>Review</th><th>Wait</th></tr>'
+    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td>%s</td><td class=n>%d</td><td class=n>%d</td><td class=n>%d</td><td class=n>%d</td><td class=n>%d</td></tr>\n", $1, $2, $3, $4, $5, $6, $7 }'
+    echo '</table></div></div></section>'
+
+    echo '<section id=QA><div class=card><h3>Quality per task</h3><div class=tw><table><tr><th>Task</th><th>Contract</th><th>Review rounds</th><th>Changes asked</th><th>Tester FAIL</th><th>BLOCKED</th><th>Stops</th><th>Rows not verified (latest test)</th></tr>'
+    task_stats | while IFS=$'\t' read -r id _ _ _ _ _ _ chg fails blk stl _; do
+      local nv="" rounds contract
+      rounds=$(( $(review_round "$id") - 1 ))
+      contract=no; [ -f "$TEAM_DIR/reports/$id-contract.md" ] && contract=yes
+      [ -f "$TEAM_DIR/reports/$id-test.md" ] && nv=$(report_rows "$TEAM_DIR/reports/$id-test.md" | awk '$2 != "pass" { printf "%s%s(%s)", (n++ ? ", " : ""), $1, $2 }')
+      printf '<tr><td>%s</td><td>%s</td><td class=n>%s</td><td class=n>%s</td><td class=n>%s</td><td class=n>%s</td><td class=n>%s</td><td>%s</td></tr>\n' "$id" "$contract" "$rounds" "$chg" "$fails" "$blk" "$stl" "${nv:-—}"
+    done
+    echo '</table></div></div></section>'
+
+    echo '<section id=Cost><div class=card><h3>Cost per task</h3><p class=sub>Minutes from events.log. Claude 5-hour usage in percentage points, measured between dispatch and report when the status line recorded it; plan windows are shared by all seats, so this is an estimate, not exact tokens.</p><div class=tw><table><tr><th>Task</th><th>Seat minutes (dev + test + review)</th><th>Claude 5h points</th></tr>'
+    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 > 0 ? $12 : "—") }'
+    echo '</table></div></div></section>'
+
+    echo '<section id=Events><div class=card><h3>Last 200 events</h3><pre>'
+    { tail -200 "$TEAM_DIR/events.log" 2>/dev/null || true; } | html_escape
+    echo '</pre></div></section></main>'
+    cat <<'FOOT'
+<script>
+const tabs=[...document.querySelectorAll('nav button')],secs=[...document.querySelectorAll('main section')];
+function show(t){tabs.forEach(b=>b.setAttribute('aria-selected',b.dataset.t===t));secs.forEach(s=>s.hidden=s.id!==t);try{localStorage.setItem('squad-tab',t)}catch(e){}}
+tabs.forEach(b=>b.onclick=()=>show(b.dataset.t));let t='Decisions';try{t=localStorage.getItem('squad-tab')||t}catch(e){}show(t);
+document.querySelectorAll('.f button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.f button').forEach(x=>x.setAttribute('aria-pressed',x===b));
+document.querySelectorAll('.dec').forEach(c=>c.hidden=!(b.dataset.f==='all'||c.dataset.k===b.dataset.f))});
+</script>
+FOOT
+  } >"$out.tmp" && mv "$out.tmp" "$out"
+  echo "$out"
+}
+
+report_text() { # the live view: what matters now, in a terminal
+  local w=${COLUMNS:-100}
+  printf '\033[H\033[2J'
+  printf ' squad report · %s · %s   (o: open the HTML page · q: quit)\n\n' "$(basename "$REPO")" "$(date +%H:%M)"
+  printf ' NOW (observer)\n'
+  if [ -s "$TEAM_DIR/observer/NOW.md" ]; then sed -n '1,14p' "$TEAM_DIR/observer/NOW.md" | cut -c1-"$w" | sed 's/^/   /'; else echo "   no pass yet"; fi
+  printf '\n OPEN SUGGESTIONS\n'
+  if [ -s "$TEAM_DIR/observer/SUGGESTIONS.md" ]; then grep -iE '^#+ |status: *open' "$TEAM_DIR/observer/SUGGESTIONS.md" | grep -iB1 'open' | grep -E '^#' | head -6 | cut -c1-"$w" | sed 's/^#* */   /'; else echo "   none"; fi
+  printf '\n DECISIONS OPEN FOR V!\n'
+  decisions_tsv | awk -F'\t' '{ s = ""; d = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^Decision=/) d = substr($i, 10) } if (s !~ /^final/) printf "   %s %s — %s\n", $1, $2, d }' | head -8 | cut -c1-"$w"
+  printf '\n TASKS (minutes: total · dev · test · review · wait · changes · FAIL)\n'
+  task_stats | tail -12 | awk -F'\t' '{ printf "   %-8s %-7s %4d · %4d · %4d · %4d · %4d · %d · %d\n", $1, $2, $3, $4, $5, $6, $7, $8, $9 }'
+  printf '\n LAST EVENTS\n'
+  { tail -6 "$TEAM_DIR/events.log" 2>/dev/null || true; } | cut -c1-"$w" | sed 's/^/   /'
+}
+
+open_url() { if command -v open >/dev/null 2>&1; then open "$1"; elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"; fi; }
+
+cmd_report() {
+  find_repo; load_conf
+  case "${1:-}" in
+    --live)
+      local key=""
+      while :; do
+        report_text
+        report_html >/dev/null
+        key=""; read -rsn1 -t 20 key || true
+        case "$key" in o|O) open_url "$TEAM_DIR/report.html" ;; q|Q) return 0 ;; esac
+      done ;;
+    --open) open_url "$(report_html)" ;;
+    *) report_html ;;
+  esac
+}
+
+# ---- the verify switch -----------------------------------------------------------
+# V!'s global Stop hook runs the whole repository's verify at every turn end;
+# in a team that is a heavy run outside the lock. verify_hook off writes the
+# file that hook already honours into every team worktree.
+apply_verify_switch() {
+  local wt exclude
+  exclude="$GIT_COMMON/info/exclude"
+  for wt in "$WT_ROOT"/*/; do
+    [ -d "$wt" ] || continue
+    if [ "$VERIFY_HOOK" = off ]; then : >"${wt}.agents-verify-off"; else rm -f "${wt}.agents-verify-off"; fi
+  done
+  if [ "$VERIFY_HOOK" = off ]; then
+    mkdir -p "$(dirname "$exclude")"
+    grep -qxF '.agents-verify-off' "$exclude" 2>/dev/null || printf '.agents-verify-off\n' >>"$exclude"
+  fi
 }
 
 # squad herdr <args> — herdr, bound to the session of the team this directory
@@ -312,16 +885,73 @@ cmd_statusline() {
 #   plan usage · progress of the whole goal · every task with its state and
 #   owner · every seat's state and the last event.
 # Colour only on a terminal (and never with NO_COLOR), so --once stays plain.
+# ---- trouble: dead, login, blocked and stalled seats ---------------------------
+# A seat that stops on a sign-in error, a prompt, or simply stops working with a
+# task open sends no message. The watch loop finds it, shows it in red, writes
+# one line to events.log and tells the lead once (hive: 72 min unseen).
+seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked|stalled|""
+  local json=$1 i=$2 task=$3 name state text since now f
+  name=${S_NAME[$i]}
+  state=$(seat_state "$json" "$name")
+  f="$TEAM_DIR/observer/.seen/$name"
+  now=$(date +%s)
+  if [ "$state" = working ]; then rm -f "$f"; return 0; fi
+  if [ "$state" = off ]; then [ -n "$task" ] && echo dead; return 0; fi
+  text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -40 || true)
+  case "$text" in *"/login"*|*"API Error: 401"*|*"API Error: 403"*|*"OAuth token"*|*"ign in again"*) echo login; return 0 ;; esac
+  [ "$state" = blocked ] && { echo blocked; return 0; }
+  [ -n "$task" ] || { rm -f "$f"; return 0; }
+  mkdir -p "$(dirname "$f")"
+  [ -f "$f" ] || echo "$now" >"$f"
+  since=$(cat "$f")
+  [ $((now - since)) -ge $((STALL_MINUTES * 60)) ] && echo stalled
+  return 0
+}
+
+trouble_hint() { # <kind> <seat>
+  case "$1" in
+    dead) echo "its agent is gone (closed pane or crash): run 'squad up' to start it again" ;;
+    login) echo "it shows a sign-in error: V! must run /login in its pane" ;;
+    blocked) echo "it waits on a prompt or a question: read it with squad herdr agent read $2 --source visible" ;;
+    stalled) echo "it has an open task and has not worked for $STALL_MINUTES min: read its pane, then re-send or re-dispatch" ;;
+  esac
+}
+
+alert_trouble() { # <index> <trouble> <task>: once per seat and kind
+  local name=${S_NAME[$1]} kind=$2 task=$3 f hint
+  f="$TEAM_DIR/observer/.alerted/$name"
+  mkdir -p "$(dirname "$f")"
+  [ "$(cat "$f" 2>/dev/null)" = "$kind" ] && return 0
+  echo "$kind" >"$f"
+  log_event "$name" "${task:--}" "$(echo "$kind" | tr '[:lower:]' '[:upper:]')"
+  hint=$(trouble_hint "$kind" "$name")
+  [ "$name" = "$LEAD" ] && return 0
+  herdr_team agent prompt "$LEAD" "[squad] $name is $kind${task:+ on $task}: $hint. (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+}
+
 watch_once() {
-  local agents_json states="" i n state ev mark color=0
+  local agents_json states="" i n state ev mark color=0 trouble task opens
   [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && color=1
   agents_json=$(herdr_team agent list 2>/dev/null) || agents_json='{"result":{"agents":[]}}'
   n=$(seat_count)
+  opens=$(open_tasks)
+  # a team that is down (no seat runs) is not in trouble
+  local up=0
+  for ((i = 0; i < n; i++)); do [ "$(seat_state "$agents_json" "${S_NAME[$i]}")" = off ] || up=1; done
   for ((i = 0; i < n; i++)); do
-    state=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_status][0] // "off"' <<<"$agents_json")
+    state=$(seat_state "$agents_json" "${S_NAME[$i]}")
+    trouble=""
+    if [ "$up" = 1 ]; then
+      task=$(awk -v s="${S_NAME[$i]}" '$1 == s { print $2; exit }' <<<"$opens")
+      trouble=$(seat_trouble "$agents_json" "$i" "$task")
+      if [ -n "$trouble" ]; then alert_trouble "$i" "$trouble" "$task"; else rm -f "$TEAM_DIR/observer/.alerted/${S_NAME[$i]}"; fi
+    fi
     case "$state" in working) mark="●" ;; blocked) mark="!" ;; idle|done) mark="○" ;; *) mark="·" ;; esac
     if [ "$color" = 1 ]; then
       case "$state" in working) mark=$'\033[36m●\033[0m' ;; blocked) mark=$'\033[1;31m!\033[0m' ;; esac
+    fi
+    if [ -n "$trouble" ]; then
+      if [ "$color" = 1 ]; then mark="$mark"$'\033[1;31m'" $trouble"$'\033[0m'; else mark="$mark $trouble"; fi
     fi
     states="$states${S_NAME[$i]} $mark  "
   done
@@ -355,6 +985,47 @@ watch_once() {
       printf "\n %s\n", chips
     }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true
   printf ' %s%s\n' "$states" "${ev:+  last: $ev}"
+  [ ! -d "$TEAM_DIR/heavy/lock" ] || printf ' %s\n' "$(heavy_status | tr '\n' ' ')"
+}
+
+# ---- observer passes --------------------------------------------------------------
+# squad starts each pass itself (no timer inside the observer's session, which
+# dies with it): after a merge or new trouble, and at least every
+# observe_minutes. A pass that reports a loss over 30 min is followed by a deep
+# pass on observer_deep_model.
+observer_index() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = observer ] && { echo "$i"; return 0; }; done; return 1; }
+
+observe_tick() {
+  local i name dir="$TEAM_DIR/observer" now last marks prev due="" pass state loss
+  i=$(observer_index) || return 0
+  name=${S_NAME[$i]}
+  mkdir -p "$dir"
+  state=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$name")
+  case "$state" in idle|"done") ;; *) return 0 ;; esac
+  now=$(date +%s)
+  last=$(cat "$dir/.last-pass" 2>/dev/null || echo 0)
+  marks=$(grep -cE ' (MERGE|STALLED|DEAD|LOGIN|BLOCKED|RESTART|FAIL)( |$)' "$TEAM_DIR/events.log" 2>/dev/null || true)
+  prev=$(cat "$dir/.last-marks" 2>/dev/null || echo 0)
+  if [ "$last" = 0 ]; then due="first pass"
+  elif [ "${marks:-0}" != "$prev" ]; then due="new events"
+  elif [ $((now - last)) -ge $((OBSERVE_MINUTES * 60)) ]; then due="$OBSERVE_MINUTES min"; fi
+  [ -n "$due" ] || return 0
+  pass=$(( $(cat "$dir/.pass" 2>/dev/null || echo 0) + 1 ))
+  # back to the seat's own model after a deep pass
+  if [ -f "$dir/.deep" ]; then
+    herdr_team agent prompt "$name" "/model $(seat_model_arg "$i")" >/dev/null 2>&1 || true
+    rm -f "$dir/.deep"; sleep 2
+  else
+    loss=$(awk -F: '/^Largest loss:/ { gsub(/[^0-9]/, "", $2); print $2; exit }' "$dir/NOW.md" 2>/dev/null || true)
+    if [ -n "$OBSERVER_DEEP_MODEL" ] && [ "${loss:-0}" -gt 30 ] && [ "$(cat "$dir/.deep-for" 2>/dev/null)" != "$((pass - 1))" ]; then
+      herdr_team agent prompt "$name" "/model $OBSERVER_DEEP_MODEL" >/dev/null 2>&1 || true
+      : >"$dir/.deep"; echo "$((pass - 1))" >"$dir/.deep-for"; sleep 2
+      due="deep pass: pass $((pass - 1)) found a loss of $loss min; find its cause and the change that prevents it"
+    fi
+  fi
+  herdr_team agent prompt "$name" "Observer pass $pass ($due). Follow 'A pass' in your role file." >/dev/null 2>&1 || return 0
+  echo "$pass" >"$dir/.pass"; echo "$now" >"$dir/.last-pass"; echo "${marks:-0}" >"$dir/.last-marks"
+  log_event "$name" - OBSERVE "pass=$pass $due"
 }
 
 herdr_team() { # herdr bound to this team's session
@@ -364,9 +1035,11 @@ herdr_team() { # herdr bound to this team's session
 
 cmd_watch() {
   find_repo; load_conf
-  local once=0; [ "${1:-}" = --once ] && once=1
+  local once=0 observe=0 a
+  for a in "$@"; do case "$a" in --once) once=1 ;; --observe) observe=1 ;; esac; done
   while :; do
     watch_once
+    [ "$observe" = 0 ] || observe_tick
     [ "$once" = 1 ] && return 0
     sleep 20
   done
@@ -376,27 +1049,86 @@ cmd_watch() {
 # finished, even while the lead is busy (herdr queues the message for it).
 # herdr's 'agent wait' watches one agent at a time, so a lead waiting on one
 # worker never noticed another one finishing; this push replaces that.
+# DONE and PASS go through a gate: a report row for every acceptance row of the
+# brief, none of them failed, and for a dev the brief's "Dev check" passing.
+
+acceptance_rows() { # <brief> -> the row numbers of its acceptance table
+  awk '/^#+ .*[Aa]cceptance/ { on = 1; next } on && /^#/ { exit }
+       on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; gsub(/ /, "", n); print n }' "$1"
+}
+
+report_rows() { # <report> -> "<number> <result>" from its acceptance table; result is one word
+  awk '/[Aa]cceptance/ { on = 1; next }
+       on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; r = tolower(a[3]); gsub(/ /, "", n); gsub(/^ +| +$/, "", r)
+         if (r ~ /^(not met|not-met|fail|failed)/) r = "fail"
+         else if (r ~ /^(met|pass|passed|ok)/) r = "pass"
+         else if (r ~ /^pending/) r = "pending"
+         else if (r ~ /^unavailable/) r = "unavailable"
+         else r = "inconclusive"
+         print n, r; next }
+       on && seen_table && !/^\|/ { exit }
+       on && /^\|/ { seen_table = 1 }' "$1"
+}
+
+dev_check_cmd() { # <brief> -> the first `command` under "## Dev check", or nothing
+  awk '/^#+ +Dev check/ { on = 1; next } on && /^#/ { exit }
+       on && /`[^`]+`/ { match($0, /`[^`]+`/); print substr($0, RSTART + 1, RLENGTH - 2); exit }' "$1"
+}
+
+DONE_NOTE=""
+done_gate() { # <index> <task> <status> <report>: refuse what is not proven
+  local i=$1 task=$2 status=$3 report=$4 brief="$TEAM_DIR/tasks/$2.md" rows results missing="" failed="" open="" n r cmd log
+  [ -f "$brief" ] || { DONE_NOTE="no brief $brief: gate skipped"; return 0; }
+  rows=$(acceptance_rows "$brief")
+  [ -n "$rows" ] || { DONE_NOTE="the brief has no acceptance rows: gate skipped"; return 0; }
+  [ -f "$report" ] || die "write $report first (it needs a row for each acceptance row: $(echo $rows))."
+  results=$(report_rows "$report")
+  for n in $rows; do
+    r=$(awk -v n="$n" '$1 == n { print $2; exit }' <<<"$results")
+    case "$r" in
+      "") missing="$missing $n" ;;
+      fail) failed="$failed $n" ;;
+      pass) ;;
+      *) open="$open $n($r)" ;;
+    esac
+  done
+  [ -z "$missing" ] || die "$status refused: the report has no row for acceptance row(s)$missing. Add each row with its result and evidence."
+  [ -z "$failed" ] || die "$status refused: acceptance row(s)$failed failed. Fix them, or report BLOCKED (dev) / FAIL (tester)."
+  if [ "${S_ROLE[$i]}" = dev ]; then
+    cmd=$(dev_check_cmd "$brief")
+    if [ -n "$cmd" ] && [ "$cmd" != "-" ]; then
+      log="$TEAM_DIR/reports/$task-devcheck.log"
+      say "squad done: running the dev check: $cmd"
+      if ! ( cd "$(seat_cwd "$i")" && bash -c "$cmd" ) >"$log" 2>&1; then
+        tail -15 "$log" >&2
+        die "$status refused: the dev check failed ($cmd). Full output: $log"
+      fi
+    fi
+  fi
+  [ -z "$open" ] || DONE_NOTE="not verified: rows$open"
+}
+
 cmd_done() {
   [ $# -ge 3 ] || die "usage: squad done <seat> <task> <status>"
-  local seat=$1 task=$2 status=$3 i n role="" report sock
-  find_repo; load_conf; n=$(seat_count)
-  for ((i = 0; i < n; i++)); do [ "${S_NAME[$i]}" = "$seat" ] && role=${S_ROLE[$i]}; done
-  [ -n "$role" ] || die "no seat named '$seat' in this team."
+  local seat=$1 task=$2 status=$3 i role="" report
+  find_repo; load_conf
+  i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
+  role=${S_ROLE[$i]}
   case "$role" in
     dev) report="$TEAM_DIR/reports/$task-dev.md" ;;
-    tester) report="$TEAM_DIR/reports/$task-test.md" ;;
-    reviewer) report=$(ls -t "$TEAM_DIR/reports/$task"-review-*.md 2>/dev/null | head -1) ;;
+    tester) if [ "$status" = CONTRACT ]; then report="$TEAM_DIR/reports/$task-contract.md"; else report="$TEAM_DIR/reports/$task-test.md"; fi ;;
+    reviewer|lead) report=$(ls -t "$TEAM_DIR/reports/$task"-review-*.md 2>/dev/null | head -1) ;;
     *) report="" ;;
   esac
+  DONE_NOTE=""
+  case "$role:$status" in dev:DONE|tester:PASS) done_gate "$i" "$task" "$status" "$report" ;; esac
   [ -z "$report" ] || [ -f "$report" ] || say "squad: note — $report does not exist yet; write the report first."
-  printf '%s %s %s %s\n' "$(date '+%H:%M:%S')" "$seat" "$task" "$status" >>"$TEAM_DIR/events.log"
+  log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)"
   [ "$seat" = "$LEAD" ] && return 0
-  sock=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true)
   # Codex injects a message that arrives mid-turn into the running turn and
   # would drop the unfinished step; told to finish first, it does (tested).
-  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}. (Notification: first finish what you were doing, then handle this.)"
-  if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock herdr agent prompt "$LEAD" "$msg" >/dev/null
-  else herdr agent prompt "$LEAD" "$msg" >/dev/null; fi || die "could not reach the lead; the event is in $TEAM_DIR/events.log"
+  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}${DONE_NOTE:+ ($DONE_NOTE)}. (Notification: first finish what you were doing, then handle this.)"
+  herdr_team agent prompt "$LEAD" "$msg" >/dev/null || die "could not reach the lead; the event is in $TEAM_DIR/events.log"
   say "told $LEAD: $msg"
 }
 
@@ -429,7 +1161,7 @@ cmd_permissions() {
   # Codex rules only on a machine that has Codex (a team may still seat it)
   command -v codex >/dev/null 2>&1 || rules=""
   [ -z "$rules" ] || mkdir -p "$(dirname "$rules")"
-  for sub in herdr git "done"; do
+  for sub in herdr git "done" heavy dispatch merge notify consult decisions report; do
     [ -n "$rules" ] || break
     rule="prefix_rule(pattern=[\"$SQUAD_HOME/bin/squad\", \"$sub\"], decision=\"allow\")"
     if grep -qxF "$rule" "$rules" 2>/dev/null; then say "ok       Codex may run 'squad $sub' ($rules)"; continue; fi
@@ -492,6 +1224,8 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
   copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
   copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
+  copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
+  mkdir -p "$TEAM_DIR/observer" "$TEAM_DIR/consult"
 
   # Keep team files out of commits without touching the tracked .gitignore.
   local exclude; exclude="$(cd "$REPO" && git rev-parse --git-common-dir)/info/exclude"
@@ -506,7 +1240,7 @@ cmd_init() {
   write_roster
   say ""
   say "Team of $(seat_count) seats defined in .team/team.conf (from ${conf_src/#$HOME/~})."
-  say "Next: write your goal in .team/GOAL.md, start herdr in this repository and run 'squad up'."
+  say "Next: write your goal in .team/GOAL.md, then run 'squad up' (from any terminal: it opens this repository's own herdr session)."
 }
 
 cmd_new() {
@@ -521,7 +1255,7 @@ cmd_new() {
       || die "git could not create the first commit (set user.name and user.email)."
     cmd_init "$@" )
   say ""
-  say "Project created in $dir. Then:  cd $dir && herdr   and run 'squad up'."
+  say "Project created in $dir. Then:  cd $dir && squad up"
 }
 
 cmd_config() {
@@ -565,10 +1299,12 @@ cmd_doctor() {
   fi
   if command -v codex >/dev/null 2>&1; then
     local codex_rules="${CODEX_HOME:-$HOME/.codex}/rules/default.rules"
-    if grep -qF "\"$SQUAD_HOME/bin/squad\", \"herdr\"" "$codex_rules" 2>/dev/null \
-       && grep -qF "\"$SQUAD_HOME/bin/squad\", \"git\"" "$codex_rules" 2>/dev/null \
-       && grep -qF "\"$SQUAD_HOME/bin/squad\", \"done\"" "$codex_rules" 2>/dev/null; then
-      say "ok       codex may run 'squad herdr', 'squad git' and 'squad done' without asking"
+    local sub missing=""
+    for sub in herdr git "done" heavy; do
+      grep -qF "\"$SQUAD_HOME/bin/squad\", \"$sub\"" "$codex_rules" 2>/dev/null || missing="$missing $sub"
+    done
+    if [ -z "$missing" ]; then
+      say "ok       codex may run the squad commands of its seats without asking"
     else
       say "note     Codex seats will ask before 'squad herdr' / 'squad git' calls; run: squad permissions"
     fi
@@ -583,7 +1319,7 @@ cmd_doctor() {
       say "         check_for_update_on_startup = false   to $codex_conf"
     fi
   fi
-  if [ "${HERDR_ENV:-}" = 1 ]; then say "ok       running inside herdr"; else say "note     not inside herdr ('squad up' must be run from a herdr pane)"; fi
+  if [ "${HERDR_ENV:-}" = 1 ]; then say "ok       running inside herdr"; else say "note     not inside herdr ('squad up' opens this repository's own herdr session)"; fi
   return $ok
 }
 
@@ -632,6 +1368,7 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
     grep -qE '^Status: *APPROVED' "$TEAM_DIR/SPEC.md" 2>/dev/null \
       && lead_msg="Resume after a restart: read SPEC.md (approved), TASKS.md, reports/ and events.log, tell me where things stand, then continue Phase 3."
   fi
+  case " ${RESUMED[*]:-} " in *" $LEAD "*) lead_msg=$(restart_note) ;; esac
   if herdr agent prompt "$LEAD" "$lead_msg" >/dev/null; then
     say "  briefed $LEAD"; mark_briefed "$LEAD"
   else
@@ -639,6 +1376,10 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
     failed=1
   fi
   return $failed
+}
+
+restart_note() {
+  echo "squad restarted the team at $(date +%H:%M); your conversation is resumed. Before you go on, check what the stop left behind: squad heavy --status (the lock and the queue), uncommitted work in each worktree under $WT_ROOT, and $TEAM_DIR/events.log since the stop. Then continue from the files."
 }
 
 cmd_brief() {
@@ -686,15 +1427,16 @@ new_tab() { # <workspace> <label> <cwd> -> root pane of the new tab
 #   mission  (>= 220 cols)  one tab: lead | each dev | reviewers + tester, strip below
 #   focus    (< 120 cols)   tabs: lead + strip · devs · review · changes
 make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
-  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio
+  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio obs=""
   local devs=() others=()
   for ((i = 0; i < $(seat_count); i++)); do
-    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; esac
+    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; observer) obs=$i ;; esac
   done
   read -r width height < <(herdr pane layout --pane "$root" | jq -r '.result.layout.area | "\(.width) \(.height)"')
   mode=${SQUAD_LAYOUT:-}
   if [ -z "$mode" ]; then
-    if [ "${width:-0}" -ge 220 ]; then mode=mission; elif [ "${width:-0}" -lt 120 ]; then mode=focus; else mode="talk"; fi
+    # no client attached yet (started from outside herdr): width 0 -> talk
+    if [ "${width:-0}" -ge 220 ]; then mode=mission; elif [ "${width:-0}" -gt 0 ] && [ "${width:-0}" -lt 120 ]; then mode=focus; else mode="talk"; fi
   fi
   herdr tab rename "$tab" team >/dev/null 2>&1 || true
   # live board: 5 rows at the bottom of the first tab
@@ -727,12 +1469,31 @@ make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
     herdr pane rename "$p" changes >/dev/null 2>&1 || true
     herdr pane run "$p" "lazygit" >/dev/null
   fi
+  [ -z "$obs" ] || PANES[$obs]=$(observer_tab "$ws" "$obs")
+  report_tab "$ws"
   # name every seat's pane now, not when its agent starts: a seat held back
   # (trust dialog) must still be found by its label when 'squad up' resumes
   for ((i = 0; i < $(seat_count); i++)); do
     [ -n "${PANES[$i]:-}" ] && herdr pane rename "${PANES[$i]}" "${S_NAME[$i]}" >/dev/null 2>&1
   done
   say "  layout: $mode (${width:-?} columns; SQUAD_LAYOUT=talk|mission|focus to choose)"
+}
+
+observer_tab() { # <workspace> <observer index> -> the observer's pane; the watcher that drives its passes below
+  local p w
+  p=$(new_tab "$1" observer "$WT_ROOT/integration")
+  w=$(split "$p" down "$WT_ROOT/integration" 0.7)
+  herdr pane rename "$w" observe >/dev/null 2>&1 || true
+  herdr pane run "$w" "$SQUAD_HOME/bin/squad watch --observe" >/dev/null
+  herdr pane rename "$p" "${S_NAME[$2]}" >/dev/null 2>&1 || true
+  echo "$p"
+}
+
+report_tab() { # <workspace>: the report, live, in the terminal ('o' opens the HTML page)
+  local p
+  p=$(new_tab "$1" report "$WT_ROOT/integration")
+  herdr pane rename "$p" report >/dev/null 2>&1 || true
+  herdr pane run "$p" "$SQUAD_HOME/bin/squad report --live" >/dev/null
 }
 
 # herdr's `agent start` does not wait for the pane's shell: on a shell that is
@@ -788,6 +1549,47 @@ START_FAILED=0
 STUCK_ON_TRUST=0
 TRUST_WAIT=" "  # agent kinds held back until one trust dialog is answered
 STARTED=()  # seats started or adopted in this run: only these get briefed
+RESUMED=()  # seats that came back with their own conversation
+
+write_seat_settings() { # <index> -> settings file with the SessionStart hook that records the session id
+  local f="$TEAM_DIR/seats/${S_NAME[$1]}.settings.json"
+  mkdir -p "$TEAM_DIR/seats"
+  jq -n --arg c "'$SQUAD_HOME/bin/squad' session-id '${S_NAME[$1]}'" \
+    '{hooks: {SessionStart: [{hooks: [{type: "command", command: $c}]}]}}' >"$f"
+  echo "$f"
+}
+
+# squad session-id <seat> — the SessionStart hook of a Claude seat (stdin: the
+# hook's JSON). Never fails: a hook error must not stop the agent.
+cmd_session_id() {
+  local seat=${1:-} id
+  id=$(jq -r '.session_id // empty' 2>/dev/null) || true
+  [ -n "$seat" ] && [ -n "$id" ] || return 0
+  { find_repo && mkdir -p "$TEAM_DIR/seats" && printf '%s\n' "$id" >"$TEAM_DIR/seats/$seat.session"; } 2>/dev/null || true
+  return 0
+}
+
+seat_resume_id() { # <index> -> the conversation to resume, or nothing
+  local i=$1 id f cwd n k
+  case "${S_KIND[$i]}" in
+    claude)
+      id=$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null) || return 0
+      [ -n "$id" ] || return 0
+      for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do [ -f "$f" ] && { echo "$id"; return 0; }; done ;;
+    codex)
+      # the newest interactive Codex session started in this seat's folder; only
+      # when no other Codex seat shares that folder (it could be the other's)
+      cwd=$(seat_cwd "$i"); n=0
+      for ((k = 0; k < $(seat_count); k++)); do [ "${S_KIND[$k]}" = codex ] && [ "$(seat_cwd "$k")" = "$cwd" ] && n=$((n + 1)); done
+      [ "$n" = 1 ] || return 0
+      [ -d "${CODEX_HOME:-$HOME/.codex}/sessions" ] || return 0
+      find "${CODEX_HOME:-$HOME/.codex}/sessions" -name 'rollout-*.jsonl' -mtime -14 -print0 2>/dev/null | xargs -0 ls -t 2>/dev/null | head -200 \
+        | while IFS= read -r f; do
+            head -1 "$f" | jq -r --arg c "$cwd" 'select(.type == "session_meta" and .payload.cwd == $c and (.payload.source // "cli") == "cli") | .payload.id' 2>/dev/null
+          done | head -1 ;;
+  esac
+  return 0
+}
 start_seat() { # <index> <pane>
   local i=$1 pane=$2 name kind args
   name=${S_NAME[$i]}; kind=${S_KIND[$i]}; args=${S_ARGS[$i]}
@@ -804,7 +1606,7 @@ start_seat() { # <index> <pane>
   # there, outside the worktree, so without it every commit asks first.
   case "$kind" in claude|codex) agent_args+=(--add-dir "$TEAM_DIR" --add-dir "$GIT_COMMON") ;; esac
   # the lead reviews each task where it was built: the devs' worktrees
-  if [ "${S_ROLE[$i]}" = lead ] && [ "$kind" = claude ]; then agent_args+=(--add-dir "$WT_ROOT"); fi
+  case "${S_ROLE[$i]}:$kind" in lead:claude|observer:claude) agent_args+=(--add-dir "$WT_ROOT") ;; esac
   # the seat's identity, protocol and role as a system prompt
   if loads_role "$kind"; then
     local seat_file; seat_file=$(write_seat_file "$i")
@@ -816,9 +1618,24 @@ start_seat() { # <index> <pane>
   if [ "$kind" = codex ]; then
     case " $args " in *" -s "*|*" --sandbox "*|*" --sandbox="*) ;; *) agent_args+=(-s workspace-write) ;; esac
   fi
+  # the seat's conversation: a Claude seat records its session id at every
+  # start, /clear and compaction (SessionStart hook); after a restart, both
+  # agents resume the seat's own conversation instead of starting blank
+  [ "$kind" = claude ] && agent_args+=(--settings "$(write_seat_settings "$i")")
+  local resume_id=""
+  [ "${SQUAD_FRESH:-0}" = 1 ] || resume_id=$(seat_resume_id "$i")
+  if [ -n "$resume_id" ]; then
+    case "$kind" in
+      claude) agent_args=(--resume "$resume_id" "${agent_args[@]}") ;;
+      codex) agent_args=(resume "$resume_id" "${agent_args[@]}") ;;
+    esac
+  elif [ -f "$TEAM_DIR/seats/$name.session" ] && [ "${SQUAD_FRESH:-0}" != 1 ]; then
+    log_event "$name" - FRESH_START "its last conversation was not found"
+  fi
   [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
   if start_agent "${start_args[@]}"; then
-    say "  started $name ($kind${args:+ $args})"
+    if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name")
+    else say "  started $name ($kind${args:+ $args})"; fi
     STARTED+=("$name")
   else
     say "  $name did not become ready."
@@ -831,10 +1648,54 @@ start_seat() { # <index> <pane>
   fi
 }
 
+# ---- one herdr session per repository -------------------------------------------
+herdr_home() { echo "${HERDR_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr}"; }
+
+session_socket() { # the socket of this team's herdr session (it may not run yet)
+  local sock
+  sock=$(herdr session list --json 2>/dev/null \
+    | jq -r --arg n "$SESSION_NAME" '[.. | objects | select(.name? == $n) | (.socket // .socket_path // empty)][0] // empty' 2>/dev/null) || true
+  [ -n "$sock" ] || sock="$(herdr_home)/sessions/$SESSION_NAME/herdr.sock"
+  echo "$sock"
+}
+
+# Inside herdr: refuse to start this repository's team in another repository's
+# session. Outside herdr: start (or attach) the repository's own session and
+# start the team in it.
+up_from_outside() {
+  need herdr "See https://herdr.dev"
+  need jq "(brew install jq / apt install jq)"
+  local sock; sock=$(session_socket)
+  mkdir -p "$TEAM_DIR"
+  if HERDR_SOCKET_PATH=$sock herdr workspace list >/dev/null 2>&1; then
+    say "herdr session '$SESSION_NAME' is running: bringing the team up in it."
+    HERDR_SOCKET_PATH=$sock HERDR_ENV=1 SQUAD_HEADLESS=1 "$SQUAD_HOME/bin/squad" up || say "(see the messages above; the session opens anyway)"
+  else
+    say "Starting herdr session '$SESSION_NAME'; the team starts in it (log: .team/up.log)."
+    ( for _ in $(seq 1 60); do HERDR_SOCKET_PATH=$sock herdr workspace list >/dev/null 2>&1 && break; sleep 1; done
+      HERDR_SOCKET_PATH=$sock HERDR_ENV=1 SQUAD_HEADLESS=1 "$SQUAD_HOME/bin/squad" up ) >"$TEAM_DIR/up.log" 2>&1 &
+  fi
+  [ "${SQUAD_NO_ATTACH:-0}" = 1 ] && return 0
+  exec herdr session attach "$SESSION_NAME"
+}
+
+check_session() {
+  local here=${HERDR_SOCKET_PATH:-} want
+  [ -n "$here" ] || return 0
+  want=$(session_socket)
+  [ "$here" = "$want" ] && return 0
+  # an older team that already runs in this session keeps it
+  [ "$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null)" = "$here" ] && return 0
+  die "this herdr session is not '$SESSION_NAME', the session of $(basename "$REPO"). Each repository runs in its own session: run 'squad up' from a terminal outside herdr, or 'herdr session attach $SESSION_NAME' and 'squad up' there. (To keep this session, add 'session <its name>' to .team/team.conf.)"
+}
+
 cmd_up() {
-  require_herdr; find_repo
+  find_repo
   [ -f "$TEAM_DIR/team.conf" ] || cmd_init
   load_conf
+  if [ "${HERDR_ENV:-}" != 1 ]; then up_from_outside; return; fi
+  require_herdr
+  check_session
   mkdir -p "$TEAM_DIR/reports"
   render_team_files
   write_herdr_socket
@@ -864,6 +1725,8 @@ cmd_up() {
       setup_worktree "$WT_ROOT/${S_NAME[$i]}"
     fi
   done
+
+  apply_verify_switch
 
   # herdr agent names are unique per herdr session (server), not per workspace
   local ws_label agents_json ws_json ws other
@@ -901,9 +1764,13 @@ cmd_up() {
     p_lead=${PANES[$lead_i]:-$(jq -r '.result.panes[0].pane_id' <<<"$panes_json")}
     for ((i = 0; i < n; i++)); do
       [ -z "${PANES[$i]}" ] || continue
-      PANES[$i]=$(split "$p_lead" down "$(seat_cwd "$i")")
+      if [ "${S_ROLE[$i]}" = observer ]; then PANES[$i]=$(observer_tab "$ws" "$i")
+      else PANES[$i]=$(split "$p_lead" down "$(seat_cwd "$i")"); fi
       say "  added a pane for ${S_NAME[$i]}"
     done
+    if [ -z "$(jq -r '.result.panes[] | select(.label == "report") | .pane_id' <<<"$panes_json" | head -1)" ]; then
+      report_tab "$ws"; say "  added the report tab"
+    fi
   fi
 
   say "Starting agents"
@@ -939,6 +1806,13 @@ cmd_up() {
   if [ "${#STARTED[@]}" -gt 0 ]; then
     say "Briefing agents"
     brief "${STARTED[@]}" || die "some seats were not briefed. Fix them, then run 'squad brief'."
+  fi
+  if [ "${#RESUMED[@]}" -gt 0 ]; then
+    log_event squad - RESTART "resumed: ${RESUMED[*]}"
+    for ((i = 0; i < n; i++)); do
+      [ "${S_ROLE[$i]}" = observer ] || continue
+      case " ${RESUMED[*]} " in *" ${S_NAME[$i]} "*) herdr agent prompt "${S_NAME[$i]}" "$(restart_note) Write that as your next pass." >/dev/null || true ;; esac
+    done
   fi
 
   say ""
@@ -1007,7 +1881,7 @@ cmd=${1:-help}; [ $# -gt 0 ] && shift
 case "$cmd" in
   new)     cmd_new "$@" ;;
   init)    cmd_init "$@" ;;
-  up)      cmd_up ;;
+  up)      [ "${1:-}" = --fresh ] && export SQUAD_FRESH=1; cmd_up ;;
   brief)   cmd_brief ;;
   status)  cmd_status ;;
   clean)   cmd_clean ;;
@@ -1021,6 +1895,14 @@ case "$cmd" in
   watch)   cmd_watch "$@" ;;
   statusline) cmd_statusline ;;
   git)     cmd_git "$@" ;;
+  heavy)   cmd_heavy "$@" ;;
+  dispatch) cmd_dispatch "$@" ;;
+  merge)   cmd_merge "$@" ;;
+  notify)  cmd_notify "$@" ;;
+  consult) cmd_consult "$@" ;;
+  decisions) cmd_decisions "$@" ;;
+  report)  cmd_report "$@" ;;
+  session-id) cmd_session_id "$@" ;;
   permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;
   -h|--help|help) usage ;;

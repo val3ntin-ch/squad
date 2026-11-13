@@ -25,7 +25,7 @@ Out:
 
 ## Checks
 
-The commands that must pass before anything is merged. The tester runs these for every task.
+The commands that must pass before anything is merged. The tester runs these through `squad heavy`, as separate commands with their own exit codes.
 
 - `<type check command>`
 - `<lint command>`

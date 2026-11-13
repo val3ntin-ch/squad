@@ -9,6 +9,7 @@ Your seat name (for example `lead`, `dev-a` or `tester`) is at the top of this p
 - Review rounds before a task goes to the human: $REVIEW_ROUNDS.
 - git: anything that changes the repository — `git switch …`, `git add …`, `git commit …`, `git merge …`, `git rebase …`, `git restore …`, `git stash …` — run exactly as written here (these files spell out the full command). Read-only git (status, diff, log, show) runs as plain `git`. Never push, force or delete branches.
 - herdr: always call it as `herdr agent …` exactly as written in these files (they spell out the full command). It is bound to this team's herdr session; plain `herdr` from your shell may reach another one.
+- squad: the team's own commands (`squad done`, `squad heavy`, and for the lead `squad dispatch`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`) are spelled out with their full path in these files. Run them as written.
 
 Do not rely on environment variables for any of this.
 
@@ -30,6 +31,11 @@ The reason is cost. An agent that reads another agent's transcript pays for it a
 | `$TEAM_DIR/reports/<ID>-dev.md` | the assigned dev | lead, tester |
 | `$TEAM_DIR/reports/<ID>-test.md` | tester | lead, dev |
 | `$TEAM_DIR/reports/<ID>-review-<round>.md` | lead (or a reviewer seat) | dev |
+| `$TEAM_DIR/reports/<ID>-contract.md` | tester | lead, dev: the agreed acceptance table |
+| `$TEAM_DIR/consult/<n>.md` | `squad consult` (GPT) | lead, the human |
+| `$TEAM_DIR/observer/NOW.md`, `SUGGESTIONS.md` | observer | lead, the human |
+| `$TEAM_DIR/events.log` | squad (every dispatch, report, merge, decision, stop) | lead after a restart, observer, `squad report` |
+| `$TEAM_DIR/LESSONS.md` | lead, at the end | the human, the next run |
 | `$TEAM_DIR/READY.md` | lead | the human |
 
 A task brief is complete: a worker needs `tasks/<ID>.md` and the SPEC sections it names, and nothing else. If a brief is not enough to do the task well, that is a defect of the brief: report `BLOCKED` and say what is missing.
@@ -63,9 +69,12 @@ Nothing you act on may come from memory or from an old context. This rule comes 
 
 Every seat runs on the same computer. A full check run (the whole test suite, a build, a browser test run) uses most of it. Several at once make each one many times slower, and slow runs time out and look like failures.
 
-- A dev runs only the checks of its own task: the tests of the files it changed and the task's check command. Never the full suite.
+- Every heavy run goes through the lock: `squad heavy <your seat name> <ID> -- <command>`. For a command with `&&` or a pipe: `squad heavy <your seat name> <ID> -- bash -c '<command>'`. It waits its turn (first come, first served), names you as the owner, and stops a run after $HEAVY_TIMEOUT minutes. Never build your own lock or wait loop.
+- `squad heavy --status` shows who holds the lock and who waits.
+- A dev runs only the checks of its own task: the tests of the files it changed, the consumers the brief names, and the task's dev check. Never the full suite.
 - The full suite belongs to the tester, and the tester runs one thing at a time.
 - Never start a run while another run of yours is still going. Never start a second run because the first is slow.
+- Never put a long-running process (a viewer, a dev server, a watch mode) inside the lock.
 - A check that fails only by a time limit is not a failure yet: run it once more on its own. If it passes alone, report it as "passed alone, timed out under load".
 - Stop every server you started (a viewer, a dev server) when your step ends.
 
@@ -76,7 +85,8 @@ Not every task needs the whole check list. The kind of change decides the run.
 - **Documents only:** the format check. Nothing else.
 - **A task that changes only the folders of its own parts:** the dev runs the tests of those folders, the tests related to the changed files, and the lint and type checks of the package. No whole-package run. The tester does not run the whole list for this task alone.
 - **A task that changes a shared file** (configuration, tokens, a shared helper, a shared style): the whole list, once, by the tester.
-- **A candidate:** the lead puts every approved task into one candidate branch, and the tester runs the whole list once on it. Each suite runs once in that run. Nothing is merged without a whole run on a candidate that holds it.
+- **A candidate:** the lead puts every approved task into one candidate branch, and the tester runs the whole list once on it. Each suite runs once in that run, and every suite runs: run them as separate commands with their own exit codes, so one failure does not hide the next. Nothing is merged without a whole run on a candidate that holds it. On a FAIL the tester runs each failing test file on each task branch of the candidate (file runs, no lock) and names the task where it fails first; that task goes back, the others go into the next candidate.
+- **A failure:** the tester runs the failing test file once on `$TEAM_BASE` too and writes `new` or `was already failing`.
 - **The end of a step:** the whole list on the integration branch.
 
 The tester comes first in the queue for a heavy run. A dev never repeats a whole run that the tester will do.
@@ -85,10 +95,22 @@ The tester comes first in the queue for a heavy run. A dev never repeats a whole
 
 1. Work on one task at a time: the one the lead just named.
 2. Stay inside the files the brief lists. If the task cannot be finished without another file, stop and say which file and why.
-3. Evidence, not claims. Every acceptance row in your report has a result and the evidence for it: a command with its exit code, a measured value, a file and line, or a screenshot path. A row without evidence counts as not met.
+3. Evidence, not claims. Every acceptance row in your report has a result and the evidence for it: a command with its exit code, a measured value, a file and line, or a screenshot path. The result is one of five words:
+   - `pass`: checked now, and it holds;
+   - `fail`: checked now, and it does not hold;
+   - `pending`: not checked yet, someone after you checks it (say who);
+   - `unavailable`: cannot be checked here (say why: no tool, no viewer);
+   - `inconclusive`: checked, but the result does not decide it (say what is missing).
+   Only `pass` counts as met. `squad done` refuses DONE or PASS when a row of the brief is missing from your report or has `fail`, and it shows every row that is not `pass` to the lead.
 4. Keep reports short: the status line, the acceptance table, then at most ten lines of notes. No narrative, no restating of the brief.
 5. When you finish, write the report, then run the `squad done …` command your role file gives. Reply in the terminal with one line that names the report file, and stop. Do not start the next task on your own.
 6. If you are stuck after two real attempts at the same problem, stop and report `BLOCKED` with what you tried.
 7. Never push, never force anything, never delete branches or worktrees, and never edit files under `$TEAM_DIR` other than your own reports.
 8. Report what happened, including what you did not do or could not verify. "Not checked: the dark scheme" is useful. A report that implies everything passed is not.
 9. Do not weaken, skip or delete a check to make it pass. Find the cause.
+10. Expected values come from the brief, the SPEC or their references, never from the output you are checking.
+11. When the lead tells you that a rule changed (`[squad] Rule changed …`), finish your current step, then follow the new rule.
+
+## New rules
+
+A rule in these files must name the loss it removes (minutes, rounds, a failure that happened). A rule that a script can enforce goes into `squad` itself, not into this text. The lead proposes changes to these files in `LESSONS.md`; the human approves them.
