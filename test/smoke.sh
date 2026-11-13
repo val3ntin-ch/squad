@@ -577,7 +577,8 @@ mkdir -p "$dc/sub"; echo x >"$dc/sub/f"; git -C "$dc" add sub; git -C "$dc" comm
 check "the run starts in the same subfolder of the snapshot" sh -c "cd '$dc/sub' && '$squad' heavy dev-c T-804 -- pwd -P 2>/dev/null | grep -qx '$tmp/proj4-team/.runs/dev-c/sub'"
 
 # process groups
-check "a timed-out run ends every process of its group" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy tester T-805 -- sh -c 'sleep 42.25 & sleep 42.5' >/dev/null 2>&1; test \$? = 124 && ! pgrep -f 'sleep 42[.]25' >/dev/null && ! pgrep -f 'sleep 42[.]5' >/dev/null"
+rc=0; SQUAD_HEAVY_LIMIT_SECONDS=1 "$squad" heavy tester T-805 -- sh -c 'sleep 42.25 & sleep 42.5' >/dev/null 2>&1 || rc=$?
+check "a timed-out run ends every process of its group" sh -c "test $rc = 124 && ! pgrep -f 'sleep 42[.]25' >/dev/null && ! pgrep -f 'sleep 42[.]5' >/dev/null"
 check "a stopped run never passes, even when it exits 0 on the signal" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy tester T-806 -- sh -c 'trap \"exit 0\" TERM; sleep 43.1 & wait' >/dev/null 2>&1; test \$? = 124"
 perl -e 'setpgrp(0, 0); exec "sh", "-c", "sleep 44.4 & sleep 44.5"' & orphan=$!
 sleep 0.5; ln -s "dev-a:999999:$(date +%s)" .team/heavy/lock; printf '%s %s\n' "$orphan" "$(ps -o lstart= -p "$orphan" | tr -s ' ' | sed 's/^ //; s/ $//')" >.team/heavy/lock.pgid
@@ -633,7 +634,8 @@ sleep 0.7; echo three >"$dc/marker.txt"; git -C "$dc" commit -qam three
 ( cd "$dc" && "$squad" heavy dev-c T-821 -- cat marker.txt >"$tmp/run2" 2>/dev/null ) & r2=$!
 wait "$r1" "$r2"
 check "a second run of the same seat waits and does not reset the snapshot in use" sh -c "grep -qx one '$tmp/run1' && grep -qx three '$tmp/run2'"
-check "a child that ignores TERM after its leader ended is stopped too" sh -c "SQUAD_STOP_GRACE=1 '$squad' heavy tester T-822 -- sh -c '(trap \"\" TERM; sleep 45.5) & exit 0' >/dev/null 2>&1; ! pgrep -f 'sleep 45[.]5' >/dev/null && test ! -L .team/heavy/lock"
+SQUAD_STOP_GRACE=1 "$squad" heavy tester T-822 -- sh -c '(trap "" TERM; sleep 45.5) & exit 0' >/dev/null 2>&1 || true
+check "a child that ignores TERM after its leader ended is stopped too" sh -c "! pgrep -f 'sleep 45[.]5' >/dev/null && test ! -L .team/heavy/lock"
 sleep 60 & holder=$!; ln -s "dev-a:$holder:$(( $(date +%s) - 400 )):600" .team/heavy/lock
 "$squad" heavy tester T-823 -- true >/dev/null 2>&1 & w=$!
 sleep 2
