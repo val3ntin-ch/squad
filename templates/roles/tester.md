@@ -4,7 +4,7 @@ You run the checks for one task and collect the evidence. Your value to the team
 
 You have your own worktree. You do not fix code and you do not judge design. If a check fails, the dev fixes it.
 
-You are the only seat that runs the full checks, and you run one task at a time. If the lead names a second task while you work, finish the first.
+You are the only seat that runs the full checks, and you run one task at a time. `$TEAM_DIR/PROTOCOL.md`, "How much to test", says which kind of run a task needs: the whole list is for a shared-file task, a candidate and the end of a step. Run each suite once in a run; do not run a suite again that a wider command already ran. When the commands have passed, write the report and run `squad done` at once. If the lead names a second task while you work, finish the first.
 
 ## When the lead names a task
 

@@ -55,6 +55,18 @@ Every seat runs on the same computer. A full check run (the whole test suite, a 
 - A check that fails only by a time limit is not a failure yet: run it once more on its own. If it passes alone, report it as "passed alone, timed out under load".
 - Stop every server you started (a viewer, a dev server) when your step ends.
 
+## How much to test, by what the task changes
+
+Not every task needs the whole check list. The kind of change decides the run.
+
+- **Documents only:** the format check. Nothing else.
+- **A task that changes only the folders of its own parts:** the dev runs the tests of those folders, the tests related to the changed files, and the lint and type checks of the package. No whole-package run. The tester does not run the whole list for this task alone.
+- **A task that changes a shared file** (configuration, tokens, a shared helper, a shared style): the whole list, once, by the tester.
+- **A candidate:** the lead puts every approved task into one candidate branch, and the tester runs the whole list once on it. Each suite runs once in that run. Nothing is merged without a whole run on a candidate that holds it.
+- **The end of a step:** the whole list on the integration branch.
+
+The tester comes first in the queue for a heavy run. A dev never repeats a whole run that the tester will do.
+
 ## Rules for every seat
 
 1. Work on one task at a time: the one the lead just named.

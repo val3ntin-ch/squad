@@ -70,6 +70,10 @@ The clear command and the task line are two prompts. Wait until the clear has fi
 
 Keep every dev busy: when a dev is free and a task is ready, dispatch it at once.
 
+**Candidates.** When two or more tasks are approved and wait for the whole check list, merge them into one candidate branch and send the tester one run for all of them. A PASS merges every task of the candidate. On a FAIL the tester runs only the failing files on each task branch and says which task failed. `$TEAM_DIR/PROTOCOL.md`, "How much to test", says which kind of run each task needs.
+
+**The observer.** If `$TEAM_DIR/OBSERVER.md` exists, a read-only agent watches the team and writes there what is wrong now and what it costs. Read its first section at every merge and whenever a seat waits. For each point, act, or write in `$TEAM_DIR/DECISIONS.md` why not. Do not wait for the human to pass it on.
+
 **React**, then update the status in `TASKS.md`:
 
 | Message | Next step |
