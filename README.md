@@ -112,7 +112,7 @@ setup pnpm install --frozen-lockfile
 - **escalate_model** is the model a fix runs on from round 4 (`squad dispatch --escalate`).
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.
-- **heavy_timeout** is how many minutes one heavy run may hold the lock; **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/<seat>-run`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
+- **heavy_timeout** is how many minutes one heavy run may hold the lock; **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/.runs/<seat>`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
 - **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.

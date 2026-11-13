@@ -16,7 +16,7 @@ version needs, without anyone editing it by hand. Sources: docs/research/2026-11
   uses the runner's own shard flag).
 
 ## Done when
-- [x] A dev's `squad heavy` runs in `<repo>-team/<seat>-run`, a detached worktree at the commit it
+- [x] A dev's `squad heavy` runs in `<repo>-team/.runs/<seat>`, a detached worktree at the commit it
       recorded, in the same subfolder the dev called it from; the dev's own worktree can change
       during the run; the setup command runs there again only when a lockfile changed.
 - [x] Each heavy run is its own process group: a stop or a time-out ends every process in it

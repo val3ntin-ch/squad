@@ -293,7 +293,7 @@ sleep 0.5
 wait
 check "heavy runs one command at a time, in arrival order" test "$(tr -d '\n' <"$tmp/order")" = AB
 check "heavy logs start and end with the seat and the task" sh -c "grep -qE ' dev-a T-1 HEAVY_START ' .team/events.log && grep -qE ' dev-a T-1 HEAVY_END rc=0 ' .team/events.log"
-check "the lock names its owner while it runs" sh -c "'$squad' heavy tester T-3 -- sh -c 'readlink .team/heavy/lock; cat .team/heavy/lock.cmd' | tr '\n' ' ' | grep -qE '^tester:[0-9]+:[0-9]+ @[0-9a-f]+ \\(20 min\\): sh -c'"
+check "the lock names its owner while it runs" sh -c "'$squad' heavy tester T-3 -- sh -c 'readlink .team/heavy/lock; cat .team/heavy/lock.cmd' | tr '\n' ' ' | grep -qE '^tester:[0-9]+:[0-9]+:[0-9]+ @[0-9a-f]+ \\(20 min\\): sh -c'"
 check "the lock is free after a run" test ! -L .team/heavy/lock
 ln -s "dev-c:999999:$(date +%s)" .team/heavy/lock
 check "a lock whose owner process is gone is cleared" "$squad" heavy dev-a T-4 -- true
@@ -310,6 +310,11 @@ ln -s "tester:$holder:$(date +%s)" .team/heavy/lock; rm -f "$tmp/order"
 sleep 0.3
 "$squad" heavy dev-b T-8 -- sh -c "echo B >>'$tmp/order'" >/dev/null 2>&1 & b=$!
 sleep 1.5; kill "$holder"; wait "$holder" 2>/dev/null || true; wait "$a" "$b"
+sleep 60 & holder=$!; ln -s "tester:$holder:$(date +%s)" .team/heavy/lock
+"$squad" heavy dev-a T-77 -- true >"$tmp/orphan.out" 2>&1 & w=$!
+sleep 1.5; rm -f .team/heavy/queue/*-dev-a; sleep 1.5
+check "a waiter whose queue entry is removed stops and says so" sh -c "! kill -0 $w 2>/dev/null && grep -q 'place in the heavy queue was removed' '$tmp/orphan.out'"
+kill "$holder"; wait "$holder" "$w" 2>/dev/null || true; rm -f .team/heavy/lock
 check "the queue keeps arrival order within one second" test "$(tr -d '\n' <"$tmp/order")" = AB
 check "heavy refuses a task id with a slash or markup" refuses "$squad" heavy dev-a '../x' -- true
 check "heavy refuses an unknown seat" refuses "$squad" heavy nobody -- true
@@ -322,7 +327,7 @@ check "heavy refuses a dev worktree with a staged change" refuses "$squad" heavy
 check "a refused run takes no lock and leaves no queue entry" sh -c "test ! -L .team/heavy/lock && test -z \"\$(ls .team/heavy/queue)\""
 git -C "$tmp/proj4-team/dev-c" reset -q wip.txt; rm "$tmp/proj4-team/dev-c/wip.txt"
 check "heavy runs a clean dev worktree" "$squad" heavy dev-c T-9 -- true
-check "the run names the commit and the dev limit" grep -qE " dev-c T-9 HEAVY_START sha=[0-9a-f]{7,} limit=10m in=dev-c-run true" .team/events.log
+check "the run names the commit and the dev limit" grep -qE " dev-c T-9 HEAVY_START sha=[0-9a-f]{7,} limit=10m in=.runs/dev-c true" .team/events.log
 echo shot >"$tmp/proj4-team/tester/artefact.png"
 check "the tester's run is not held to the commit rule" "$squad" heavy tester T-9 -- true
 check "the tester keeps the longer limit" grep -qE " tester T-9 HEAVY_START sha=[0-9a-f]{7,} limit=20m true" .team/events.log
@@ -540,12 +545,13 @@ MOCK_FAIL_RESUME=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "a refused resume falls back to a fresh start once, and says so" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG' && grep -q ' dev-b - FRESH_START resume of' .team/events.log"
 reset_log; rm -f .team/.briefed/*
 check "a layout with no client attached (height 0) still starts" env MOCK_WIDTH=0 MOCK_HEIGHT=0 "$squad" up
-sleep 30 & other_up=$!; echo "$other_up" >.team/up.pid
+sleep 30 & other_up=$!; ln -s "$other_up" .team/up.lock
 check "a second squad up refuses while one runs" sh -c "'$squad' up 2>&1 | grep -q \"another 'squad up' for this team is running (pid $other_up\""
-kill "$other_up"; wait "$other_up" 2>/dev/null || true; rm -f .team/up.pid
+kill "$other_up"; wait "$other_up" 2>/dev/null || true; rm -f .team/up.lock
 reset_log; rm -f .team/.briefed/*
-check "a seat name taken in another workspace is named as such" sh -c "MOCK_TAKEN=dev-b '$squad' up 2>&1 | grep -q 'already runs a seat named .dev-b. (usually a second .squad up.)'"
-check "up removes its lock when it ends" test ! -f .team/up.pid
+taken_out=$(MOCK_TAKEN=dev-b "$squad" up 2>&1 || true)
+check "a seat name taken in another workspace is named as such" grep -q 'already runs a seat named .dev-b. (usually a second .squad up.)' <<<"$taken_out"
+check "up removes its lock when it ends" test ! -L .team/up.lock
 
 # ---- 008 · snapshot runs, process groups, sample mode, team.conf kept up to date --------
 cd "$tmp/proj4"
@@ -555,8 +561,8 @@ echo one >"$dc/marker.txt"; git -C "$dc" add marker.txt; git -C "$dc" commit -qm
 want=$(git -C "$dc" rev-parse --short HEAD)
 sed -i.bak "s#^setup.*#setup echo ran >>'$tmp/setup-runs'#" .team/team.conf && rm -f .team/team.conf.bak; rm -f "$tmp/setup-runs"
 out=$( cd "$dc" && "$squad" heavy dev-c T-800 -- sh -c 'git rev-parse --short HEAD; pwd -P' 2>/dev/null )
-check "a dev's run happens in its snapshot, at the commit it recorded" sh -c "printf '%s' \"\$1\" | grep -qx '$want' && printf '%s' \"\$1\" | grep -qx '$tmp/proj4-team/dev-c-run'" _ "$out"
-check "the run names its snapshot" grep -qE " dev-c T-800 HEAVY_START sha=$want limit=10m in=dev-c-run " .team/events.log
+check "a dev's run happens in its snapshot, at the commit it recorded" sh -c "printf '%s' \"\$1\" | grep -qx '$want' && printf '%s' \"\$1\" | grep -qx '$tmp/proj4-team/.runs/dev-c'" _ "$out"
+check "the run names its snapshot" grep -qE " dev-c T-800 HEAVY_START sha=$want limit=10m in=.runs/dev-c " .team/events.log
 ( cd "$dc" && "$squad" heavy dev-c T-801 -- sh -c 'sleep 2; cat marker.txt' >"$tmp/snapout" 2>/dev/null ) & hb=$!
 sleep 1; echo two >"$dc/marker.txt"; wait "$hb"; git -C "$dc" checkout -q marker.txt
 check "the dev's worktree can change while its run reads the snapshot" grep -qx one "$tmp/snapout"
@@ -568,13 +574,13 @@ echo '{}' >"$dc/package-lock.json"; git -C "$dc" add package-lock.json; git -C "
 check "a changed lockfile runs the setup again" test "$(wc -l <"$tmp/setup-runs" | tr -d ' ')" = 2
 sed -i.bak "s#^setup.*#setup#" .team/team.conf && rm -f .team/team.conf.bak
 mkdir -p "$dc/sub"; echo x >"$dc/sub/f"; git -C "$dc" add sub; git -C "$dc" commit -qm sub
-check "the run starts in the same subfolder of the snapshot" sh -c "cd '$dc/sub' && '$squad' heavy dev-c T-804 -- pwd -P 2>/dev/null | grep -qx '$tmp/proj4-team/dev-c-run/sub'"
+check "the run starts in the same subfolder of the snapshot" sh -c "cd '$dc/sub' && '$squad' heavy dev-c T-804 -- pwd -P 2>/dev/null | grep -qx '$tmp/proj4-team/.runs/dev-c/sub'"
 
 # process groups
 check "a timed-out run ends every process of its group" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy tester T-805 -- sh -c 'sleep 42.25 & sleep 42.5' >/dev/null 2>&1; test \$? = 124 && ! pgrep -f 'sleep 42.2' >/dev/null && ! pgrep -f 'sleep 42.5' >/dev/null"
 check "a stopped run never passes, even when it exits 0 on the signal" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy tester T-806 -- sh -c 'trap \"exit 0\" TERM; sleep 43.1 & wait' >/dev/null 2>&1; test \$? = 124"
 perl -e 'setpgrp(0, 0); exec "sh", "-c", "sleep 44.4 & sleep 44.5"' & orphan=$!
-sleep 0.5; ln -s "dev-a:999999:$(date +%s)" .team/heavy/lock; echo "$orphan" >.team/heavy/lock.pgid
+sleep 0.5; ln -s "dev-a:999999:$(date +%s)" .team/heavy/lock; printf '%s %s\n' "$orphan" "$(ps -o lstart= -p "$orphan" | tr -s ' ' | sed 's/^ //; s/ $//')" >.team/heavy/lock.pgid
 check "a dead owner's leftover run is ended before the lock is free" sh -c "'$squad' heavy tester T-807 -- true >/dev/null 2>&1 && ! pgrep -f 'sleep 44.[45]' >/dev/null"
 wait "$orphan" 2>/dev/null || true
 
@@ -609,13 +615,49 @@ check "a second run adds nothing" sh -c "'$squad' update-conf | grep -q 'nothing
 printf 'seat lead claude lead -\nseat dev-a claude dev -\nupgrade off\n' >.team/team.conf
 "$squad" update-conf >/dev/null
 check "upgrade off leaves team.conf alone" test "$(wc -l <.team/team.conf | tr -d ' ')" = 3
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat tester claude tester -\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "an old unmarked one-dev team is taken as small: settings, no new seats" sh -c "head -1 .team/team.conf | grep -qx '# preset: small' && ! grep -qE 'reviewer|observer' .team/team.conf && grep -q '^heavy_timeout_dev' .team/team.conf"
 printf '# preset: small\nseat lead claude lead -\nseat dev-a claude dev -\nseat tester claude tester -\n' >.team/team.conf
 "$squad" update-conf >/dev/null
 check "a small team gets the settings but no reviewer or observer" sh -c "! grep -qE 'reviewer|observer' .team/team.conf && grep -q '^heavy_timeout_dev' .team/team.conf"
 check "init records the preset of a new team" sh -c "cd '$tmp' && '$squad' new proj8 --preset large >/dev/null && head -1 proj8/.team/team.conf | grep -qx '# preset: large'"
-printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat tester claude tester -\n' >"$XDG_CONFIG_HOME/squad/team.conf" 2>/dev/null || { mkdir -p "$XDG_CONFIG_HOME/squad"; printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat tester claude tester -\n' >"$XDG_CONFIG_HOME/squad/team.conf"; }
-check "init from an old personal default brings it up to date" sh -c "cd '$tmp' && '$squad' new proj9 >/dev/null && grep -qE '^seat rev-gpt codex reviewer dev-a ' proj9/.team/team.conf && grep -q '^verify_hook off' proj9/.team/team.conf"
+mkdir -p "$XDG_CONFIG_HOME/squad"; printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat dev-c claude dev -\nseat tester claude tester -\n' >"$XDG_CONFIG_HOME/squad/team.conf"
+check "init from an old personal default brings it up to date" sh -c "cd '$tmp' && '$squad' new proj9 >/dev/null && grep -qE '^seat rev-gpt codex reviewer dev-a,dev-b,dev-c ' proj9/.team/team.conf && grep -q '^verify_hook off' proj9/.team/team.conf"
 rm -f "$XDG_CONFIG_HOME/squad/team.conf"
+cd "$tmp/proj4"
+# GPT review of 007-008
+cd "$tmp/proj4"
+( cd "$dc" && "$squad" heavy dev-c T-820 -- sh -c 'sleep 2; cat marker.txt' >"$tmp/run1" 2>/dev/null ) & r1=$!
+sleep 0.7; echo three >"$dc/marker.txt"; git -C "$dc" commit -qam three
+( cd "$dc" && "$squad" heavy dev-c T-821 -- cat marker.txt >"$tmp/run2" 2>/dev/null ) & r2=$!
+wait "$r1" "$r2"
+check "a second run of the same seat waits and does not reset the snapshot in use" sh -c "grep -qx one '$tmp/run1' && grep -qx three '$tmp/run2'"
+check "a child that ignores TERM after its leader ended is stopped too" sh -c "SQUAD_STOP_GRACE=1 '$squad' heavy tester T-822 -- sh -c '(trap \"\" TERM; sleep 45.5) & exit 0' >/dev/null 2>&1; ! pgrep -f 'sleep 45.5' >/dev/null && test ! -L .team/heavy/lock"
+sleep 60 & holder=$!; ln -s "dev-a:$holder:$(( $(date +%s) - 400 )):600" .team/heavy/lock
+"$squad" heavy tester T-823 -- true >/dev/null 2>&1 & w=$!
+sleep 2
+check "a live run within its own limit is not taken for stale" sh -c "readlink .team/heavy/lock | grep -q '^dev-a:$holder:'"
+kill "$holder"; wait "$holder" "$w" 2>/dev/null || true
+git -C "$tmp/proj4" worktree remove --force "$tmp/proj4-team/.runs/dev-c"
+sed -i.bak "s#^setup.*#setup echo ran >>'$tmp/setup-runs'#" .team/team.conf && rm -f .team/team.conf.bak
+"$squad" heavy dev-c T-824 -- true >/dev/null 2>&1
+check "a new snapshot always runs its setup" test "$(wc -l <"$tmp/setup-runs" | tr -d ' ')" = 3
+sed -i.bak "s#^setup.*#setup#" .team/team.conf && rm -f .team/team.conf.bak
+sed -i.bak 's/^sample_percent .*/sample_percent 51/' .team/team.conf && rm -f .team/team.conf.bak
+check "a share over 50 % still samples (2 shards, not the whole suite)" sh -c "'$squad' heavy dev-c T-825 --sample -- echo '--shard={shard}' 2>/dev/null | grep -qxE -- '--shard=[12]/2'"
+sed -i.bak 's/^sample_percent .*/sample_percent 10/' .team/team.conf && rm -f .team/team.conf.bak
+printf '19:00:00 dev-a 001 DONE\n' >>.team/events.log
+printf '%s tester T-830 DISPATCH round=1\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+check "the tester's contract dispatch does not open the gate for the dev" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a T-830
+sleep 60 & reused=$!; printf '%s Mon Jan  1 00:00:00 2001\n' "$reused" >.team/heavy/lock.pgid; ln -s "dev-a:999999:$(date +%s):600" .team/heavy/lock
+"$squad" heavy tester T-831 -- true >/dev/null 2>&1
+check "a reused pid's group is not killed by the stale-lock cleanup" kill -0 "$reused"
+kill "$reused"; wait "$reused" 2>/dev/null || true
+check "only the exact task id is taken as under way (001 is not 1)" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a 1
+check "squad clean removes the snapshots" sh -c "cp -R . '$tmp/p4copy' >/dev/null 2>&1; true; '$squad' clean >/dev/null 2>&1; test ! -d '$tmp/proj4-team/.runs'"
+cd "$tmp/old"; printf 'seat lead claude lead -\n  upgrade off\n' >.team/team.conf; "$squad" update-conf >/dev/null
+check "an indented upgrade off is honoured" test "$(wc -l <.team/team.conf | tr -d ' ')" = 2
 cd "$tmp/proj4"
 check "the roadmap keeps the containers reminder" grep -qF 'one container per seat' "$here/../docs/ROADMAP.md"
 
