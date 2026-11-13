@@ -257,6 +257,7 @@ check "devs get no access to other worktrees" refuses grep -qE "^herdr agent sta
 check "the tester is the cheap seat" grep -qE '^herdr agent start tester --kind claude .* -- --model claude-sonnet-5-5 --effort low ' "$MOCK_LOG"
 check "seven seats start, the reviewer on Codex" sh -c "test \"\$(grep -c '^herdr agent start' '$MOCK_LOG')\" = 7 && grep -qE '^herdr agent start rev-gpt --kind codex .* -- -m gpt-6.1-sol -c model_reasoning_effort=medium ' '$MOCK_LOG'"
 check "the protocol states the review rounds" grep -qF 'Review rounds before a task goes to the human: 5.' .team/PROTOCOL.md
+check "READY.md links the lessons" grep -qF "the link to \`$tmp/proj4/.team/LESSONS.md\`" .team/roles/lead.md
 check "the lead role has every task reviewed and decides each finding" grep -qF 'Every task is reviewed by a fresh pair of eyes and decided by you' .team/roles/lead.md
 check "the task template holds the acceptance table" grep -qF '| # | Requirement | How to check it |' .team/tasks/_TEMPLATE.md
 sed -i.bak 's/^rounds .*/rounds 3/' .team/team.conf && rm -f .team/team.conf.bak
@@ -447,6 +448,7 @@ cat >>.team/DECISIONS.md <<'DEC'
 - Status: provisional — open decision for V!
 DEC
 check "decisions --check passes a full block" "$squad" decisions --check
+check "decisions --check writes each decision into the ledger once" sh -c "'$squad' decisions --check >/dev/null; test \$(grep -c ' - DECISION D-001 provisional' .team/events.log) = 1"
 check "the template's example block is not a decision" sh -c "test \"\$('$squad' decisions | wc -l | tr -d ' ')\" = 1"
 printf '\n## D-002 · Half done\n- Time: 2026-11-13\n- Question: q\n- Options: o\n- Claude: c\n- GPT: none: not a real issue\n- Sources: s\n- Decision: d\n- Why:\n- Status: final\n' >>.team/DECISIONS.md
 check "decisions --check fails a block with an empty field" refuses "$squad" decisions --check
@@ -454,8 +456,8 @@ check "consult refuses an agent other than Codex" sh -c "printf 'consult claude 
 
 # 003/004/005 · the report page
 cat >.team/events.log <<'EVENTS'
-2026-11-13 10:00:00 dev-a T-500 DISPATCH round=1 u=10/5
-2026-11-13 10:20:00 dev-a T-500 DONE report=T-500-dev.md u=14/5
+2026-11-13 10:00:00 dev-a T-500 DISPATCH round=1 u=10/5 c=20/3
+2026-11-13 10:20:00 dev-a T-500 DONE report=T-500-dev.md u=14/5 c=23/3
 2026-11-13 10:25:00 tester T-500 DISPATCH round=1
 2026-11-13 10:40:00 tester T-500 FAIL report=T-500-test.md
 2026-11-13 10:45:00 dev-a T-500 DISPATCH round=1 u=15/5
@@ -474,7 +476,9 @@ check "the page has the six tabs" sh -c "for t in Decisions Observer Timeline QA
 check "the page shows each decision with its status and the GPT consult" sh -c "grep -q 'D-001' '$html' && grep -q 'open decision for V!' '$html' && grep -q 'GPT consult (consult/1.md)' '$html'"
 check "the page shows the observer's now and suggestions" sh -c "grep -q 'T-500 waited 5 min for the tester' '$html' && grep -q 'Batch the tester queue' '$html'"
 check "the timeline has the task's minutes: total 90, dev 30, test 25, review 8" grep -qE '<tr><td>T-500</td><td>merged</td><td class=n>90</td><td class=n>30</td><td class=n>25</td><td class=n>8</td>' "$html"
-check "the cost tab sums the seat minutes and the usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td></tr>' "$html"
+check "the cost tab sums the seat minutes and the Claude and Codex usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td><td class=n>3</td></tr>' "$html"
+check "the live report shows the cost too" sh -c "printf q | '$squad' report --live | grep -qE 'T-500 +merged .*\| 6 · 3'"
+check "an event records Codex usage when Codex has data" sh -c "CODEX_HOME='$cx' '$squad' done dev-a T-303 BLOCKED >/dev/null; grep -E ' dev-a T-303 BLOCKED .* c=42/7' .team/events.log"
 check "the QA tab counts the tester's FAIL" grep -qE '<tr><td>T-500</td><td>[a-z]+</td><td class=n>[0-9]+</td><td class=n>0</td><td class=n>1</td>' "$html"
 check "the page escapes HTML in the files" sh -c "printf '<script>x</script>\n' >>.team/observer/NOW.md; '$squad' report >/dev/null; ! grep -q '<script>x' '$html'"
 printf 'see http://x"onmouseover="alert(1) now\n' >>.team/observer/NOW.md

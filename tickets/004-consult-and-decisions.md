@@ -14,21 +14,21 @@ every decision, with both views and the sources, in one HTML page.
 - Out: GPT never edits code or team files; nothing is pushed.
 
 ## Done when
-- [ ] `squad consult "<question>" [files...]` runs `codex exec --search` read-only with the
-      model `consult_model` from team.conf, a prompt that requires official sources with
+- [x] `squad consult "<question>" [files...]` runs `codex exec --search` read-only with the
+      command `consult` from team.conf (default `codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium`), a prompt that requires official sources with
       URLs and at least two options with trade-offs, and writes `.team/consult/<n>.md`; it
       logs `CONSULT <n>` in events.log.
-- [ ] Lead role: a real issue is one of — the same finding twice, a task at the round cap,
+- [x] Lead role: a real issue is one of — the same finding twice, a task at the round cap,
       BLOCKED twice, sources that disagree, or a decision about architecture, a dependency,
       accessibility, security or data. For each, the lead writes its own options first,
       then runs `squad consult`, then decides.
-- [ ] Each decision in DECISIONS.md has: id, time, question, options, Claude's view, GPT's
+- [x] Each decision in DECISIONS.md has: id, time, question, options, Claude's view, GPT's
       view (consult file), sources (URLs, version checked), decision, why, status
       (`provisional — open decision for V!` or `final`); `squad done`-style check:
       `squad decisions --check` fails on a block with a missing field.
-- [ ] `squad report` Decisions tab lists every decision with its fields, filter by status,
+- [x] `squad report` Decisions tab lists every decision with its fields, filter by status,
       and links to the consult file; READY.md lists every provisional decision.
-- [ ] `bash test/smoke.sh` and `shellcheck` pass.
+- [x] `bash test/smoke.sh` and `shellcheck` pass.
 
 ## Plan
 - `bin/squad`: `cmd_consult` (codex exec, `--sandbox read-only`, `-o` to the consult file,
@@ -52,3 +52,6 @@ every decision, with both views and the sources, in one HTML page.
    in READY.md and in the Decisions tab before any push.
 3. Assumption: `codex exec --search` is available in your Codex 0.161.0 (`codex --help`
    lists `--search`; I will confirm it works under `exec`).
+
+## Evidence (13 Nov 2026)
+`bash test/smoke.sh`: 234 passed under bash 5 and under /bin/bash 3.2.57; `shellcheck -S warning`: clean. smoke: 'consult runs GPT Sol read-only with web search and writes the file', 'consult passes the model, the effort and read-only', 'the consult prompt carries the question, the files and the source order', 'two consults started together get their own numbers', 'decisions --check fails a block with an empty field', 'the page shows each decision with its status and the GPT consult'. Not verified: a real `codex --search exec` call.

@@ -292,10 +292,13 @@ log_event() { # <seat> <task> <EVENT> [detail...]
   printf '%s %s %s %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$seat" "${task:--}" "$ev" "${*:+ $*}" >>"$TEAM_DIR/events.log"
 }
 
-usage_tag() { # "u=<Claude 5h %>/<7d %>" for cost lines, or nothing
-  local json; json=$(usage_claude)
-  [ -n "$json" ] || return 0
-  jq -r '"u=\(.p5 // "?" | tostring | split(".")[0])/\(.p7 // "?" | tostring | split(".")[0])"' <<<"$json" 2>/dev/null || true
+usage_tag() { # "u=<Claude 5h %>/<7d %> c=<Codex 5h %>/<7d %>" for cost lines (each only when known)
+  local json out=""
+  json=$(usage_claude)
+  [ -z "$json" ] || out=$(jq -r '"u=\(.p5 // "?" | tostring | split(".")[0])/\(.p7 // "?" | tostring | split(".")[0])"' <<<"$json" 2>/dev/null || true)
+  json=$(usage_codex)
+  [ -z "$json" ] || out="$out${out:+ }$(jq -r '"c=\(.p5 // "?" | tostring | split(".")[0])/\(.p7 // "?" | tostring | split(".")[0])"' <<<"$json" 2>/dev/null || true)"
+  printf '%s' "$out"
 }
 
 seat_state() { # <agents json> <name> -> herdr agent_status, or "off"
@@ -638,6 +641,12 @@ cmd_decisions() {
            if (val ~ /^ *$/) print $1 ": no " kv[1]
            if (kv[1] == "Status" && val !~ /^(provisional|final)/) print $1 ": Status must start with provisional or final" } }')
   [ -z "$bad" ] || { printf '%s\n' "$bad" >&2; die "DECISIONS.md: fill every field of each decision (fields: $DECISION_FIELDS)."; }
+  # every decision, and every change of its status, goes into the ledger once
+  local id st
+  while IFS=$'\t' read -r id st; do
+    [ -n "$id" ] || continue
+    grep -qF " - DECISION $id $st" "$TEAM_DIR/events.log" 2>/dev/null || log_event "$LEAD" - DECISION "$id $st"
+  done < <(decisions_tsv | awk -F'\t' '{ s = ""; for (i = 3; i <= NF; i++) if ($i ~ /^Status=/) { s = substr($i, 8); sub(/ .*/, "", s) } print $1 "\t" s }')
   say "DECISIONS.md: $(decisions_tsv | grep -c . || true) decision(s), every field filled."
 }
 
@@ -662,16 +671,19 @@ task_stats_raw() {
       else { split($1, t, ":"); if (t[1] * 3600 + t[2] * 60 + t[3] < prevsec) oldday++; day = oldday; s = $2; id = $3; ev = $4; f0 = 5 }
       prevsec = t[1] * 3600 + t[2] * 60 + t[3]
       now = day * 86400 + prevsec
-      u = ""; for (k = f0; k <= NF; k++) if ($k ~ /^u=/) { u = substr($k, 3); split(u, uu, "/"); u = uu[1] + 0 }
+      u = ""; cx = ""
+      for (k = f0; k <= NF; k++) { if ($k ~ /^u=[0-9]/) { split(substr($k, 3), uu, "/"); u = uu[1] + 0 }
+                                   if ($k ~ /^c=[0-9]/) { split(substr($k, 3), uu, "/"); cx = uu[1] + 0 } }
       if (id == "-" || id == "") next
       if (!(id in first)) { first[id] = now; order[++nt] = id }
       last[id] = now
       key = s SUBSEP id
-      if (ev == "DISPATCH") { open[key] = now; ou[key] = u; if (role[s] == "dev") disp[id]++ }
+      if (ev == "DISPATCH") { open[key] = now; ou[key] = u; oc[key] = cx; if (role[s] == "dev") disp[id]++ }
       else if (ev ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT)$/ && (key in open)) {
         dur = now - open[key]; st = role[s]
         if (st == "dev") dev[id] += dur; else if (st == "tester") tst[id] += dur; else rev[id] += dur
         if (u != "" && ou[key] != "" && u >= ou[key]) cost[id] += u - ou[key]
+        if (cx != "" && oc[key] != "" && cx >= oc[key]) ccost[id] += cx - oc[key]
         delete open[key]
       }
       if (ev == "FAIL") fails[id]++
@@ -682,7 +694,7 @@ task_stats_raw() {
     }
     END { for (k = 1; k <= nt; k++) { id = order[k]; end = (id in merged) ? merged[id] : last[id]; tot = end - first[id]
             w = tot - dev[id] - tst[id] - rev[id]; if (w < 0) w = 0
-            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, cost[id] + 0 } }' \
+            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, cost[id] + 0, ccost[id] + 0 } }' \
     "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
@@ -776,7 +788,7 @@ HEAD
     echo '</table></div></div></section>'
 
     echo '<section id=QA><div class=card><h3>Quality per task</h3><div class=tw><table><tr><th>Task</th><th>Contract</th><th>Review rounds</th><th>Changes asked</th><th>Tester FAIL</th><th>BLOCKED</th><th>Stops</th><th>Rows not verified (latest test)</th></tr>'
-    task_stats | while IFS=$'\t' read -r id _ _ _ _ _ _ chg fails blk stl _; do
+    task_stats | while IFS=$'\t' read -r id _ _ _ _ _ _ chg fails blk stl _ _; do
       local nv="" rounds contract
       rounds=$(( $(review_round "$id") - 1 ))
       contract=no; [ -f "$TEAM_DIR/reports/$id-contract.md" ] && contract=yes
@@ -785,8 +797,8 @@ HEAD
     done
     echo '</table></div></div></section>'
 
-    echo '<section id=Cost><div class=card><h3>Cost per task</h3><p class=sub>Minutes from events.log. Claude 5-hour usage in percentage points, measured between dispatch and report when the status line recorded it; plan windows are shared by all seats, so this is an estimate, not exact tokens.</p><div class=tw><table><tr><th>Task</th><th>Seat minutes (dev + test + review)</th><th>Claude 5h points</th></tr>'
-    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 > 0 ? $12 : "—") }'
+    echo '<section id=Cost><div class=card><h3>Cost per task</h3><p class=sub>Minutes from events.log. Claude and Codex 5-hour usage in percentage points, measured between dispatch and report when it was recorded; plan windows are shared by all seats, so this is an estimate, not exact tokens.</p><div class=tw><table><tr><th>Task</th><th>Seat minutes (dev + test + review)</th><th>Claude 5h points</th><th>Codex 5h points</th></tr>'
+    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 > 0 ? $12 : "—"), ($13 > 0 ? $13 : "—") }'
     echo '</table></div></div></section>'
 
     echo '<section id=Events><div class=card><h3>Last 200 events</h3><pre>'
@@ -817,8 +829,8 @@ report_text() { # the live view: what matters now, in a terminal
   printf '%s\n' "${open_s:-   none}"
   printf '\n DECISIONS OPEN FOR V!\n'
   decisions_tsv | awk -F'\t' '{ s = ""; d = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^Decision=/) d = substr($i, 10) } if (s !~ /^final/) printf "   %s %s — %s\n", $1, $2, d }' | head -8 | cut -c1-"$w"
-  printf '\n TASKS (minutes: total · dev · test · review · wait · changes · FAIL)\n'
-  task_stats | tail -12 | awk -F'\t' '{ printf "   %-8s %-7s %4d · %4d · %4d · %4d · %4d · %d · %d\n", $1, $2, $3, $4, $5, $6, $7, $8, $9 }'
+  printf '\n TASKS (minutes: total · dev · test · review · wait | changes · FAIL | cost: Claude · Codex 5h points)\n'
+  task_stats | tail -12 | awk -F'\t' '{ printf "   %-8s %-7s %4d · %4d · %4d · %4d · %4d | %d · %d | %d · %d\n", $1, $2, $3, $4, $5, $6, $7, $8, $9, $12, $13 }'
   printf '\n LAST EVENTS\n'
   { tail -6 "$TEAM_DIR/events.log" 2>/dev/null || true; } | cut -c1-"$w" | sed 's/^/   /'
 }

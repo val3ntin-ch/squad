@@ -12,19 +12,19 @@ log) move into `bin/squad`, so they always work the same way and cannot be skipp
 - Out: the observer (003), QA changes (002), any change to V!'s global hook files.
 
 ## Done when
-- [ ] `squad heavy -- <cmd>` runs one heavy command at a time per team: first come, first
-      served; `.team/heavy/owner` names the seat, the time and the command; a run over the
+- [x] `squad heavy -- <cmd>` runs one heavy command at a time per team: first come, first
+      served; the lock `.team/heavy/lock` is a link whose target names the seat, the pid and the time (one atomic step), and `.team/heavy/lock.cmd` names the command; a run over the
       time limit (`heavy_timeout` in team.conf, default 20 min) is stopped and released;
       a lock whose owner process is gone is released by the next caller.
-- [ ] `squad dispatch <seat> <ID>` sends the clear command, waits until the seat is idle,
+- [x] `squad dispatch <seat> <ID>` sends the clear command, waits until the seat is idle,
       sends the task line, and fails with a message when the seat did not start within 60 s.
-- [ ] `events.log` gets one line for each dispatch, done, review verdict, merge and
-      decision (`HH:MM:SS <seat> <ID> <EVENT> [detail]`); `squad merge <ID>` merges and logs.
-- [ ] `squad up` creates `.agents-verify-off` in every team worktree and adds it to
+- [x] `events.log` gets one line for each dispatch, done, review verdict, merge and
+      decision (`YYYY-MM-DD HH:MM:SS <seat> <ID> <EVENT> [detail]`: the date, because a run spans midnight); `squad merge <ID>` merges and logs.
+- [x] `squad up` creates `.agents-verify-off` in every team worktree and adds it to
       `.git/info/exclude`, when `verify_hook off` is in team.conf (default: on — see open
       question 1).
-- [ ] Role files and PROTOCOL use these commands; no `sleep 3` and no `mkdir` lock text left.
-- [ ] `bash test/smoke.sh` and `shellcheck` pass (also under bash 3.2 in CI).
+- [x] Role files and PROTOCOL use these commands; no `sleep 3` and no `mkdir` lock text left.
+- [x] `bash test/smoke.sh` and `shellcheck` pass (also under bash 3.2 in CI).
 
 ## Plan
 - `bin/squad`: `cmd_heavy` (queue dir with one file per waiter, sorted by time; `owner`
@@ -47,3 +47,6 @@ log) move into `bin/squad`, so they always work the same way and cannot be skipp
    OBSERVER #7 — hidden whole-repo runs outside the lock, cancelled at 300 s. The tester's
    full run stays the gate.
 2. Assumption: herdr's `agent list` status `idle` is a safe signal that `/clear` finished.
+
+## Evidence (13 Nov 2026)
+`bash test/smoke.sh`: 234 passed under bash 5 and under /bin/bash 3.2.57; `shellcheck -S warning`: clean. smoke: 'heavy runs one command at a time, in arrival order', 'the lock names its owner while it runs', 'a lock whose owner process is gone is cleared', 'a run over the time limit is stopped (exit 124)', 'a stopped heavy run leaves no command behind', 'dispatch gives dev-a its task once it is idle again', 'dispatch fails when the seat never starts, and logs it', 'merge merges an approved task', 'event lines carry the date and the time', 'decisions --check writes each decision into the ledger once', 'verify_hook off marks every team worktree', 'the lead dispatches through squad dispatch'. Not verified on real herdr: that `idle` follows `/clear` (assumption 2).

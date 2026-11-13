@@ -14,20 +14,20 @@ restart (of herdr, of the Mac) every seat comes back with its own conversation, 
 - Out: moving a running team between machines; herdr's own session storage.
 
 ## Done when
-- [ ] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: V!'s running team already uses the session `hive`; `session <name>` in team.conf overrides it) and starts
+- [x] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: V!'s running team already uses the session `hive`; `session <name>` in team.conf overrides it) and starts
       the team in it; run inside herdr in another repository's session, it stops and prints
       the one command to switch (`squad up` never mixes two repositories in one session).
 - [ ] Two repositories can run teams at the same time, each in its own session, with no
       "an agent named lead is already running" error.
-- [ ] On first start squad gives each Claude seat `--session-id <uuid>` and records it in
+- [x] On first start squad gives each Claude seat `--session-id <uuid>` and records it in
       `.team/seats/<seat>.session`; for Codex seats it records the session id after start.
-- [ ] After a restart, `squad up` starts each seat with `claude --resume <id>` or
+- [x] After a restart, `squad up` starts each seat with `claude --resume <id>` or
       `codex resume <id>` (same model and arguments), and sends the lead and the observer one
       line: "squad restarted at <time>: check heavy lock, queue and uncommitted work".
       A seat whose session cannot be resumed starts fresh and says so in events.log.
 - [ ] A worker seat that was cleared for a new task gets a new session id at its next
       dispatch (so resume never brings back an old task).
-- [ ] `bash test/smoke.sh` and `shellcheck` pass.
+- [x] `bash test/smoke.sh` and `shellcheck` pass.
 
 ## Plan
 - `bin/squad` `cmd_up`: detect `$HERDR_*` env; outside herdr use `herdr --session squad-<repo>`
@@ -53,3 +53,6 @@ restart (of herdr, of the Mac) every seat comes back with its own conversation, 
 3. **Open decision for V!:** the observer's model. Your hive observer runs Opus 5.5 and its
    analysis was good; the ticket planned Sonnet (cheaper). Recommended: Sonnet for the
    watch passes, and Opus only when a pass finds a loss over 30 min.
+
+## Evidence (13 Nov 2026)
+`bash test/smoke.sh`: 234 passed under bash 5 and under /bin/bash 3.2.57; `shellcheck -S warning`: clean. smoke: 'outside herdr, up brings the team up in the repository's own session', 'outside herdr, up then attaches the session', 'inside another repository's session, up refuses and names the session', 'a Claude seat records its session id from its SessionStart hook', 'the watcher records each running seat's conversation from herdr', 'after a restart a Claude seat resumes its own conversation', 'the Codex reviewer resumes its own recorded session', 'a refused resume falls back to a fresh start once', 'up --fresh starts new conversations'. Open (needs a real run): two repositories at once on real herdr; a new session id after a real `/clear` (the SessionStart hook fires on clear in Claude Code; not run here). Not verified on real herdr: starting a session from outside herdr.

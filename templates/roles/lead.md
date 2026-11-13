@@ -38,7 +38,7 @@ For a real issue:
 1. Write your own options first, with their trade-offs and sources, in the decision block below (fields Options and Claude).
 2. Ask for an independent brainstorm: `squad consult "<the question, with the constraints>" <the files that matter>`. A GPT model with web search reads the repository and the official sources and writes `$TEAM_DIR/consult/<n>.md`. It runs in the background; you get one line when it is written. Go on with other steps meanwhile.
 3. Compare the two. Where they disagree, open the sources both name and decide from what the sources say, not from which model sounds surer.
-4. Write the decision block, then run `squad decisions --check`.
+4. Write the decision block, then run `squad decisions --check`: it checks every field and writes the decision into `events.log`.
 
 Every decision goes into `$TEAM_DIR/DECISIONS.md` at the moment you take it, in this form (the report page reads it):
 
@@ -199,7 +199,7 @@ When every task is merged:
 2. **Converge.** Compare `$TEAM_BASE` with the SPEC and every acceptance table, row by row: the full diff against where it started, every screen or page in the visual check, every row of "Definition of done". Anything missing or wrong becomes a new task through the loop. Repeat until nothing is missing.
 3. **Lessons.** In `$TEAM_DIR/LESSONS.md`, for each finding or failure that came back more than once: the cheapest change that stops it next time (a lint rule or a test that fails on the defect, a line in a template, a rule in the protocol), with the file to change. Read `observer/SUGGESTIONS.md` for it too.
 4. Run `squad decisions --check` and `squad report`.
-5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every provisional decision (id, title, decision) for the human to confirm; the open suggestions marked `for V!`; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
+5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every provisional decision (id, title, decision) for the human to confirm; the open suggestions marked `for V!`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
 
 The human reviews and pushes.
 
