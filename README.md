@@ -65,6 +65,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
+| `squad update-conf` | Adds the settings and seats a new squad version needs to `.team/team.conf` and says what it added. `squad up` and `squad init` run it; a file that has everything is left alone. |
 | `squad presets` | Lists the built-in teams. |
 | `squad doctor` | Checks what is installed. |
 | `squad permissions` | Once per machine: Claude Code's status line, and the Codex rules for the squad commands its seats run. |
@@ -97,6 +98,7 @@ observer_deep_model claude-opus-5-5
 consult codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium
 heavy_timeout 20
 heavy_timeout_dev 10
+sample_percent 10
 stall_minutes 15
 observe_minutes 20
 verify_hook off
@@ -110,7 +112,9 @@ setup pnpm install --frozen-lockfile
 - **escalate_model** is the model a fix runs on from round 4 (`squad dispatch --escalate`).
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.
-- **heavy_timeout** is how many minutes one heavy run may hold the lock; **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run also needs a clean worktree: `squad heavy` refuses uncommitted changes and records the commit it ran on.
+- **heavy_timeout** is how many minutes one heavy run may hold the lock; **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/<seat>-run`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
+- **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
+- **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
 - **observe_minutes** is the longest gap between two observer passes.
 - **verify_hook off** writes `.agents-verify-off` into every team worktree, so a global Stop hook that runs the whole repository's verify at every turn end skips them. The tester's runs are the gate.
@@ -242,6 +246,8 @@ Version 0.9.0 (squad v2). This version adds the GPT reviewer, the tester's contr
 Not yet run end to end with real agents in this shape. Not verified on real herdr: the start of a session from outside herdr (the team is started through herdr's API while `squad up` attaches the session), and resume of a Codex seat through `herdr agent start … -- resume <id>`. Version 0.7.0 ran end to end on herdr 0.9.3 with its earlier team.
 
 Known limits:
+
+- Containers per seat are not used yet: all seats share one machine and one heavy lock. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 - Agent arguments cannot contain quoted spaces.
 - Panes are stacked by repeated splitting, so with many seats the lower panes are small; resize them in herdr.

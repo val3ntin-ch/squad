@@ -34,6 +34,10 @@ Each row is checked by the dev, by the tester (against its contract `reports/<ID
 
 `<the exact command the tester runs for this task, through squad heavy>`
 
+## Dev heavy run
+
+`<only if the dev needs one: a filter on this task's tests, or a sample, e.g. squad heavy <seat> <ID> --sample -- npx vitest run --shard={shard}; "-" for none>`
+
 ## Consumers to run
 
 <The tests and files outside this task's files that use what it changes, and the command that runs them (for example `vitest related --run <changed files>`), plus names read as text that the import graph cannot see. "None" when nothing outside uses it.>
