@@ -737,9 +737,12 @@ check "squad feedback saves, logs and tells the lead" sh -c "'$squad' feedback '
 printf 'Card raised: the shadow is too strong at 390 px\nCompare with the preview.\n' >"$tmp/fb.txt"
 check "squad feedback --file takes a longer note as F-2" sh -c "'$squad' feedback --file '$tmp/fb.txt' >/dev/null && grep -q '^## F-2 · ' .team/FEEDBACK.md && grep -q 'Compare with the preview.' .team/FEEDBACK.md"
 check "empty feedback is refused" refuses "$squad" feedback '   '
-chmod a-w .team
-check "a lock that cannot be created fails with a message instead of hanging" sh -c "SQUAD_MUTEX_TRIES=3 '$squad' feedback 'x' 2>&1 | grep -q 'cannot create the lock'"
-chmod u+w .team
+# root ignores folder write permissions: this case needs a non-root run
+if [ "$(id -u)" -ne 0 ]; then
+  chmod a-w .team
+  check "a lock that cannot be created fails with a message instead of hanging" sh -c "SQUAD_MUTEX_TRIES=3 '$squad' feedback 'x' 2>&1 | grep -q 'cannot create the lock'"
+  chmod u+w .team
+fi
 printf '## F-9 · pasted heading\nnote\n' >"$tmp/fb9.txt"; "$squad" feedback --file "$tmp/fb9.txt" >/dev/null
 "$squad" feedback 'after a pasted heading' >/dev/null
 check "feedback ids follow the highest F-number, not a line count" sh -c "grep -q '^## F-3 · ' .team/FEEDBACK.md && grep -B3 'after a pasted heading' .team/FEEDBACK.md | grep -q '^## F-10 · '"
