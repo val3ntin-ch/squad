@@ -23,6 +23,8 @@ squad up                      # from any terminal: opens this repository's herdr
 
 The strongest model sits where one mistake costs the most: the plan and the decisions. The cheapest models do what needs no judgement. The reviewer is another vendor on purpose: a model that did not write the brief or the code sees what the authors do not.
 
+**No seat waits on a prompt nobody answers.** The reviewer runs Codex with `-a never`: an action that would need approval is refused, never asked, and the reviewer notes what it could not check. The observer runs Claude with `--permission-mode dontAsk` and a short allow list (its own folder, read commands). Devs and the tester keep your own permission settings. `squad dispatch` sends a task only when the seat shows its prompt and no menu, and checks that the turn started.
+
 ## Install
 
 Requirements: `git`, `jq`, [herdr](https://herdr.dev), Claude Code (`claude`) and Codex (`codex`), each signed in once by hand.
@@ -114,6 +116,7 @@ setup pnpm install --frozen-lockfile
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.
 - **heavy_timeout** is how many minutes one heavy run may hold the lock (one lock for the whole machine, in `~/.cache/squad/heavy`: teams of several repositories share it); **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/.runs/<seat>`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
+- **heavy_silent_minutes** (5): a heavy run whose output and CPU time do not move for this long is stopped as hung (`HUNG`), as CI systems stop a step with no output; the hard limit stays. **idle_minutes** (5): a dev with no task for this long is told to the lead once.
 - **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
 - **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by V!`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
@@ -157,7 +160,7 @@ Switch tabs with herdr's `prefix 1`…`9` (or `prefix n` / `prefix p`); `prefix 
  lock: tester since 10:05: pnpm turbo run test
 ```
 
-Every seat shows ● working, ○ idle, ! blocked or · off, and its trouble in red: `dead` (its agent is gone), `login` (a sign-in error), `blocked` (a prompt or a question), `stalled` (an open task and no work for `stall_minutes`). Each trouble is written to `events.log` and told to the lead once.
+Every seat shows ● working, ○ idle, ! blocked or · off, and its trouble in red (a seat whose own heavy run is alive is busy, never stalled): `dead` (its agent is gone), `login` (a sign-in error), `blocked` (a prompt or a question), `stalled` (an open task and no work for `stall_minutes`). Each trouble is written to `events.log` and told to the lead once.
 
 ## How the team works
 

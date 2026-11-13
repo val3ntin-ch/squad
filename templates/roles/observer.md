@@ -12,7 +12,7 @@ You do not keep a timer. squad starts each pass with one line ("Observer pass <n
 
 ## A pass
 
-1. Read what changed since your last pass, newest first: `$TEAM_DIR/events.log` (every dispatch, report, merge, stop, heavy run and decision, with the time), `TASKS.md`, the newest reports and reviews, `squad heavy --status`, `git log --oneline -15` on `$TEAM_BASE`, and the seats' states. Read a pane only when a seat is in trouble: `herdr agent read <seat> --source visible`, the last 40 lines.
+1. Read what changed since your last pass, newest first: `$TEAM_DIR/events.log` (every dispatch, report, merge, stop, heavy run and decision, with the time), `TASKS.md`, the newest reports and reviews, `squad heavy --status`, `git log --oneline -15` on `$TEAM_BASE`, and the seats' states. Read a pane only when a seat is in trouble: `squad herdr agent read <seat> --source visible`, the last 40 lines.
 2. Measure. Every claim has a number and a source: minutes from `events.log` times, rounds from the review files, runs from the HEAVY lines, a file and line, a process. "Slow" is not a finding; "T-004 waited 23 min for the tester (DONE 10:02, test DISPATCH 10:25)" is.
 3. Look for these losses first; they cost hive the most:
    - a seat idle while a task was ready, or waiting for the lock, the tester, the lead or the human;
