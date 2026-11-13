@@ -84,6 +84,7 @@ SETUP_CMD=""
 REVIEW_ROUNDS=5
 LEAD=""
 HEAVY_TIMEOUT=20        # minutes a heavy run may hold the lock
+HEAVY_TIMEOUT_DEV=""    # minutes for a dev seat's run (default: heavy_timeout)
 VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (V!'s global Stop hook skips them)
 STALL_MINUTES=15        # a seat with an open task and no work for this long is stalled
 OBSERVE_MINUTES=20      # the longest gap between two observer passes
@@ -106,9 +107,9 @@ load_conf() {
       setup) SETUP_CMD=$rest ;;
       rounds) [[ "$rest" =~ ^[1-9][0-9]?$ ]] || die "team.conf line $line_no: 'rounds' needs a number from 1 to 99."
               REVIEW_ROUNDS=$rest ;;
-      heavy_timeout|stall_minutes|observe_minutes)
+      heavy_timeout|heavy_timeout_dev|stall_minutes|observe_minutes)
               [[ "$rest" =~ ^[1-9][0-9]{0,2}$ ]] || die "team.conf line $line_no: '$kw' needs a number of minutes (1 to 999)."
-              case "$kw" in heavy_timeout) HEAVY_TIMEOUT=$rest ;; stall_minutes) STALL_MINUTES=$rest ;; *) OBSERVE_MINUTES=$rest ;; esac ;;
+              case "$kw" in heavy_timeout) HEAVY_TIMEOUT=$rest ;; heavy_timeout_dev) HEAVY_TIMEOUT_DEV=$rest ;; stall_minutes) STALL_MINUTES=$rest ;; *) OBSERVE_MINUTES=$rest ;; esac ;;
       verify_hook) case "$rest" in on|off) VERIFY_HOOK=$rest ;; *) die "team.conf line $line_no: 'verify_hook' is on or off." ;; esac ;;
       escalate_model) ESCALATE_MODEL=$rest ;;
       observer_deep_model) OBSERVER_DEEP_MODEL=$rest ;;
@@ -391,7 +392,20 @@ cmd_heavy() {
   if [ "${1:-}" != -- ]; then task=${1:-}; [ $# -gt 0 ] && shift; valid_task "$task"; fi
   [ "${1:-}" = -- ] || die "usage: squad heavy <seat> [<task>] -- <command...>"
   shift; [ $# -gt 0 ] || die "squad heavy: no command after --"
-  seat_index "$seat" >/dev/null || die "no seat named '$seat' in this team."
+  local si wt sha dirty minutes
+  si=$(seat_index "$seat") || die "no seat named '$seat' in this team."
+  minutes=$HEAVY_TIMEOUT
+  wt=$(seat_cwd "$si")
+  if [ "${S_ROLE[$si]}" = dev ]; then
+    [ -z "$HEAVY_TIMEOUT_DEV" ] || minutes=$HEAVY_TIMEOUT_DEV
+    # a run proves a commit: nothing uncommitted (a killed run must not leave an edit behind)
+    dirty=$(git -C "$wt" status --porcelain 2>/dev/null | grep -v ' \.agents-verify-off$' || true)
+    if [ -n "$dirty" ]; then
+      printf '%s\n' "$dirty" | head -10 >&2
+      die "commit first: $seat's worktree has uncommitted changes (above). A WIP commit is fine; a diagnostic variant is a commit or a separate test file, never an edit inside the run."
+    fi
+  fi
+  sha=$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo "?")
 
   local q="$TEAM_DIR/heavy/queue" waited=0 start rc
   mkdir -p "$q"
@@ -410,12 +424,12 @@ cmd_heavy() {
     HV_VAL="$seat:$$:$(date +%s)"
   done
   rm -f "$HV_ME"; HV_ME=""
-  printf '%s\n' "$*" >"$TEAM_DIR/heavy/lock.cmd"
+  printf '@%s (%s min): %s\n' "$sha" "$minutes" "$*" >"$TEAM_DIR/heavy/lock.cmd"
   start=$(date +%s)
-  log_event "$seat" "$task" HEAVY_START "$*"
+  log_event "$seat" "$task" HEAVY_START "sha=$sha limit=${minutes}m $*"
   "$@" & HV_CPID=$!
-  local limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((HEAVY_TIMEOUT * 60))}  # seconds override: tests
-  ( sleep "$limit"; echo "squad heavy: stopped after $HEAVY_TIMEOUT min (heavy_timeout in team.conf)" >&2; stop_tree "$HV_CPID" ) &
+  local limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
+  ( sleep "$limit"; echo "squad heavy: stopped after $minutes min (heavy_timeout${HEAVY_TIMEOUT_DEV:+ / heavy_timeout_dev} in team.conf)" >&2; stop_tree "$HV_CPID" ) &
   HV_WPID=$!
   rc=0; wait "$HV_CPID" || rc=$?
   HV_CPID=""

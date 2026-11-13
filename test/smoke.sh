@@ -293,7 +293,7 @@ sleep 0.5
 wait
 check "heavy runs one command at a time, in arrival order" test "$(tr -d '\n' <"$tmp/order")" = AB
 check "heavy logs start and end with the seat and the task" sh -c "grep -qE ' dev-a T-1 HEAVY_START ' .team/events.log && grep -qE ' dev-a T-1 HEAVY_END rc=0 ' .team/events.log"
-check "the lock names its owner while it runs" sh -c "'$squad' heavy tester T-3 -- sh -c 'readlink .team/heavy/lock; cat .team/heavy/lock.cmd' | tr '\n' ' ' | grep -qE '^tester:[0-9]+:[0-9]+ sh -c'"
+check "the lock names its owner while it runs" sh -c "'$squad' heavy tester T-3 -- sh -c 'readlink .team/heavy/lock; cat .team/heavy/lock.cmd' | tr '\n' ' ' | grep -qE '^tester:[0-9]+:[0-9]+ @[0-9a-f]+ \\(20 min\\): sh -c'"
 check "the lock is free after a run" test ! -L .team/heavy/lock
 ln -s "dev-c:999999:$(date +%s)" .team/heavy/lock
 check "a lock whose owner process is gone is cleared" "$squad" heavy dev-a T-4 -- true
@@ -313,6 +313,21 @@ sleep 1.5; kill "$holder"; wait "$holder" 2>/dev/null || true; wait "$a" "$b"
 check "the queue keeps arrival order within one second" test "$(tr -d '\n' <"$tmp/order")" = AB
 check "heavy refuses a task id with a slash or markup" refuses "$squad" heavy dev-a '../x' -- true
 check "heavy refuses an unknown seat" refuses "$squad" heavy nobody -- true
+
+# 007 · a dev's run proves a commit; a dev's run has its own, shorter limit
+echo wip >"$tmp/proj4-team/dev-c/wip.txt"
+check "heavy refuses a dev worktree with an untracked file" sh -c "'$squad' heavy dev-c T-9 -- true 2>&1 | grep -q 'commit first'"
+git -C "$tmp/proj4-team/dev-c" add wip.txt
+check "heavy refuses a dev worktree with a staged change" refuses "$squad" heavy dev-c T-9 -- true
+check "a refused run takes no lock and leaves no queue entry" sh -c "test ! -L .team/heavy/lock && test -z \"\$(ls .team/heavy/queue)\""
+git -C "$tmp/proj4-team/dev-c" reset -q wip.txt; rm "$tmp/proj4-team/dev-c/wip.txt"
+check "heavy runs a clean dev worktree" "$squad" heavy dev-c T-9 -- true
+check "the run names the commit and the dev limit" grep -qE " dev-c T-9 HEAVY_START sha=[0-9a-f]{7,} limit=10m true" .team/events.log
+echo shot >"$tmp/proj4-team/tester/artefact.png"
+check "the tester's run is not held to the commit rule" "$squad" heavy tester T-9 -- true
+check "the tester keeps the longer limit" grep -qE " tester T-9 HEAVY_START sha=[0-9a-f]{7,} limit=20m true" .team/events.log
+rm "$tmp/proj4-team/tester/artefact.png"
+check "the dev role says commit before squad heavy" grep -qF 'after a commit (it refuses uncommitted changes)' .team/roles/dev.md
 check "heavy --status says the lock is free" sh -c "'$squad' heavy --status | grep -q 'lock: free'"
 
 # 001 · squad dispatch: clear, wait for idle, send, confirm the start, log it

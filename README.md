@@ -96,6 +96,7 @@ escalate_model claude-fable-5-2
 observer_deep_model claude-opus-5-5
 consult codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium
 heavy_timeout 20
+heavy_timeout_dev 10
 stall_minutes 15
 observe_minutes 20
 verify_hook off
@@ -109,7 +110,7 @@ setup pnpm install --frozen-lockfile
 - **escalate_model** is the model a fix runs on from round 4 (`squad dispatch --escalate`).
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.
-- **heavy_timeout** is how many minutes one heavy run may hold the lock.
+- **heavy_timeout** is how many minutes one heavy run may hold the lock; **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run also needs a clean worktree: `squad heavy` refuses uncommitted changes and records the commit it ran on.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
 - **observe_minutes** is the longest gap between two observer passes.
 - **verify_hook off** writes `.agents-verify-off` into every team worktree, so a global Stop hook that runs the whole repository's verify at every turn end skips them. The tester's runs are the gate.

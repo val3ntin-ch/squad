@@ -69,7 +69,7 @@ Nothing you act on may come from memory or from an old context. This rule comes 
 
 Every seat runs on the same computer. A full check run (the whole test suite, a build, a browser test run) uses most of it. Several at once make each one many times slower, and slow runs time out and look like failures.
 
-- Every heavy run goes through the lock: `squad heavy <your seat name> <ID> -- <command>`. For a command with `&&` or a pipe: `squad heavy <your seat name> <ID> -- bash -c '<command>'`. It waits its turn (first come, first served), names you as the owner, and stops a run after $HEAVY_TIMEOUT minutes. Never build your own lock or wait loop.
+- Every heavy run goes through the lock: `squad heavy <your seat name> <ID> -- <command>`. A dev commits first (a WIP commit is fine): `squad heavy` refuses a dev worktree with uncommitted changes, and every run names the commit it proved. A diagnostic variant is a commit or a separate test file, never an edit made and undone inside the run. For a command with `&&` or a pipe: `squad heavy <your seat name> <ID> -- bash -c '<command>'`. It waits its turn (first come, first served), names you as the owner, and stops a run after its time limit ($HEAVY_TIMEOUT minutes; a dev's run is shorter, `heavy_timeout_dev`). Never build your own lock or wait loop.
 - `squad heavy --status` shows who holds the lock and who waits.
 - A dev runs only the checks of its own task: the tests of the files it changed, the consumers the brief names, and the task's dev check. Never the full suite.
 - The full suite belongs to the tester, and the tester runs one thing at a time.
