@@ -875,6 +875,23 @@ panes11='{"result":{"panes":[{"pane_id":"w2:p2","label":"lead"},{"pane_id":"w2:p
 MOCK_WS="$ws11" MOCK_PANES="$panes11" "$squad" up >/dev/null 2>&1 || true
 check "a running team without a board gets a board tab" sh -c "grep -q 'tab create --workspace w2 --label board' '$MOCK_LOG' && grep -qF '$squad_abs board' '$MOCK_LOG'"
 
+# reviews of 011a
+printf '# T-950\n(no acceptance table)\n' >.team/tasks/T-950.md
+printf '%s dev-a T-950 DISPATCH round=1\n' "$now_d" >>.team/events.log
+check "a task without acceptance rows does not stop the board" sh -c "COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q '0 / 0 pass'"
+printf '%s dev-b T-951 DISPATCH round=1\n%s dev-b T-951 DONE x\n%s tester T-951 PASS x\n%s rev-gpt T-951 APPROVE x\n' "$now_d" "$now_d" "$now_d" "$now_d" >>.team/events.log
+appr=$(COLUMNS=200 "$squad" board --once --seat=dev-b 2>&1)
+check "an approved task waits for its merge (the merge step is current, not done)" sh -c "printf '%s' \"\$1\" | grep -q '◉ merge' && printf '%s' \"\$1\" | grep -q 'next: merge after the candidate'" _ "$appr"
+printf '\n## D-301 · about T-1\n- Time: t\n- Question: T-1 only\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: final\n' >>.team/DECISIONS.md
+printf '%s dev-a T-12 DISPATCH round=1\n' "$now_d" >>.team/events.log
+check "decisions match the exact task id (T-1 is not T-12)" sh -c "! COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'D-301'"
+narrow=$(COLUMNS=80 "$squad" board --once --seat=dev-c 2>&1)
+wide=0; while IFS= read -r ln; do [ "$(LC_ALL=en_US.UTF-8 bash -c 'printf %s "${#1}"' _ "$ln")" -le 80 ] || wide=1; done <<<"$narrow"
+check "a narrow board keeps every line inside the screen (80 characters)" test "$wide" = 0
+cd "$tmp/old"; printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nseat dev-x claude dev -\nseat rev-1 claude reviewer dev-a\nseat rev-2 claude reviewer dev-a\nname dev-x Nova blue\n' >.team/team.conf
+"$squad" update-conf >/dev/null
+check "proposed names never repeat a name in use, and two reviewers get two colours" sh -c "test \$(grep -c ' Nova ' .team/team.conf) = 1 && test \"\$(grep -E '^name rev-[12] ' .team/team.conf | awk '{print \$4}' | sort -u | wc -l | tr -d ' ')\" = 2"
+cd "$tmp/proj4"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
