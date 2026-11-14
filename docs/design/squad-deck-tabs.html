@@ -1,0 +1,366 @@
+<title>Squad Tabs · Review, Changes, Observer, Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700;800&display=swap">
+<style>
+/* Layout: a short intro, then one terminal frame per tab (review, changes, observer, report), each with a two-line note. Terminal frames keep herdr's catppuccin colours in both page themes. */
+:root{
+  --paper:#f4f5f8; --ink:#1b1f2a; --muted:#5b6275; --line:#d9dce5; --accent-ink:#7a5a06;
+  --font-display:"Space Grotesk",system-ui,sans-serif; --font-body:"IBM Plex Sans",system-ui,sans-serif; --font-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --t-crust:#11111b; --t-mantle:#181825; --t-base:#1e1e2e; --t-s0:#313244; --t-s1:#45475a; --t-s2:#585b70; --t-ov:#7f849c; --t-sub:#a6adc8; --t-text:#cdd6f4;
+  --c-mauve:#cba6f7; --c-blue:#89b4fa; --c-teal:#94e2d5; --c-peach:#fab387; --c-green:#a6e3a1; --c-yellow:#f9e2af; --c-pink:#f5c2e7; --c-red:#f38ba8; --c-sky:#89dceb; --c-lav:#b4befe;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--paper:#14161d;--ink:#e6e8ef;--muted:#9aa1b4;--line:#2c3040;--accent-ink:#f0c95e;color-scheme:dark}}
+:root[data-theme="dark"]{--paper:#14161d;--ink:#e6e8ef;--muted:#9aa1b4;--line:#2c3040;--accent-ink:#f0c95e;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 var(--font-body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1240px;margin:0 auto;padding-block:40px 64px;display:grid;gap:40px}
+.prose{max-width:780px;display:grid;gap:10px}
+h1,h2{font-family:var(--font-display);text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:36px;letter-spacing:-.01em} h2{font-size:24px}
+p{margin:0}
+.lede{font-size:17px;color:var(--muted)}
+.eyebrow{font:600 12px/1 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-ink)}
+code{font:13px var(--font-mono);background:color-mix(in srgb,var(--line) 55%,transparent);padding:1px 5px;border-radius:4px}
+.tab{display:grid;gap:12px}
+
+/* terminal */
+.term{background:var(--t-base);color:var(--t-text);font:12.5px/1.55 var(--font-mono);border-radius:10px;overflow:hidden;border:1px solid #0b0b12;box-shadow:0 24px 50px -26px rgba(0,0,0,.7)}
+.tbar{display:flex;align-items:center;gap:10px;background:var(--t-crust);padding:8px 12px;color:var(--t-ov);font-size:11.5px}
+.dots{display:flex;gap:6px}.dots i{width:10px;height:10px;border-radius:50%;background:var(--t-s1)}
+.tabs{display:flex;gap:4px;padding:6px 10px 0;background:var(--t-mantle);flex-wrap:wrap}
+.tabs span{padding:3px 12px;background:var(--t-s0);color:var(--t-sub);border-radius:4px 4px 0 0}
+.tabs span.on{background:var(--c-blue);color:var(--t-crust);font-weight:700}
+.scroll{overflow-x:auto}
+.screen{padding:12px 14px;min-width:1120px;display:grid;gap:10px}
+.dim{color:var(--t-ov)}.sub{color:var(--t-sub)}.faint{color:var(--t-s2)}
+.green{color:var(--c-green)}.red{color:var(--c-red)}.yellow{color:var(--c-yellow)}.blue{color:var(--c-blue)}.mauve{color:var(--c-mauve)}.peach{color:var(--c-peach)}.teal{color:var(--c-teal)}.pink{color:var(--c-pink)}.sky{color:var(--c-sky)}.lav{color:var(--c-lav)}
+b{color:var(--t-text);font-weight:700}
+.hud{display:flex;flex-wrap:wrap;gap:6px 22px;align-items:center;padding-bottom:8px;border-bottom:1px solid var(--t-s0)}
+.blocks{letter-spacing:-1px}
+.hex{width:22px;height:22px;display:inline-grid;place-items:center;font-weight:800;font-size:11.5px;color:var(--t-crust);clip-path:polygon(25% 3%,75% 3%,100% 50%,75% 97%,25% 97%,0 50%);flex:none}
+.hex.big{width:34px;height:34px;font-size:15px}
+.keys{display:flex;gap:16px;flex-wrap:wrap;color:var(--t-ov);font-size:11.5px;border-top:1px solid var(--t-s0);padding-top:8px}
+.keys b{color:var(--t-crust);background:var(--t-sub);padding:0 5px;border-radius:3px;margin-right:4px}
+.panel{border:1px solid var(--t-s1);border-radius:8px;background:linear-gradient(180deg,#232336 0%,var(--t-base) 70px);overflow:hidden;display:grid;align-content:start}
+.p-head{display:flex;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--t-s0)}
+.p-head .t{display:grid;gap:1px}
+.p-head .t span{font-size:11.5px}
+.p-head .r{margin-left:auto;text-align:right;display:grid;gap:1px;font-size:11.5px}
+.p-head .r b{font-size:18px;font-variant-numeric:tabular-nums}
+.p-body{padding:10px 14px;display:grid;gap:8px;align-content:start}
+.cap{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--t-ov);display:flex;justify-content:space-between;gap:8px}
+.grid2{display:grid;grid-template-columns:1.25fr 1fr;gap:12px;align-items:start}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;align-items:start}
+.row{display:grid;gap:10px;align-items:center;font-size:12px}
+.lbl{font-size:10.5px;padding:0 6px;border-radius:3px;color:var(--t-crust);font-weight:700}
+.pane-ph{border:1px dashed var(--t-s1);border-radius:6px;padding:8px 10px;color:var(--t-ov);font-size:11.5px;display:flex;gap:10px;align-items:center}
+.alert{border-left:3px solid var(--c-yellow);padding:4px 9px;background:rgba(249,226,175,.07);border-radius:0 4px 4px 0;font-size:12px}
+.alert.red{border-left-color:var(--c-red);background:rgba(243,139,168,.07)}
+.alert.green{border-left-color:var(--c-green);background:rgba(166,227,161,.06)}
+.chip{border:1px solid var(--t-s1);border-radius:4px;padding:0 6px;color:var(--t-sub);font-size:11.5px}
+.chip b{color:var(--c-blue)}
+.live{border:1px solid rgba(166,227,161,.35);border-radius:6px;padding:8px 10px;background:rgba(166,227,161,.05);display:grid;gap:4px}
+.suite{display:grid;grid-template-columns:170px 1fr 70px 70px;gap:10px;align-items:center;font-size:12px}
+.mini-bar{position:relative;height:8px;border-radius:2px;background:var(--t-s0);overflow:hidden}
+.mini-bar i{position:absolute;inset:0 auto 0 0}
+.verdict{display:grid;grid-template-columns:60px 1fr auto;gap:10px;align-items:baseline;font-size:12px;padding:3px 0;border-bottom:1px solid var(--t-s0)}
+.verdict:last-child{border-bottom:0}
+/* changes */
+.br{display:grid;grid-template-columns:18px 130px 80px 1fr 110px 120px;gap:10px;align-items:center;font-size:12px;padding:4px 6px;border-radius:5px}
+.br.sel{background:var(--t-mantle);outline:1px solid var(--c-blue)}
+.br.head{color:var(--t-ov);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase}
+.graph{font-size:13px;line-height:1.35;white-space:pre;color:var(--t-sub)}
+.diff{display:grid;grid-template-columns:1fr 50px 140px;gap:8px;font-size:12px;align-items:center;padding:1px 4px;border-radius:4px}
+.diff.sel{background:var(--t-mantle);outline:1px solid var(--c-blue)}
+.stretch{align-items:stretch}
+.stretch>.panel{height:100%}
+.hunk{background:var(--t-crust);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.5;white-space:pre;overflow-x:auto}
+.hunk .h{color:var(--c-sky)}.hunk .a{color:var(--c-green);background:rgba(166,227,161,.07);display:block}.hunk .d{color:var(--c-red);background:rgba(243,139,168,.07);display:block}
+.plus{color:var(--c-green)}.minus{color:var(--c-red)}
+/* observer */
+.loss{display:grid;grid-template-columns:200px 1fr 60px;gap:10px;align-items:center;font-size:12px}
+.sev{display:grid;grid-template-columns:4px 1fr auto;gap:10px;align-items:start;padding:5px 0;border-bottom:1px solid var(--t-s0);font-size:12px}
+.sev:last-child{border-bottom:0}
+.sev i{align-self:stretch;border-radius:2px}
+.kcol{display:grid;gap:6px;align-content:start}
+.kcard{background:var(--t-mantle);border-radius:5px;padding:5px 8px;border-left:3px solid var(--t-s1);font-size:12px}
+.kcard small{display:block;color:var(--t-ov);font-size:11px}
+.heat{display:grid;grid-template-columns:70px repeat(24,1fr);gap:2px;font-size:10.5px;align-items:center}
+.heat i{height:12px;border-radius:2px;background:var(--t-s0)}
+/* report */
+.tt{display:grid;grid-template-columns:20px 64px 1fr auto;gap:4px 10px;align-items:start;padding:7px 8px;border-radius:5px;font-size:12px;border-bottom:1px solid var(--t-s0)}
+.tt .what{display:grid;gap:5px}
+.tt .what>b{font-weight:600}
+.tags{display:flex;flex-wrap:wrap;gap:5px;align-items:center}
+.c{font-size:11px;padding:0 6px;border-radius:3px;border:1px solid currentColor;white-space:nowrap;line-height:1.55}
+.c.fill{color:var(--t-crust);border-color:transparent;font-weight:700}
+.c.story{color:var(--c-sky);background:rgba(137,220,235,.08)}
+.c.size{color:var(--c-lav)}
+.c.light{color:#f5e0b8;background:rgba(245,224,184,.08)}
+.c.dark{color:var(--c-mauve);background:rgba(203,166,247,.08)}
+.c.look{color:var(--c-pink)}
+.c.a11y{color:var(--c-teal)}
+.c.layout{color:var(--c-peach)}
+.btn{font-size:11.5px;padding:1px 8px;border-radius:4px;font-weight:700;white-space:nowrap}
+.btn.y{background:var(--c-green);color:var(--t-crust)}
+.btn.f{background:var(--c-yellow);color:var(--t-crust)}
+.acts{display:flex;gap:6px;align-items:center}
+.dec{display:grid;grid-template-columns:52px 1fr auto;gap:8px;align-items:center;font-size:12px;padding:3px 0;border-bottom:1px solid var(--t-s0)}
+.dec:last-child{border-bottom:0}
+.kpi .trend{font-size:12px;letter-spacing:1px}
+.tt.sel{background:var(--t-mantle);outline:1px solid var(--c-yellow)}
+.gantt{display:grid;gap:7px;position:relative}
+.gr{display:grid;grid-template-columns:64px 1fr;gap:8px;align-items:center;font-size:12px}
+.gt{position:relative;height:20px;background:var(--t-mantle);border-radius:3px}
+.gt i{position:absolute;top:2px;bottom:2px;border-radius:3px;font:700 10px/16px var(--font-mono);font-style:normal;color:var(--t-crust);padding-left:5px;overflow:hidden;white-space:nowrap}
+.gt i.w{background:repeating-linear-gradient(135deg,var(--c-yellow) 0 4px,#d9c48f 4px 8px)}
+.gt.m{height:24px;background:transparent;border-top:1px dashed var(--t-s1)}
+.gt.m i{top:4px;bottom:auto;height:16px;padding:0 4px;background:var(--c-green);font-size:9.5px;line-height:16px}
+.nowline{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--c-peach);box-shadow:0 0 6px var(--c-peach);left:calc(64px + 8px + (100% - 72px) * .985)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:11px;color:var(--t-sub);border-top:1px solid var(--t-s0);padding-top:8px}
+.legend i{display:inline-block;width:14px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.gax{display:grid;grid-template-columns:60px 1fr;gap:8px;font-size:10.5px;color:var(--t-ov)}
+.gax div{display:flex;justify-content:space-between}
+.kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.kpi div{border:1px solid var(--t-s0);border-radius:6px;padding:6px 9px;display:grid}
+.kpi b{font-size:18px;font-variant-numeric:tabular-nums}
+.kpi small{color:var(--t-ov);font-size:11px}
+@media (max-width:640px){h1{font-size:28px}}
+@media (prefers-reduced-motion:no-preference){.pulse{animation:pulse 1.6s ease-in-out infinite}}
+@keyframes pulse{50%{opacity:.45}}
+</style>
+
+<div class="wrap">
+  <header class="prose">
+    <span class="eyebrow">squad · tabs · review · changes · observer · report</span>
+    <h1>The other four tabs, in the board's style</h1>
+    <p class="lede">The team tab stays as agreed (option 3 with the mission view). These four tabs use the same header line, colours, agent names and keys. Each shows the data that matters for its job first; the agents' own panes stay one key away.</p>
+  </header>
+
+  <!-- REVIEW -->
+  <section class="tab">
+    <div class="prose"><h2>review · the quality gate</h2><p>What is being proven right now, and whose work it is: every line names the agent from the team board (Nova, Iris, Rook…) with the same colour. Vera's run with each suite and its limit; Sol's queue and verdicts; the contracts Vera owes. The two agents' panes sit in a thin row at the bottom.</p></div>
+    <div class="term" role="img" aria-label="Review tab: Vera's live test run by suite, the review queue and verdicts, and the contract queue">
+      <div class="tbar"><span class="dots"><i></i><i></i><i></i></span>herdr · session hive · hive team</div>
+      <div class="tabs"><span>team</span><span class="on">review</span><span>changes</span><span>observer</span><span>report</span></div>
+      <div class="scroll"><div class="screen">
+        <div class="hud"><span><b>hive</b> <span class="dim">· step 2</span></span><span><span class="blocks green">▰▰▰▰▰▰▰▰▰▰▰▰▰</span><span class="blocks faint">▱▱▱▱▱▱▱</span> <b>38/59</b></span><span>lock <b class="green">hive/Vera</b> <span class="dim">→ Rook → Nova</span></span><span class="dim">gate today: <span class="green">5 pass</span> · <span class="red">1 fail</span> · first-try pass <span class="sub">71%</span></span></div>
+        <div class="grid2">
+          <div class="panel">
+            <div class="p-head"><span class="hex big" style="background:var(--c-green)">V</span><div class="t"><b><span class="green">Vera</span> tests the work of <span class="blue">Nova</span> and <span class="peach">Iris</span></b><span class="sub">full check list · run 23 · <span class="lav">team/candidate-23</span> @ 9b02e41</span></div><div class="r"><span class="dim">elapsed / limit</span><b class="green">11:20</b><span class="dim">of 20:00 · silent 0:04</span></div></div>
+            <div class="p-body" style="padding-bottom:0">
+              <div class="cap"><span>in this run</span><span class="sub">a FAIL names the task that broke it</span></div>
+              <div class="verdict"><span class="who" style="display:flex;gap:7px;align-items:center"><span class="hex" style="background:var(--c-blue)">N</span><b class="blue">Nova</b></span><span>T-129 · Stat, RecordHeader, Timeline <span class="dim">· round 2</span></span><span class="teal">◐ testing</span></div>
+              <div class="verdict"><span class="who" style="display:flex;gap:7px;align-items:center"><span class="hex" style="background:var(--c-peach)">I</span><b class="peach">Iris</b></span><span>T-117 · Alert, StatusBanner, Toast <span class="dim">· round 1</span></span><span class="teal">◐ testing</span></div>
+            </div>
+            <div class="p-body">
+              <div class="live"><span><span class="green pulse">●</span> <b>@hive/storybook#test</b> <span class="dim">· matrix shard 3/4</span></span><span class="dim">output 4 s ago · CPU 312% · <span class="sub">hung check: alive</span></span></div>
+              <div class="cap"><span>suites</span><span class="sub">112 / 135 tasks</span></div>
+              <div class="suite"><span>format · lint · types</span><span class="mini-bar"><i style="width:100%;background:var(--c-green)"></i></span><span class="green">✔ 0:52</span><span class="dim">3/3</span></div>
+              <div class="suite"><span>@hive/tokens</span><span class="mini-bar"><i style="width:100%;background:var(--c-green)"></i></span><span class="green">✔ 0:31</span><span class="dim">412</span></div>
+              <div class="suite"><span>@hive/theme-*</span><span class="mini-bar"><i style="width:100%;background:var(--c-green)"></i></span><span class="green">✔ 0:44</span><span class="dim">2 772</span></div>
+              <div class="suite"><span>@hive/ui unit</span><span class="mini-bar"><i style="width:100%;background:var(--c-green)"></i></span><span class="green">✔ 2:10</span><span class="dim">cov 92%</span></div>
+              <div class="suite"><span>storybook stories</span><span class="mini-bar"><i style="width:64%;background:var(--c-teal)"></i></span><span class="teal">◐ 6:40</span><span class="dim">880/1370</span></div>
+              <div class="suite"><span>parity matrix</span><span class="mini-bar"><i style="width:0"></i></span><span class="faint">○ queued</span><span class="dim">330</span></div>
+              <div class="suite"><span>build</span><span class="mini-bar"><i style="width:0"></i></span><span class="faint">○ queued</span><span class="dim"></span></div>
+              <div class="alert">known flaky: <b>Sheet Playground</b> "not at the right edge" · failed 1 of 3 runs under load <span class="dim">(Owl: fix task proposed)</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="p-head"><span class="hex big" style="background:var(--c-yellow)">S</span><div class="t"><b><span class="yellow">Sol</span> reviews</b><span class="sub">GPT Sol · never asks (-a never) · <span class="mauve">Atlas</span> decides each finding</span></div><div class="r"><span class="dim">waiting</span><b class="yellow">1</b><span class="dim">avg review 7 min</span></div></div>
+            <div class="p-body">
+              <div class="cap"><span>next</span><span class="sub">after Vera's PASS</span></div>
+              <div class="verdict"><b class="blue">Nova</b><span>T-129 · Stat, RecordHeader, Timeline <span class="dim">· round 2 · fix diff only</span></span><span class="dim">after Vera</span></div>
+              <div class="verdict"><b class="peach">Iris</b><span>T-117 · Alert, StatusBanner, Toast <span class="dim">· first review</span></span><span class="dim">after Vera</span></div>
+              <div class="cap" style="margin-top:4px"><span>last verdicts</span><span class="sub">lead decided</span></div>
+              <div class="verdict"><b class="teal">Rook</b><span>T-110 · Calendar <span class="dim">· round 3 · merged 01:21</span></span><span class="green">✔ approve</span></div>
+              <div class="verdict"><b class="peach">Iris</b><span>T-121 · List <span class="dim">· 2 important · 1 class finding</span></span><span class="yellow">✎ changes</span></div>
+              <div class="verdict"><b class="blue">Nova</b><span>T-103 · Icon, Link <span class="dim">· 1 important, accepted</span></span><span class="yellow">✎ changes</span></div>
+              <div class="verdict"><b class="peach">Iris</b><span>T-107 · TagGroup <span class="dim">· tried: wrapped label, RTL</span></span><span class="green">✔ approve</span></div>
+              <div class="cap" style="margin-top:4px"><span>contracts Vera owes</span><span class="sub">before a dev starts</span></div>
+              <div class="verdict"><b class="teal">Rook</b><span>T-106 · Collection fields 1 <span class="dim">· his next task</span></span><span class="dim">brief ready</span></div>
+              <div class="verdict"><span class="dim">free dev</span><span>T-114 · Menus</span><span class="faint">no brief yet</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="pane-ph"><span class="hex" style="background:var(--c-green)">V</span>Vera's pane <span class="faint">· press</span> <b class="green">v</b> <span class="faint">to open it full</span></div>
+          <div class="pane-ph"><span class="hex" style="background:var(--c-yellow)">S</span>Sol's pane <span class="faint">· press</span> <b class="yellow">s</b> <span class="faint">to open it full</span></div>
+        </div>
+        <div class="keys"><span><b>v</b>Vera's pane</span><span><b>s</b>Sol's pane</span><span><b>⏎</b>open report</span><span><b>l</b>run log</span><span><b>c</b>contract</span></div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- CHANGES -->
+  <section class="tab">
+    <div class="prose"><h2>changes · what goes into the product</h2><p>Every task branch against the integration branch: how far ahead or behind, how big, whether it merges cleanly, and what the next candidate holds. On the right, at full height, the selected branch's files and a preview of the selected file's diff. This is squad's own view, read from git; it never merges or pushes. <b>g</b> opens lazygit full screen, as your herdr shortcut does now.</p></div>
+    <div class="term" role="img" aria-label="Changes tab: task branches with size and merge state, the next candidate, and the selected branch's files">
+      <div class="tbar"><span class="dots"><i></i><i></i><i></i></span>herdr · session hive · hive team</div>
+      <div class="tabs"><span>team</span><span>review</span><span class="on">changes</span><span>observer</span><span>report</span></div>
+      <div class="scroll"><div class="screen">
+        <div class="hud"><span><b>team/integration</b> <span class="lav">6149141</span> <span class="dim">· 01:21 merge T-110</span></span><span class="dim">clean</span><span>merged today <b class="green">7</b></span><span class="dim">your branch <span class="sub">main</span> untouched · nothing pushed</span></div>
+        <div class="grid2 stretch">
+          <div class="panel">
+            <div class="p-head"><div class="t"><b>task branches</b><span class="sub">against team/integration</span></div><div class="r"><span class="dim">open</span><b>4</b></div></div>
+            <div class="p-body">
+              <div class="br head"><span></span><span>branch</span><span>agent</span><span>size</span><span>ahead · behind</span><span>merge</span></div>
+              <div class="br"><span class="green">●</span><span>task/T-130</span><span class="green">Vera</span><span><span class="plus">+214</span> <span class="minus">−38</span> <span class="dim">· 9 files</span></span><span>3 · 0</span><span class="green">in candidate 23</span></div>
+              <div class="br sel"><span class="blue">●</span><span>task/T-129</span><span class="blue">Nova</span><span><span class="plus">+612</span> <span class="minus">−140</span> <span class="dim">· 17 files</span></span><span>6 · 1</span><span class="green">clean ✔</span></div>
+              <div class="br"><span class="teal">●</span><span>task/T-113</span><span class="teal">Rook</span><span><span class="plus">+890</span> <span class="minus">−305</span> <span class="dim">· 24 files</span></span><span>8 · 2</span><span class="yellow">1 conflict ▲</span></div>
+              <div class="br"><span class="peach">●</span><span>task/T-117</span><span class="peach">Iris</span><span><span class="plus">+402</span> <span class="minus">−77</span> <span class="dim">· 12 + 22 uncommitted</span></span><span>2 · 1</span><span class="dim">not ready</span></div>
+              <div class="alert">T-113 and T-129 both change <b>packages/ui/src/overlays/sheet.css</b> · merge T-129 first, then Rook brings it in</div>
+              <div class="cap" style="margin-top:4px"><span>candidates</span><span class="sub">tester's full runs</span></div>
+              <div class="graph"><span class="green">●</span> candidate 23  T-130            <span class="teal">◐ testing 11/20 min</span>
+<span class="dim">│</span>
+<span class="green">●</span> candidate 22  T-110            <span class="green">✔ PASS · merged 01:21</span>
+<span class="green">●</span> candidate 21  T-107            <span class="green">✔ PASS · merged 00:27</span>
+<span class="red">●</span> T-110 alone                    <span class="red">✖ FAIL 00:57 · token role</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="p-head"><span class="hex big" style="background:var(--c-blue)">N</span><div class="t"><b>task/T-129 <span class="dim">· Nova</span></b><span class="sub">6 commits · last 01:18 "fix: Timeline state prop"</span></div><div class="r"><span class="dim">diff</span><b><span class="plus">+612</span> <span class="minus">−140</span></b></div></div>
+            <div class="p-body">
+              <div class="cap"><span>files · 17</span><span class="sub">inside the brief ✔</span></div>
+              <div class="diff sel"><span>data/records/timeline.tsx</span><span class="dim">M</span><span><span class="plus">▰▰▰▰▰</span><span class="minus">▰</span></span></div>
+              <div class="diff"><span>data/records/record-header.tsx</span><span class="dim">M</span><span><span class="plus">▰▰▰▰▰▰</span><span class="minus">▰▰</span></span></div>
+              <div class="diff"><span>data/records/stat.tsx</span><span class="dim">M</span><span><span class="plus">▰▰▰</span><span class="minus">▰</span></span></div>
+              <div class="diff"><span>data/records/timeline.stories.tsx</span><span class="dim">M</span><span><span class="plus">▰▰▰▰</span></span></div>
+              <div class="diff"><span>data/records/timeline.test.tsx</span><span class="green">A</span><span><span class="plus">▰▰▰</span></span></div>
+              <div class="diff"><span>data/records/record-header.css</span><span class="dim">M</span><span><span class="plus">▰▰</span><span class="minus">▰</span></span></div>
+              <div class="diff"><span>data/records/stat.stories.tsx</span><span class="dim">M</span><span><span class="plus">▰▰</span></span></div>
+              <div class="diff"><span>tokens/src/base.tokens.json</span><span class="yellow">M</span><span><span class="plus">▰</span> <span class="yellow">token</span></span></div>
+              <div class="diff"><span class="dim">+ 9 more · ↓ to scroll</span><span></span><span></span></div>
+              <div class="cap" style="margin-top:4px"><span>timeline.tsx · 1 of 3 changes</span><span class="sub">⏎ full diff</span></div>
+              <div class="hunk"><span class="h">@@ -41,9 +41,14 @@ export function TimelineItem(</span>
+   const tone = useTimelineTone(props)
+<span class="d">-  return &lt;li className={itemVariants()}&gt;</span><span class="a">+  const state = props.state ?? "default"   // D-073</span><span class="a">+  return (</span><span class="a">+    &lt;li data-state={state} className={itemVariants({ state })}&gt;</span>
+       &lt;TimelineMark tone={tone} /&gt;</div>
+              <div class="alert green">tokens changed: grep rule run <span class="dim">· theme-tonus test ✔ · tokens:check ✔</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="keys"><span><b>↑↓</b>branch</span><span><b>→</b>files</span><span><b>⏎</b>full diff</span><span><b>g</b>lazygit (full screen)</span><span><b>m</b>merge order</span></div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- OBSERVER -->
+  <section class="tab">
+    <div class="prose"><h2>observer · what costs time, and what to change</h2><p>Minutes lost today by cause, the findings open now with their cost, the suggestions as a small board (open, for you, adopted), and a heat strip of each agent's day. Owl's own pane stays at the bottom.</p></div>
+    <div class="term" role="img" aria-label="Observer tab: minutes lost by cause, open findings, suggestions board and an activity heat strip per agent">
+      <div class="tbar"><span class="dots"><i></i><i></i><i></i></span>herdr · session hive · hive team</div>
+      <div class="tabs"><span>team</span><span>review</span><span>changes</span><span class="on">observer</span><span>report</span></div>
+      <div class="scroll"><div class="screen">
+        <div class="hud"><span><span class="hex" style="background:var(--c-pink)">O</span> <b class="pink">Owl</b> <span class="dim">· pass 21 · 01:24 · next at the next merge</span></span><span>lost today <b class="red">146 min</b></span><span class="dim">idle seats now <span class="sub">0</span> · stalled <span class="sub">0</span> · blocked <span class="sub">0</span></span></div>
+        <div class="grid2 stretch">
+          <div class="panel">
+            <div class="p-head"><div class="t"><b>where the time went</b><span class="sub">minutes lost, today</span></div><div class="r"><span class="dim">largest</span><b class="red">80</b><span class="dim">idle devs</span></div></div>
+            <div class="p-body">
+              <div class="loss"><span>idle devs, no brief</span><span class="blocks red">▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰</span><span class="red">80</span></div>
+              <div class="loss"><span>failed whole runs</span><span class="blocks peach">▰▰▰▰▰▰▰</span><span class="peach">37</span></div>
+              <div class="loss"><span>reviewer on a menu</span><span class="blocks yellow">▰▰▰▰▰</span><span class="yellow">23</span></div>
+              <div class="loss"><span>waiting for the lock</span><span class="blocks sky">▰</span><span class="sky">6</span></div>
+              <div class="cap" style="margin-top:6px"><span>open now</span><span class="sub">2</span></div>
+              <div class="sev"><i style="background:var(--c-red)"></i><div><b>T-110 failed after a 19-min run</b><br><span class="dim">a token role outside the base scale · rule written in SPEC</span></div><span class="red">19 min</span></div>
+              <div class="sev"><i style="background:var(--c-yellow)"></i><div><b>Sheet test fails only under load</b><br><span class="dim">third flaky test · proposed: a fix task like T-028</span></div><span class="yellow">open</span></div>
+              <div class="sev"><i style="background:var(--c-green)"></i><div><b>reviewer stopped on menus</b><br><span class="dim">fixed in squad 0.9.2 · no stop since 01:10</span></div><span class="green">✔ fixed</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="p-head"><div class="t"><b>suggestions</b><span class="sub">S-1 … S-15</span></div><div class="r"><span class="dim">adopted</span><b class="green">13</b></div></div>
+            <div class="p-body">
+              <div class="grid3">
+                <div class="kcol"><div class="cap"><span>open</span><span>1</span></div><div class="kcard" style="border-left-color:var(--c-yellow);outline:1px solid var(--c-yellow)">S-15 fix task for the Sheet test<small>saves a rerun per candidate</small></div></div>
+                <div class="kcol"><div class="cap"><span>for you</span><span>1</span></div><div class="kcard" style="border-left-color:var(--c-mauve)">S-8 run the next candidate before a stop<small>squad lead role</small></div></div>
+                <div class="kcol"><div class="cap"><span>adopted</span><span>13</span></div><div class="kcard" style="border-left-color:var(--c-green)">S-13 hung runs stopped<small>0.9.2</small></div><div class="kcard" style="border-left-color:var(--c-green)">S-12 verified starts<small>0.9.2</small></div><div class="kcard dim" style="border-left-color:var(--c-green)">+ 11 more</div></div>
+              </div>
+              <div class="cap" style="margin-top:6px;border-top:1px solid var(--t-s0);padding-top:8px"><span>S-15 · selected</span><span class="yellow">open · for Atlas</span></div>
+              <div class="stat" style="display:grid;grid-template-columns:76px 1fr;gap:4px 10px;font-size:12px">
+                <span class="dim">problem</span><span>Sheet Playground fails "not at the right edge" under load, passes alone 8/8</span>
+                <span class="dim">seen</span><span class="sub">run of T-110 00:57 · run 23 now · 3rd flaky test after the two date pickers</span>
+                <span class="dim">change</span><span>one fix task, like T-028: find the cause, wait on the kit's settle helper, not on time</span>
+                <span class="dim">saves</span><span class="green">about 17 min per candidate that hits it</span>
+                <span class="dim">source</span><span class="sub">D-057 (the date picker fix) · reports/T-110-test.md:31</span>
+              </div>
+              <div class="links" style="display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;margin-top:2px"><span class="chip"><b>a</b> adopted</span><span class="chip"><b>x</b> rejected + why</span><span class="chip"><b>v</b> for V!</span><span class="chip"><b>⏎</b> evidence</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="p-head"><div class="t"><b>each agent's day</b><span class="sub">one cell = 10 min · bright = working · yellow = waiting · red = failed run · dark = idle</span></div></div>
+          <div class="p-body">
+            <div class="heat"><span class="dim"></span><span class="dim" style="grid-column:span 6">22:00</span><span class="dim" style="grid-column:span 6">23:00</span><span class="dim" style="grid-column:span 6">00:00</span><span class="dim" style="grid-column:span 6">01:00</span></div>
+            <div class="heat"><span class="blue">Nova</span><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i></i><i></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i><i style="background:var(--c-blue)"></i></div>
+            <div class="heat"><span class="teal">Rook</span><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i></i><i></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i></i><i></i><i></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-yellow)"></i><i style="background:var(--c-yellow)"></i><i style="background:var(--c-teal)"></i><i style="background:var(--c-teal)"></i></div>
+            <div class="heat"><span class="peach">Iris</span><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i></i><i></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i></i><i></i><i></i><i></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i><i style="background:var(--c-peach)"></i></div>
+            <div class="heat"><span class="green">Vera</span><i></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i style="background:var(--c-red)"></i><i style="background:var(--c-red)"></i><i></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i><i style="background:var(--c-green)"></i></div>
+            <div class="heat"><span class="yellow">Sol</span><i></i><i></i><i></i><i style="background:var(--c-yellow)"></i><i style="background:var(--c-red)"></i><i style="background:var(--c-red)"></i><i></i><i></i><i style="background:var(--c-yellow)"></i><i></i><i style="background:var(--c-red)"></i><i style="background:var(--c-red)"></i><i></i><i></i><i style="background:var(--c-yellow)"></i><i></i><i></i><i></i><i style="background:var(--c-yellow)"></i><i></i><i></i><i></i><i></i><i></i></div>
+          </div>
+        </div>
+        <div class="pane-ph"><span class="hex" style="background:var(--c-pink)">O</span>Owl's pane <span class="faint">· press</span> <b class="pink">o</b> <span class="faint">to open it full</span></div>
+        <div class="keys"><span><b>↑↓</b>finding</span><span><b>⏎</b>details and evidence</span><span><b>a</b>mark adopted</span><span><b>o</b>Owl's pane</span></div>
+      </div></div>
+    </div>
+  </section>
+
+  <!-- REPORT -->
+  <section class="tab">
+    <div class="prose"><h2>report · your desk</h2><p>Opens on what you test: each item with where to look and two keys, <b>y</b> looks right and <b>f</b> feedback. Then the decisions, the night in one timeline, and the numbers. <b>o</b> opens the same page in the browser.</p></div>
+    <div class="term" role="img" aria-label="Report tab: items to test with where to look, decisions, a timeline of the night and four key numbers">
+      <div class="tbar"><span class="dots"><i></i><i></i><i></i></span>herdr · session hive · hive team</div>
+      <div class="tabs"><span>team</span><span>review</span><span>changes</span><span>observer</span><span class="on">report</span></div>
+      <div class="scroll"><div class="screen">
+        <div class="hud"><span><b>hive</b> <span class="dim">· since your last look, 13 Nov 22:00</span></span><span>merged <b class="green">7</b></span><span>to test <b class="yellow">3</b> <span class="dim">+ 2 after merge</span></span><span>decided <b>9</b></span><span>your feedback open <b>0</b></span></div>
+        <div class="panel">
+          <div class="p-head"><div class="t"><b class="yellow">◆ to test by you</b><span class="sub">look where it says, then y or f</span></div><div class="r"><span class="dim">ready</span><b class="yellow">3</b></div></div>
+          <div class="p-body">
+            <div class="tt sel"><span class="yellow">◆</span><b class="yellow">D-066</b><span class="what"><b>A focused floating panel keeps its shadow under the focus ring</b><span class="tags"><span class="c fill" style="background:var(--c-blue)">Nova · T-025</span><span class="c look">look</span><span class="c story">overlays-popover--keyboard</span><span class="c size">1440</span><span class="c light">☀ light</span><span class="c dark">☾ dark</span><span class="dim">→ press Tab until the panel has focus</span></span></span><span class="acts"><span class="btn y">y ok</span><span class="btn f">f feedback</span></span></div>
+            <div class="tt"><span class="yellow">◆</span><b class="yellow">D-070</b><span class="what"><b>Checked checklist text at 61 % (preview 55 %)</b><span class="tags"><span class="c fill" style="background:var(--c-peach)">Iris · T-121</span><span class="c a11y">contrast</span><span class="c story">surfaces-list--states</span><span class="c size">1440</span><span class="c light">☀ light</span><span class="dim">→ cell "checklist · rest, checked"</span></span></span><span class="acts"><span class="btn y">y</span><span class="btn f">f</span></span></div>
+            <div class="tt"><span class="yellow">◆</span><b class="yellow">D-072</b><span class="what"><b>A selectable tag looks like the filter chip; no check mark</b><span class="tags"><span class="c fill" style="background:var(--c-peach)">Iris · T-107</span><span class="c look">look</span><span class="c story">fields-collection-taggroup--states</span><span class="c size">1440</span><span class="c light">☀ light</span><span class="c dark">☾ dark</span></span></span><span class="acts"><span class="btn y">y</span><span class="btn f">f</span></span></div>
+            <div class="tt"><span class="green">◆</span><b class="green">D-071</b><span class="what"><b>Calendar day cells 40 px, fluid width</b><span class="tags"><span class="c fill" style="background:var(--c-teal)">Rook · T-110</span><span class="c layout">layout</span><span class="c story">date-calendar--states</span><span class="c size">1440</span><span class="c size">390</span><span class="c fill" style="background:var(--c-green)">new · merged 01:21</span></span></span><span class="acts"><span class="btn y">y</span><span class="btn f">f</span></span></div>
+            <div class="tt" style="opacity:.6"><span class="faint">◇</span><span class="dim">D-074</span><span class="what"><span class="sub">RecordHeader title in the sheet-title type</span><span class="tags"><span class="c" style="color:var(--c-blue)">Nova · T-129</span><span class="c look">look</span><span class="dim">waits: T-129 is in test</span></span></span><span class="acts"><span class="dim">later</span></span></div>
+          </div>
+        </div>
+        <div class="grid2 stretch">
+          <div class="panel">
+            <div class="p-head"><div class="t"><b>the night</b><span class="sub">22:00 → now · each agent · each bar is a task</span></div><div class="r"><span class="dim">busy</span><b class="green">78%</b><span class="dim">of seat time</span></div></div>
+            <div class="p-body">
+              <div class="gax" style="grid-template-columns:64px 1fr"><span></span><div><span>22:00</span><span>23:00</span><span>00:00</span><span>01:00</span><span class="peach">now</span></div></div>
+              <div class="gantt">
+                <span class="nowline"></span>
+                <div class="gr"><span class="mauve">Atlas</span><div class="gt"><i style="left:2%;width:9%;background:var(--c-mauve)">briefs</i><i style="left:23%;width:4%;background:var(--c-mauve)">rev</i><i style="left:43%;width:4%;background:var(--c-mauve)">rev</i><i style="left:62%;width:5%;background:var(--c-mauve)">rev</i><i style="left:82%;width:9%;background:var(--c-mauve)">T-129</i></div></div>
+                <div class="gr"><span class="blue">Nova</span><div class="gt"><i style="left:3%;width:18%;background:var(--c-blue)">T-028</i><i style="left:38%;width:24%;background:var(--c-blue)">T-103</i><i style="left:84%;width:15%;background:var(--c-blue)">T-129</i></div></div>
+                <div class="gr"><span class="teal">Rook</span><div class="gt"><i style="left:5%;width:30%;background:var(--c-teal)">T-110 r1</i><i style="left:57%;width:14%;background:var(--c-teal)">T-110 r4</i><i class="w" style="left:80%;width:6%">lock</i><i style="left:87%;width:12%;background:var(--c-teal)">T-113</i></div></div>
+                <div class="gr"><span class="peach">Iris</span><div class="gt"><i style="left:2%;width:23%;background:var(--c-peach)">T-121</i><i style="left:45%;width:8%;background:var(--c-peach)">T-107</i><i style="left:64%;width:35%;background:var(--c-peach)">T-117</i></div></div>
+                <div class="gr"><span class="green">Vera</span><div class="gt"><i style="left:9%;width:14%;background:var(--c-green)">run 17</i><i style="left:29%;width:15%;background:var(--c-green)">run 18</i><i style="left:51%;width:14%;background:var(--c-green)">run 20</i><i style="left:70%;width:15%;background:var(--c-red)">T-110 ✖</i><i style="left:89%;width:10%;background:var(--c-green)">run 23</i></div></div>
+                <div class="gr"><span class="yellow">Sol</span><div class="gt"><i style="left:26%;width:4%;background:var(--c-yellow)">T-121</i><i style="left:47%;width:4%;background:var(--c-yellow)">T-103</i><i style="left:61%;width:3%;background:var(--c-yellow)">T-107</i><i style="left:79%;width:3%;background:var(--c-yellow)">T-110</i></div></div>
+                <div class="gr"><span class="green">merged</span><div class="gt m"><i style="left:23%">T-018</i><i style="left:43%">T-028</i><i style="left:56%">T-121</i><i style="left:64%">T-103</i><i style="left:74%">T-107</i><i style="left:92%">T-110</i></div></div>
+              </div>
+              <div class="legend"><span><i style="background:var(--c-blue)"></i>dev work (agent colour)</span><span><i style="background:var(--c-green)"></i>test run passed</span><span><i style="background:var(--c-red)"></i>test run failed</span><span><i style="background:repeating-linear-gradient(135deg,var(--c-yellow) 0 4px,#d9c48f 4px 8px)"></i>waiting for the lock</span><span><i style="background:var(--t-mantle);border:1px solid var(--t-s1)"></i>idle</span><span><i style="background:var(--c-peach);width:2px"></i>now</span></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="p-head"><div class="t"><b>numbers</b><span class="sub">tonight</span></div></div>
+            <div class="p-body">
+              <div class="kpi"><div style="border-color:rgba(166,227,161,.4)"><b class="green">7 <span class="trend">▁▃▅▇</span></b><small class="green">✔ merged</small></div><div style="border-color:rgba(137,180,250,.4)"><b class="blue">2.4</b><small class="blue">↻ rounds / task</small></div><div style="border-color:rgba(243,139,168,.45)"><b class="red">146</b><small class="red">⧗ min lost</small></div><div style="border-color:rgba(249,226,175,.4)"><b class="yellow">36%</b><small class="yellow">◔ Claude 5 h</small></div></div>
+              <div class="cap" style="margin-top:4px"><span>decided by the team</span><span class="green">✔ final · not for you</span></div>
+              <div class="dec"><b class="sky">D-073</b><span>Timeline gets a state prop <span class="c fill" style="background:var(--c-blue)">Nova</span></span><span class="c" style="color:var(--c-lav)">API</span></div>
+              <div class="dec"><b class="sky">D-069</b><span>glyph emboss in the parity helper <span class="c fill" style="background:var(--c-blue)">Nova</span></span><span class="c" style="color:var(--c-green)">test</span></div>
+              <div class="dec"><b class="sky">D-068</b><span>four calendar token roles <span class="c fill" style="background:var(--c-teal)">Rook</span></span><span class="c" style="color:var(--c-yellow)">tokens</span></div>
+              <div class="dec"><b class="sky">D-067</b><span>a task id as a deviation id <span class="c fill" style="background:var(--c-mauve)">Atlas</span></span><span class="c" style="color:var(--c-peach)">process</span></div>
+              <div class="alert red">step 3 and step 4 (tables) wait for your go <span class="dim">· nothing started</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="keys"><span><b>↑↓</b>item</span><span><b>y</b>looks right</span><span><b>f</b>feedback</span><span><b>⏎</b>open story</span><span><b>o</b>open in browser</span></div>
+      </div></div>
+    </div>
+  </section>
+
+  <section class="prose">
+    <h2>Notes</h2>
+    <p>All four are plain terminal text, like the team board. <b>y</b> in the report records "looks right" as feedback (<code>squad feedback</code>), so you never type a command for an item you accept. The changes tab reads git only; it never merges or pushes. Times, sizes and suite counts are illustrative; names, tasks, decisions and findings are hive's from 14 Nov.</p>
+  </section>
+</div>
