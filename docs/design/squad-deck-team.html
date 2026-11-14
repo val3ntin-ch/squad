@@ -1,0 +1,220 @@
+<title>Squad Board · Mission View</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700;800&display=swap">
+<style>
+/* Layout: a short intro, one large terminal mockup (option 3 with the new task view), then a legend. The terminal keeps herdr's catppuccin colours in both page themes. */
+:root{
+  --paper:#f4f5f8; --ink:#1b1f2a; --muted:#5b6275; --line:#d9dce5; --accent-ink:#7a5a06;
+  --font-display:"Space Grotesk",system-ui,sans-serif; --font-body:"IBM Plex Sans",system-ui,sans-serif; --font-mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  --t-crust:#11111b; --t-mantle:#181825; --t-base:#1e1e2e; --t-s0:#313244; --t-s1:#45475a; --t-s2:#585b70; --t-ov:#7f849c; --t-sub:#a6adc8; --t-text:#cdd6f4;
+  --c-mauve:#cba6f7; --c-blue:#89b4fa; --c-teal:#94e2d5; --c-peach:#fab387; --c-green:#a6e3a1; --c-yellow:#f9e2af; --c-pink:#f5c2e7; --c-red:#f38ba8; --c-sky:#89dceb; --c-lav:#b4befe;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--paper:#14161d;--ink:#e6e8ef;--muted:#9aa1b4;--line:#2c3040;--accent-ink:#f0c95e;color-scheme:dark}}
+:root[data-theme="dark"]{--paper:#14161d;--ink:#e6e8ef;--muted:#9aa1b4;--line:#2c3040;--accent-ink:#f0c95e;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.6 var(--font-body);padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.wrap{max-width:1240px;margin:0 auto;padding-block:40px 64px;display:grid;gap:32px}
+.prose{max-width:760px;display:grid;gap:10px}
+h1,h2{font-family:var(--font-display);text-wrap:balance;margin:0;line-height:1.15}
+h1{font-size:36px;letter-spacing:-.01em} h2{font-size:22px}
+p{margin:0}
+.lede{font-size:17px;color:var(--muted)}
+.eyebrow{font:600 12px/1 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent-ink)}
+code{font:13px var(--font-mono);background:color-mix(in srgb,var(--line) 55%,transparent);padding:1px 5px;border-radius:4px}
+.tw{overflow-x:auto} table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:600 12px var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+td:first-child{font-family:var(--font-mono);font-size:13px;white-space:nowrap}
+
+/* terminal */
+.term{background:var(--t-base);color:var(--t-text);font:12.5px/1.55 var(--font-mono);border-radius:10px;overflow:hidden;border:1px solid #0b0b12;box-shadow:0 24px 50px -26px rgba(0,0,0,.7)}
+.tbar{display:flex;align-items:center;gap:10px;background:var(--t-crust);padding:8px 12px;color:var(--t-ov);font-size:11.5px}
+.dots{display:flex;gap:6px}.dots i{width:10px;height:10px;border-radius:50%;background:var(--t-s1)}
+.tabs{display:flex;gap:4px;padding:6px 10px 0;background:var(--t-mantle);flex-wrap:wrap}
+.tabs span{padding:3px 12px;background:var(--t-s0);color:var(--t-sub);border-radius:4px 4px 0 0}
+.tabs span.on{background:var(--c-blue);color:var(--t-crust);font-weight:700}
+.scroll{overflow-x:auto}
+.screen{padding:12px 14px;min-width:1120px;display:grid;gap:10px}
+.dim{color:var(--t-ov)}.sub{color:var(--t-sub)}.faint{color:var(--t-s2)}
+.green{color:var(--c-green)}.red{color:var(--c-red)}.yellow{color:var(--c-yellow)}.blue{color:var(--c-blue)}.mauve{color:var(--c-mauve)}.peach{color:var(--c-peach)}.teal{color:var(--c-teal)}.pink{color:var(--c-pink)}.sky{color:var(--c-sky)}.lav{color:var(--c-lav)}
+b{color:var(--t-text);font-weight:700}
+.hud{display:flex;flex-wrap:wrap;gap:6px 22px;align-items:center;padding-bottom:8px;border-bottom:1px solid var(--t-s0)}
+.blocks{letter-spacing:-1px}
+.hex{width:22px;height:22px;display:inline-grid;place-items:center;font-weight:800;font-size:11.5px;color:var(--t-crust);clip-path:polygon(25% 3%,75% 3%,100% 50%,75% 97%,25% 97%,0 50%);flex:none}
+.md{display:grid;grid-template-columns:270px 1fr;gap:12px;align-items:start}
+.agents{display:grid;gap:4px}
+.ag{display:grid;grid-template-columns:22px 1fr;gap:2px 8px;padding:6px 8px;border-radius:6px;border:1px solid transparent}
+.ag.sel{background:var(--t-mantle);border-color:var(--c-peach)}
+.ag small{grid-column:2;color:var(--t-sub);font-size:11.5px}
+.lbl{font-size:10.5px;padding:0 6px;border-radius:3px;margin-left:6px;color:var(--t-crust);font-weight:700}
+.keys{display:flex;gap:16px;flex-wrap:wrap;color:var(--t-ov);font-size:11.5px;border-top:1px solid var(--t-s0);padding-top:8px}
+.keys b{color:var(--t-crust);background:var(--t-sub);padding:0 5px;border-radius:3px;margin-right:4px}
+
+/* mission view */
+.mission{border:1px solid var(--t-s1);border-radius:8px;background:linear-gradient(180deg,#232336 0%,var(--t-base) 90px);display:grid;gap:0;overflow:hidden}
+.m-head{display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center;padding:12px 14px;border-bottom:1px solid var(--t-s0)}
+.m-id{font-size:22px;font-weight:800;letter-spacing:.02em;color:var(--c-peach);line-height:1}
+.m-title{display:grid;gap:2px}
+.m-title b{font-size:14px}
+.m-title span{font-size:11.5px}
+.m-clock{text-align:right;display:grid;gap:2px;font-size:11.5px}
+.m-clock b{font-size:18px;color:var(--c-peach);font-variant-numeric:tabular-nums}
+/* step track */
+.track{padding:12px 16px 10px;display:grid;grid-template-columns:repeat(6,1fr);border-bottom:1px solid var(--t-s0)}
+.st{display:grid;gap:3px;justify-items:start;position:relative}
+.st .node{display:flex;align-items:center;width:100%;font-size:14px}
+.st .node i{flex:1;height:2px;margin:0 4px;background:var(--t-s1)}
+.st.done .node{color:var(--c-green)}.st.done .node i{background:var(--c-green)}
+.st.now .node{color:var(--c-peach)}.st.now .node i{background:linear-gradient(90deg,var(--c-peach),var(--t-s1))}
+.st.todo .node{color:var(--t-s2)}
+.st:last-child .node i{display:none}
+.st small{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--t-ov)}
+.st.now small{color:var(--c-peach);font-weight:700}
+.st em{font-style:normal;font-size:11px;color:var(--t-sub)}
+/* body */
+.m-body{display:grid;grid-template-columns:1.15fr 1fr 0.95fr;gap:0}
+.m-col{padding:12px 14px;display:grid;gap:8px;align-content:start;border-right:1px solid var(--t-s0)}
+.m-col:last-child{border-right:0}
+.cap{font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--t-ov);display:flex;justify-content:space-between;gap:8px}
+.gauge{display:flex;align-items:center;gap:8px;font-size:12px}
+.gauge .blocks{font-size:13px}
+.ac{display:grid;grid-template-columns:18px 22px 1fr;gap:6px;align-items:baseline}
+.ac .n{color:var(--t-ov);text-align:right}
+.ac.ok{color:var(--t-sub)}
+.ac.go{background:rgba(249,226,175,.07);border-radius:4px;margin:0 -6px;padding:2px 6px}
+.ac.go span:last-child{color:var(--c-yellow)}
+.live{border:1px solid rgba(250,179,135,.35);border-radius:6px;padding:8px 10px;background:rgba(250,179,135,.06);display:grid;gap:4px}
+.live b{color:var(--c-peach)}
+.spark{font-size:14px;color:var(--c-peach);letter-spacing:1px}
+.stat{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12px}
+.stat span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}
+.alert{border-left:3px solid var(--c-yellow);padding:4px 9px;background:rgba(249,226,175,.07);border-radius:0 4px 4px 0;font-size:12px}
+.tl{display:grid;gap:0}
+.ev{display:grid;grid-template-columns:44px 14px 1fr;gap:6px;align-items:start;font-size:12px}
+.ev .t{color:var(--t-ov);font-variant-numeric:tabular-nums}
+.ev .rail{display:grid;justify-items:center;height:100%}
+.ev .rail i{width:1px;flex:1;background:var(--t-s1);height:14px}
+.ev.next{opacity:.7}
+.links{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px}
+.links span{border:1px solid var(--t-s1);border-radius:4px;padding:0 6px;color:var(--t-sub)}
+.links span b{color:var(--c-blue)}
+.m-foot{display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:8px 14px;border-top:1px solid var(--t-s0);background:var(--t-mantle);font-size:11.5px}
+@media (max-width:640px){h1{font-size:28px}}
+@media (prefers-reduced-motion:no-preference){.spin{display:inline-block;animation:spin 1s steps(8) infinite}.pulse{animation:pulse 1.6s ease-in-out infinite}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes pulse{50%{opacity:.45}}
+</style>
+
+<div class="wrap">
+  <header class="prose">
+    <span class="eyebrow">squad · board · option 3 · task view v2</span>
+    <h1>Mission view for the selected task</h1>
+    <p class="lede">Option 3 with a new task view. Read it top to bottom: which task and how long, where it is in its steps, what the agent does right now, what is proven, and what happened. The empty gaps of the first draft are gone.</p>
+  </header>
+
+  <div class="term" role="img" aria-label="Squad board in herdr: agent list on the left with Iris selected, and the mission view of task T-117 on the right">
+    <div class="tbar"><span class="dots"><i></i><i></i><i></i></span>herdr · session hive · hive team</div>
+    <div class="tabs"><span class="on">team</span><span>review</span><span>changes</span><span>observer</span><span>report</span></div>
+    <div class="scroll"><div class="screen">
+      <div class="hud">
+        <span><b>hive</b> <span class="dim">· step 2</span></span>
+        <span><span class="blocks green">▰▰▰▰▰▰▰▰▰▰▰▰▰</span><span class="blocks faint">▱▱▱▱▱▱▱</span> <b>38/59</b> <span class="dim">merged</span></span>
+        <span>lock <b class="green">hive/Vera</b> <span class="dim">→ Rook → Nova</span></span>
+        <span class="dim">other teams: tonus <span class="sub">idle</span></span>
+        <span class="dim">Claude <span class="sub">36%</span> · Codex <span class="sub">53%</span></span>
+      </div>
+      <div class="md">
+        <div class="agents">
+          <div class="ag"><span class="hex" style="background:var(--c-mauve)">A</span><span><b class="mauve">Atlas</b> <span class="dim">lead</span><span class="lbl" style="background:var(--c-mauve)">REVIEW</span></span><small>T-129 · RecordHeader title</small></div>
+          <div class="ag"><span class="hex" style="background:var(--c-blue)">N</span><span><b class="blue">Nova</b> <span class="dim">dev-a</span><span class="lbl" style="background:var(--c-blue)">DEV r2</span></span><small>T-129 · Timeline state prop</small></div>
+          <div class="ag"><span class="hex" style="background:var(--c-teal)">R</span><span><b class="teal">Rook</b> <span class="dim">dev-b</span><span class="lbl" style="background:var(--c-yellow)">LOCK #2</span></span><small>T-113 · Sheet, Dialog</small></div>
+          <div class="ag sel"><span class="hex" style="background:var(--c-peach)">I</span><span><b class="peach">Iris</b> <span class="dim">dev-c</span><span class="lbl" style="background:var(--c-peach)">DEV</span></span><small>T-117 · Toast play test</small></div>
+          <div class="ag"><span class="hex" style="background:var(--c-green)">V</span><span><b class="green">Vera</b> <span class="dim">QA</span><span class="lbl" style="background:var(--c-green)">TEST 11m</span></span><small>candidate 23 · 112/135</small></div>
+          <div class="ag"><span class="hex" style="background:var(--c-yellow)">S</span><span><b class="yellow">Sol</b> <span class="dim">GPT review</span></span><small>idle · last T-110 ✔</small></div>
+          <div class="ag"><span class="hex" style="background:var(--c-pink)">O</span><span><b class="pink">Owl</b> <span class="dim">observer</span><span class="lbl" style="background:var(--c-red)">2 OPEN</span></span><small>pass 21 · loss 19 min</small></div>
+        </div>
+
+        <div class="mission">
+          <div class="m-head">
+            <span class="hex" style="background:var(--c-peach);width:34px;height:34px;font-size:15px">I</span>
+            <div class="m-title"><span><span class="m-id">T-117</span> <b>Feedback 1 · Alert, StatusBanner, Toast</b></span><span class="sub"><span class="peach">Iris</span> · dev-c · round 1 · branch <span class="lav">task/T-117</span> @ 4e1a9c2</span></div>
+            <div class="m-clock"><span class="dim">on this task</span><b>55m</b><span class="dim">typical dev step <span class="sub">38m</span></span></div>
+          </div>
+
+          <div class="track">
+            <div class="st done"><span class="node">●<i></i></span><small>brief</small><em>00:12</em></div>
+            <div class="st done"><span class="node">●<i></i></span><small>contract</small><em>00:30 · Vera</em></div>
+            <div class="st now"><span class="node"><span class="pulse">◉</span><i></i></span><small>dev</small><em>55m · Iris</em></div>
+            <div class="st todo"><span class="node">○<i></i></span><small>test</small><em>Vera</em></div>
+            <div class="st todo"><span class="node">○<i></i></span><small>review</small><em>Sol → Atlas</em></div>
+            <div class="st todo"><span class="node">○</span><small>merge</small><em>candidate</em></div>
+          </div>
+
+          <div class="m-body">
+            <div class="m-col">
+              <div class="cap"><span>proof · acceptance</span><span class="sub">contract 00:30</span></div>
+              <div class="gauge"><span class="blocks"><span class="green">▰▰</span><span class="yellow">▰</span><span class="faint">▱▱▱▱▱▱▱▱</span></span><b>2</b><span class="dim">/ 11 pass · 1 in work</span></div>
+              <div class="ac ok"><span class="green">✔</span><span class="n">1</span><span>recipes, no literal colour</span></div>
+              <div class="ac ok"><span class="green">✔</span><span class="n">2</span><span>light/dark · Precision/Soft</span></div>
+              <div class="ac go"><span class="yellow"><span class="spin">◐</span></span><span class="n">9</span><span>Toast dismiss by keyboard</span></div>
+              <div class="ac"><span class="faint">○</span><span class="n">10</span><span class="sub">reduced motion</span></div>
+              <div class="ac"><span class="faint">○</span><span class="n">11</span><span class="sub">parity rows</span></div>
+              <div class="dim" style="font-size:11.5px">+ 6 more · <span class="sub">⏎ for all rows</span></div>
+            </div>
+
+            <div class="m-col">
+              <div class="cap"><span>live · now</span><span class="green">● working</span></div>
+              <div class="live">
+                <span><span class="peach">⠹</span> <b>writing play test for Toast dismiss</b></span>
+                <span class="dim">activity 30 min <span class="spark">▁▂▄▆▇▅▆▇█▆▄▅▇</span></span>
+              </div>
+              <div class="stat">
+                <span class="dim">files changed</span><span><b>22</b> <span class="dim">alert · toast · banner</span></span>
+                <span class="dim">last commit</span><span class="sub">00:27 · 31 min ago</span>
+                <span class="dim">heavy runs</span><span><span class="green">2 ✔</span> <span class="dim">· 0 ✖</span></span>
+                <span class="dim">lock queue</span><span class="sub">not queued</span>
+              </div>
+              <div class="alert"><span class="yellow">▲</span> commit before the next heavy run <span class="dim">(squad heavy refuses a dirty tree)</span></div>
+            </div>
+
+            <div class="m-col">
+              <div class="cap"><span>timeline</span><span class="sub">today</span></div>
+              <div class="tl">
+                <div class="ev"><span class="t">00:12</span><span class="rail"><span class="mauve">◆</span></span><span>brief written <span class="dim">· Atlas</span></span></div>
+                <div class="ev"><span class="t">00:30</span><span class="rail"><span class="green">●</span></span><span>contract agreed <span class="dim">· Vera, +3 rows</span></span></div>
+                <div class="ev"><span class="t">00:31</span><span class="rail"><span class="blue">→</span></span><span>dispatched to <span class="peach">Iris</span></span></div>
+                <div class="ev"><span class="t">00:58</span><span class="rail"><span class="green">✔</span></span><span>2 file runs passed</span></div>
+                <div class="ev"><span class="t">01:25</span><span class="rail"><span class="peach">◉</span></span><span class="peach">working · play tests</span></div>
+                <div class="ev next"><span class="t">next</span><span class="rail"><span class="faint">○</span></span><span class="dim">DONE → Vera tests</span></div>
+              </div>
+              <div class="links"><span><b>b</b> brief</span><span><b>c</b> contract</span><span><b>r</b> report</span><span><b>d</b> diff</span></div>
+            </div>
+          </div>
+
+          <div class="m-foot">
+            <span class="dim">decisions on this task</span><span>D-075 <span class="green">final</span></span><span>D-076 <span class="yellow">◆ to test by you</span> <span class="dim">feedback-toast--states</span></span>
+            <span class="dim" style="margin-left:auto">findings from Owl: <span class="sub">none</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="keys"><span><b>↑↓</b>agent</span><span><b>⏎</b>all rows</span><span><b>b</b>brief</span><span><b>c</b>contract</span><span><b>r</b>report</span><span><b>d</b>diff</span><span><b>t</b>to test</span><span><b>f</b>feedback</span></div>
+    </div></div>
+  </div>
+
+  <section class="prose">
+    <h2>How to read the task view</h2>
+    <div class="tw"><table>
+      <tr><th>Part</th><th>What it tells you</th><th>Source</th></tr>
+      <tr><td>T-117 · 55m</td><td>the task, its agent and branch; time on the task against the usual time of a dev step</td><td>TASKS.md, events.log</td></tr>
+      <tr><td>●━●━◉━○</td><td>the six steps; done in green, the current one pulses, each with its time and seat</td><td>events.log</td></tr>
+      <tr><td>▰▰▰▱▱ proof</td><td>how many acceptance rows are proven; the row in work is highlighted</td><td>the tester's contract and the newest report</td></tr>
+      <tr><td>⠹ live · now</td><td>what the agent is doing this minute, and an activity line for the last 30 minutes</td><td>herdr's live agent title and state</td></tr>
+      <tr><td>files, commit, runs, lock</td><td>the health of the work: uncommitted changes, heavy runs, place in the lock queue</td><td>git in its worktree, the heavy lock</td></tr>
+      <tr><td>▲ yellow line</td><td>the one thing that will block it next</td><td>squad's own rules</td></tr>
+      <tr><td>timeline</td><td>what happened, newest last, and what comes next</td><td>events.log</td></tr>
+      <tr><td>bottom line</td><td>decisions taken on this task, and what you test for it</td><td>DECISIONS.md, the observer</td></tr>
+    </table></div>
+    <p>Everything here is plain terminal text: box lines, block bars, Braille spinners and colour. It runs in herdr as squad's own board, with no new app. The pulse and spinner stop when motion is reduced. Times and the decisions D-075 and D-076 are illustrative.</p>
+  </section>
+</div>
