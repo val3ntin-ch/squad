@@ -855,7 +855,7 @@ agents11='{"result":{"agents":[{"name":"dev-c","agent_status":"working","pane_id
 reset_log; export SQUAD_CLOCK=1800000000
 out11=$(COLUMNS=200 MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c 2>&1)
 check "the board lists the agents by name with their label" sh -c "printf '%s' \"\$1\" | grep -q 'Iris dev-c  DEV' && printf '%s' \"\$1\" | grep -q 'Atlas lead  IDLE'" _ "$out11"
-check "the mission view shows the task, its steps and its proof" sh -c "printf '%s' \"\$1\" | grep -q 'T-901  Toast and Alert' && printf '%s' \"\$1\" | grep -q '◉ dev' && printf '%s' \"\$1\" | grep -q '1 / 2 pass' && printf '%s' \"\$1\" | grep -q '✔  1 recipes, no literal colour' && printf '%s' \"\$1\" | grep -q '◐  2 Toast dismiss by keyboard'" _ "$out11"
+check "the mission view shows the task, its steps and its proof" sh -c "printf '%s' \"\$1\" | grep -q 'T-901  Toast and Alert' && printf '%s' \"\$1\" | sed 's/━//g' | grep -qF '│ ●●◉○○○' && printf '%s' \"\$1\" | grep -q 'BRIEF  *CONTRACT  *DEV  *TEST  *REVIEW  *MERGE' && printf '%s' \"\$1\" | grep -q '1 / 2 pass' && printf '%s' \"\$1\" | grep -q '✔  1 recipes, no literal colour' && printf '%s' \"\$1\" | grep -q '◐  2 Toast dismiss by keyboard'" _ "$out11"
 check "the live column shows what the agent does now" sh -c "printf '%s' \"\$1\" | grep -q 'writing play test for Toast dismiss'" _ "$out11"
 check "herdr's sidebar gets the agent's name, task and label" grep -q 'pane report-metadata w2:p7 --source user:squad --agent claude --display-agent Iris · dev --title T-901 · Toast and Alert --state-label working=DEV' "$MOCK_LOG"
 reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
@@ -882,7 +882,7 @@ printf '%s dev-a T-950 DISPATCH round=1\n' "$now_d" >>.team/events.log
 check "a task without acceptance rows does not stop the board" sh -c "COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q '0 / 0 pass'"
 printf '%s dev-b T-951 DISPATCH round=1\n%s dev-b T-951 DONE x\n%s tester T-951 PASS x\n%s rev-gpt T-951 APPROVE x\n' "$now_d" "$now_d" "$now_d" "$now_d" >>.team/events.log
 appr=$(COLUMNS=200 "$squad" board --once --seat=dev-b 2>&1)
-check "an approved task waits for its merge (the merge step is current, not done)" sh -c "printf '%s' \"\$1\" | grep -q '◉ merge' && printf '%s' \"\$1\" | grep -q 'next: merge after the candidate'" _ "$appr"
+check "an approved task waits for its merge (the merge step is current, not done)" sh -c "printf '%s' \"\$1\" | sed 's/━//g' | grep -qF '│ ●●●●●◉' && printf '%s' \"\$1\" | grep -q 'next: merge after the candidate'" _ "$appr"
 printf '\n## D-301 · about T-1\n- Time: t\n- Question: T-1 only\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: final\n' >>.team/DECISIONS.md
 printf '%s dev-a T-12 DISPATCH round=1\n' "$now_d" >>.team/events.log
 printf '%s dev-a T-1-fix DISPATCH round=1\n' "$now_d" >>.team/events.log
