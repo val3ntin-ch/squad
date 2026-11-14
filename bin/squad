@@ -1827,11 +1827,12 @@ board_draw() { # <selected> <tick> <once>
 all_rows() { # <task> <index>: every acceptance row with its result, in less
   local t=$1 tmp rows res report
   [ -n "$t" ] || return 0
+  [ -f "$TEAM_DIR/tasks/$t.md" ] || { board_note "no brief for $t yet"; return 0; }
   tmp=$(mktemp)
   report=$(ls -t "$TEAM_DIR/reports/$t-test.md" "$TEAM_DIR/reports/$t-dev.md" 2>/dev/null | head -1 || true)
   res=""; [ -z "$report" ] || res=$(report_rows "$report")
   awk '/^#+ .*[Aa]cceptance/ { on = 1; next } on && /^#/ { exit } on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; r = a[3]; gsub(/ /, "", n); gsub(/^ +| +$/, "", r); print n "\t" r }' "$TEAM_DIR/tasks/$t.md" 2>/dev/null \
-    | while IFS=$'\t' read -r n txt; do r=$(awk -v n="$n" '$1 == n { print $2; exit }' <<<"$res"); printf '%-12s %3s  %s\n' "${r:-open}" "$n" "$txt"; done >"$tmp"
+    | while IFS=$'\t' read -r n txt; do r=$(awk -v n="$n" '$1 == n { print $2; exit }' <<<"$res"); printf '%-12s %3s  %s\n' "${r:-open}" "$n" "$txt"; done >"$tmp" || true
   { printf '%s · acceptance rows (results from %s)\n\n' "$t" "${report##*/}"; cat "$tmp"; } | less -R || true
   rm -f "$tmp"
 }
