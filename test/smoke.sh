@@ -852,7 +852,7 @@ printf 'STATUS: DONE\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1
 now_d=$(date '+%Y-%m-%d %H:%M:%S')
 printf '%s tester T-901 CONTRACT report=x\n%s dev-c T-901 DISPATCH round=1\n' "$now_d" "$now_d" >>.team/events.log
 agents11='{"result":{"agents":[{"name":"dev-c","agent_status":"working","pane_id":"w2:p7","agent":"claude","terminal_title_stripped":"✳ writing play test for Toast dismiss"},{"name":"lead","agent_status":"idle","pane_id":"w2:p2","agent":"claude"}]}}'
-reset_log
+reset_log; export SQUAD_CLOCK=1800000000
 out11=$(COLUMNS=200 MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c 2>&1)
 check "the board lists the agents by name with their label" sh -c "printf '%s' \"\$1\" | grep -q 'Iris dev-c  DEV' && printf '%s' \"\$1\" | grep -q 'Atlas lead  IDLE'" _ "$out11"
 check "the mission view shows the task, its steps and its proof" sh -c "printf '%s' \"\$1\" | grep -q 'T-901  Toast and Alert' && printf '%s' \"\$1\" | grep -q '◉ dev' && printf '%s' \"\$1\" | grep -q '1 / 2 pass' && printf '%s' \"\$1\" | grep -q '✔  1 recipes, no literal colour' && printf '%s' \"\$1\" | grep -q '◐  2 Toast dismiss by keyboard'" _ "$out11"
@@ -860,9 +860,10 @@ check "the live column shows what the agent does now" sh -c "printf '%s' \"\$1\"
 check "herdr's sidebar gets the agent's name, task and label" grep -q 'pane report-metadata w2:p7 --source user:squad --agent claude --display-agent Iris · dev --title T-901 · Toast and Alert --state-label working=DEV' "$MOCK_LOG"
 reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
 check "the sidebar is not sent again while nothing changed" refuses grep -q 'pane report-metadata w2:p7' "$MOCK_LOG"
-printf '%s lead T-900 MERGE abc\n%s tester T-901 FAIL report=x\n%s lead - DECISION D-200 to-test\n' "$now_d" "$now_d" "$now_d" >>.team/events.log
+unset SQUAD_CLOCK
+printf '%s lead T-900 MERGE abc\n%s tester T-901 FAIL report=x\n%s lead - DECISION D-200 to-test\n%s tester T-902 HEAVY_END rc=1 3m\n' "$now_d" "$now_d" "$now_d" "$now_d" >>.team/events.log
 reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
-check "a merge, a failed test and a new item to test each send one notification" sh -c "grep -q 'notification show ✔ T-900 merged' '$MOCK_LOG' && grep -q 'notification show ✖ T-901 failed in test --body Vera' '$MOCK_LOG' && grep -q 'notification show ◆ new to test: D-200' '$MOCK_LOG'"
+check "a merge, a failed test and a new item to test each send one notification" sh -c "grep -q 'notification show ✔ T-900 merged' '$MOCK_LOG' && grep -q 'notification show ✖ T-901 failed in test --body Vera' '$MOCK_LOG' && grep -q 'notification show ◆ new to test: D-200' '$MOCK_LOG' && grep -q 'notification show ✖ test run failed · T-902' '$MOCK_LOG'"
 reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
 check "notifications are not sent twice" refuses grep -q 'notification show' "$MOCK_LOG"
 printf 'notify off\n' >>.team/team.conf; printf '%s lead T-901 MERGE abc\n' "$now_d" >>.team/events.log
@@ -884,6 +885,9 @@ appr=$(COLUMNS=200 "$squad" board --once --seat=dev-b 2>&1)
 check "an approved task waits for its merge (the merge step is current, not done)" sh -c "printf '%s' \"\$1\" | grep -q '◉ merge' && printf '%s' \"\$1\" | grep -q 'next: merge after the candidate'" _ "$appr"
 printf '\n## D-301 · about T-1\n- Time: t\n- Question: T-1 only\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: final\n' >>.team/DECISIONS.md
 printf '%s dev-a T-12 DISPATCH round=1\n' "$now_d" >>.team/events.log
+printf '%s dev-a T-1-fix DISPATCH round=1\n' "$now_d" >>.team/events.log
+check "decisions match the literal task id (T-1 is not T-1-fix)" sh -c "! COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'D-301'"
+check "the lock place is printed once" sh -c "mkdir -p '$HV/queue'; : >'$HV/queue/000000000001-1-x@other'; : >'$HV/queue/000000000002-'\$\$'-dev-a@proj4'; COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'lock queue     #2 '; rc=\$?; rm -f '$HV'/queue/*; exit \$rc"
 check "decisions match the exact task id (T-1 is not T-12)" sh -c "! COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'D-301'"
 narrow=$(COLUMNS=80 "$squad" board --once --seat=dev-c 2>&1)
 wide=0; while IFS= read -r ln; do [ "$(LC_ALL=en_US.UTF-8 bash -c 'printf %s "${#1}"' _ "$ln")" -le 80 ] || wide=1; done <<<"$narrow"
