@@ -118,6 +118,7 @@ setup pnpm install --frozen-lockfile
 - **heavy_timeout** is how many minutes one heavy run may hold the lock (one lock for the whole machine, in `~/.cache/squad/heavy`: teams of several repositories share it); **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/.runs/<seat>`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
 - **heavy_silent_minutes** (5): a heavy run whose output and CPU time do not move for this long is stopped as hung (`HUNG`), as CI systems stop a step with no output; the hard limit stays. **idle_minutes** (5): a dev with no task for this long is told to the lead once.
 - **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
+- **name &lt;seat&gt; &lt;Name&gt; &lt;colour&gt;**: the agent's name and colour on the board, in herdr's sidebar and in every message (`squad init` and `update-conf` propose Atlas, Nova, Rook, Iris, Vera, Sol, Owl; colours: mauve blue teal peach green yellow pink red sky lavender). **notify off** stops herdr's notifications (a merge, a failed test, a new item to test, a seat that needs you).
 - **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by V!`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
@@ -140,7 +141,8 @@ Built-in presets:
 
 | Tab | What it shows |
 |---|---|
-| `team` | the lead and the devs (by layout), the live board below |
+| `team` | the board: every agent by name with a live label, and the selected agent's task (steps, proof, live work, timeline). ↑↓ picks an agent, `p` jumps to its pane, `b` `c` `r` `d` open the brief, contract, report and diff, `f` gives feedback |
+| `seats` | the lead and the devs' own panes (by layout) |
 | `review` | the tester and the reviewer (talk layout; mission puts them in `team`, focus adds a `devs` tab) |
 | `changes` | lazygit on the integration worktree (when lazygit is installed) |
 | `observer` | the observer, with the watcher that starts its passes below |

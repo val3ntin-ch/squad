@@ -1,5 +1,5 @@
 # 011 · Squad Deck: named agents and five clear tabs in herdr
-Status: Draft — waiting for approval
+Status: Approved (V!, 14 Nov 2026)
 Size: L — split into 011a, 011b, 011c (one PR each, in this order)
 
 ## Goal
@@ -34,13 +34,13 @@ Size: M
 - Out: the other four tabs (011b, 011c).
 
 ### Done when
-- [ ] team.conf `name` lines: names and colours show in the team tab, herdr's sidebar and every
+- [x] team.conf `name` lines: names and colours show in the team tab, herdr's sidebar and every
       message squad sends; a team without them gets the proposed names from update-conf.
-- [ ] herdr's sidebar shows each seat as "<Name> · <role>" with a live state label (DEV, LOCK #2,
+- [x] herdr's sidebar shows each seat as "<Name> · <role>" with a live state label (DEV, LOCK #2,
       TEST 11m, REVIEW, 2 OPEN); a seat that leaves its task loses the label.
-- [ ] A herdr notification (title, body, sound) arrives once for each merge, failed run, new
+- [x] A herdr notification (title, body, sound) arrives once for each merge, failed run, new
       "to test" item and seat that needs V!; `notify off` in team.conf turns them off.
-- [ ] The team tab matches the approved mockup: ↑↓ picks an agent, the mission view shows its task
+- [x] The team tab matches the approved mockup: ↑↓ picks an agent, the mission view shows its task
       (steps with times, acceptance rows ✔ ◐ ○ from contract and newest report, live activity from
       herdr's title, files changed / last commit / heavy runs / lock place from git and the lock,
       the next blocker, the task's timeline and decisions), and keys b c r d t f work.

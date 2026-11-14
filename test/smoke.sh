@@ -81,12 +81,12 @@ export HERDR_ENV=1
 reset_log
 check "up starts the default team" "$squad" up
 check "six agents started" test "$(grep -c '^herdr agent start' "$MOCK_LOG")" = 6
-check "lead runs codex with the Sol model" log_has "agent start lead --kind codex --pane w2:p1 --timeout 90000 -- -m gpt-6.1-sol --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git -c developer_instructions="
+check "lead runs codex with the Sol model" log_has "agent start lead --kind codex --pane w2:p2 --timeout 90000 -- -m gpt-6.1-sol --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git -c developer_instructions="
 check "codex seats get their role as developer_instructions" grep -qE '^herdr agent start lead .* -c developer_instructions="# You are seat `lead`' "$MOCK_LOG"
 check "codex seats run in workspace-write" grep -qE '^herdr agent start lead .* -s workspace-write sock=' "$MOCK_LOG"
 check "claude seats get write access to .team" log_has "agent start dev-a --kind claude --pane w2:p3 --timeout 90000 -- --model claude-opus-5-5 --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git --append-system-prompt-file $tmp/proj/.team/seats/dev-a.md"
 check "dev-a runs in its own worktree" log_has "--cwd $tmp/proj-team/dev-a"
-check "reviewers share the integration worktree" test "$(grep -c "pane split.*--cwd $tmp/proj-team/integration" "$MOCK_LOG")" = 2
+check "reviewers share the integration worktree" test "$(grep -c "pane split.*--cwd $tmp/proj-team/integration" "$MOCK_LOG")" = 1
 check "no typed briefing for seats that load their role" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 1
 check "only the lead gets a start line" log_has "agent prompt lead Start: read GOAL.md (ask me for the goal only if it is empty), write the spec, then run the team until everything is green."
 check "every seat is marked briefed" sh -c "for s in lead dev-a dev-b rev-sol rev-claude tester; do test -f .team/.briefed/\$s || exit 1; done"
@@ -148,7 +148,7 @@ layout_up() { # <width> -> fresh team workspace laid out at that width
 layout_up 160
 talk_out=$(MOCK_WIDTH=160 "$squad" up 2>/dev/null || true)
 check "talk layout at 160 columns" grep -qF "layout: talk" <<<"$talk_out"
-check "talk: the strip runs squad watch" grep -qF "$squad_abs watch" "$MOCK_LOG"
+check "the team tab runs the board, the agents' panes go to a seats tab" sh -c "grep -qF 'pane run w2:p1 $squad_abs board' '$MOCK_LOG' && grep -q 'tab create --workspace w2 --label seats' '$MOCK_LOG'"
 check "talk: reviewers and tester get a review tab" grep -q 'tab create --workspace w2 --label review' "$MOCK_LOG"
 check "talk: lazygit gets a changes tab" grep -q 'tab create --workspace w2 --label changes' "$MOCK_LOG"
 layout_up 240
@@ -828,6 +828,53 @@ printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nsea
 "$squad" update-conf >/dev/null
 check "a seat line with a comment gets its flag before the comment" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never  # the GPT reviewer' .team/team.conf && '$squad' status | grep -q 'rev-x .*-a never'"
 cd "$tmp/proj4"
+# ---- 011a · names, herdr sidebar, notifications, the team board -------------------------------
+cd "$tmp/proj4"
+check "init gives every seat a name and a colour" sh -c "grep -qx 'name lead Atlas mauve' .team/team.conf && grep -qx 'name dev-c Iris peach' .team/team.conf && grep -qx 'name rev-gpt Sol yellow' .team/team.conf"
+cp .team/team.conf "$tmp/conf.k11"; printf 'name dev-a Nova purple\n' >>.team/team.conf
+check "a colour outside the palette is refused" refuses "$squad" status
+cp "$tmp/conf.k11" .team/team.conf
+cat >.team/TASKS.md <<'TASKS'
+| ID | Title | Owner | Status | Depends on |
+|---|---|---|---|---|
+| T-901 | Toast and Alert | dev-c | dev | - |
+| T-900 | Old one | dev-a | merged | - |
+TASKS
+cat >.team/tasks/T-901.md <<'BRIEF'
+# T-901
+## Acceptance
+| # | Requirement | How |
+|---|---|---|
+| 1 | recipes, no literal colour | x |
+| 2 | Toast dismiss by keyboard | x |
+BRIEF
+printf 'STATUS: DONE\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n' >.team/reports/T-901-dev.md
+now_d=$(date '+%Y-%m-%d %H:%M:%S')
+printf '%s tester T-901 CONTRACT report=x\n%s dev-c T-901 DISPATCH round=1\n' "$now_d" "$now_d" >>.team/events.log
+agents11='{"result":{"agents":[{"name":"dev-c","agent_status":"working","pane_id":"w2:p7","agent":"claude","terminal_title_stripped":"✳ writing play test for Toast dismiss"},{"name":"lead","agent_status":"idle","pane_id":"w2:p2","agent":"claude"}]}}'
+reset_log
+out11=$(COLUMNS=200 MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c 2>&1)
+check "the board lists the agents by name with their label" sh -c "printf '%s' \"\$1\" | grep -q 'Iris dev-c  DEV' && printf '%s' \"\$1\" | grep -q 'Atlas lead  IDLE'" _ "$out11"
+check "the mission view shows the task, its steps and its proof" sh -c "printf '%s' \"\$1\" | grep -q 'T-901  Toast and Alert' && printf '%s' \"\$1\" | grep -q '◉ dev' && printf '%s' \"\$1\" | grep -q '1 / 2 pass' && printf '%s' \"\$1\" | grep -q '✔  1 recipes, no literal colour' && printf '%s' \"\$1\" | grep -q '◐  2 Toast dismiss by keyboard'" _ "$out11"
+check "the live column shows what the agent does now" sh -c "printf '%s' \"\$1\" | grep -q 'writing play test for Toast dismiss'" _ "$out11"
+check "herdr's sidebar gets the agent's name, task and label" grep -q 'pane report-metadata w2:p7 --source user:squad --agent claude --display-agent Iris · dev --title T-901 · Toast and Alert --state-label working=DEV' "$MOCK_LOG"
+reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
+check "the sidebar is not sent again while nothing changed" refuses grep -q 'pane report-metadata w2:p7' "$MOCK_LOG"
+printf '%s lead T-900 MERGE abc\n%s tester T-901 FAIL report=x\n%s lead - DECISION D-200 to-test\n' "$now_d" "$now_d" "$now_d" >>.team/events.log
+reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
+check "a merge, a failed test and a new item to test each send one notification" sh -c "grep -q 'notification show ✔ T-900 merged' '$MOCK_LOG' && grep -q 'notification show ✖ T-901 failed in test --body Vera' '$MOCK_LOG' && grep -q 'notification show ◆ new to test: D-200' '$MOCK_LOG'"
+reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
+check "notifications are not sent twice" refuses grep -q 'notification show' "$MOCK_LOG"
+printf 'notify off\n' >>.team/team.conf; printf '%s lead T-901 MERGE abc\n' "$now_d" >>.team/events.log
+reset_log; MOCK_AGENTS="$agents11" "$squad" board --once --seat=dev-c >/dev/null 2>&1
+check "notify off sends none" refuses grep -q 'notification show' "$MOCK_LOG"
+cp "$tmp/conf.k11" .team/team.conf
+reset_log
+ws11='{"result":{"workspaces":[{"workspace_id":"w2","label":"proj4 team"}]}}'
+panes11='{"result":{"panes":[{"pane_id":"w2:p2","label":"lead"},{"pane_id":"w2:p3","label":"report"}]}}'
+MOCK_WS="$ws11" MOCK_PANES="$panes11" "$squad" up >/dev/null 2>&1 || true
+check "a running team without a board gets a board tab" sh -c "grep -q 'tab create --workspace w2 --label board' '$MOCK_LOG' && grep -qF '$squad_abs board' '$MOCK_LOG'"
+
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
