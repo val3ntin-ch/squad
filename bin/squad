@@ -1875,7 +1875,7 @@ mission_view() { # <index> <width> <tick>
   case "$cur" in brief|con) nx="contract → dev" ;; dev) nx="DONE → $tester tests" ;; test) nx="$tester tests" ;; rev) nx="$reviewer reviews" ;; mrg) nx="merge after the candidate" ;; esac
   [ -z "$nx" ] || T+=("$(fgc ov)next $R  $(fgc s2)○$R $(fgc sub)$nx$R")
   T+=("")
-  local kb; kb() { printf '%s▕%s%s%s%s %s%s▏%s' "$(fgc s1)" "$R$(fgc blue)" "$BLD" "$1" "$R$(fgc text)" "$2" "$(fgc s1)" "$R"; }
+  kb() { printf '%s▕%s%s%s%s %s%s▏%s' "$(fgc s1)" "$R$(fgc blue)" "$BLD" "$1" "$R$(fgc text)" "$2" "$(fgc s1)" "$R"; }
   T+=("$(kb b brief) $(kb c contract)")
   T+=("$(kb r report) $(kb d diff)")
   # compose the three columns; on a live board they stretch the panel to the key bar
@@ -1961,7 +1961,7 @@ board_draw() { # <selected> <tick> <once>
       printf '\033[%d;%dH%s' $((i + 4)) $((LW + 4)) "${BRT[$i]:-}"
     done
   fi
-  local kc kk out=" "
+  local out=" "
   kc() { printf '%s%s%s %s %s %s%s%s  ' "$(bgc sub)" "$(fgc crust)" "$BLD" "$1" "$R" "$(fgc sub)" "$2" "$R"; }
   out="$out$(kc ↑↓ agent)$(kc ⏎ 'all rows')$(kc b brief)$(kc c contract)$(kc r report)$(kc d diff)$(kc t 'to test')$(kc f feedback)$(kc p pane)$(kc q quit)"
   printf '\033[%d;1H %s' $((BH - 1)) "$(fgc s0)$(rep_char $((BW - 2)) ─)$R"
