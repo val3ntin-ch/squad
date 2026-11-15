@@ -1750,7 +1750,7 @@ mission_view() { # <index> <width> <tick>
     local segc=s2; { [ "$kk" -lt $((ci - 1)) ] || [ "$ci" = 6 ]; } && segc=green; [ "$kk" = "$ci" ] && segc=$hc
     [ "$kk" = $((ci - 1)) ] && segc=green
     if [ "$k" = mrg ]; then nodes="$nodes$(fgc "$c")$g$R"; else nodes="$nodes$(fgc "$c")$g$R$(fgc "$segc")$(rep_char $((sw - 1)) ─)$R"; fi
-    if [ "$kk" = "$ci" ]; then labels="$labels$BLD$(fgc "$c")$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$smin${who:+ · $who}") $R"
+    if [ "$kk" = "$ci" ]; then labels="$labels$BLD$(fgc "$c")$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$smin${who:+ · ${who%% →*}}") $R"
     elif [ "$kk" -lt "$ci" ]; then labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "${t:-—}${who:+ · $who}") $R"
     else labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$who") $R"; fi
     kk=$((kk + 1))
