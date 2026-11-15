@@ -1461,8 +1461,8 @@ palette_init() {
   local c rgb
   for c in mauve:203,166,247 blue:137,180,250 teal:148,226,213 peach:250,179,135 green:166,227,161 \
            yellow:249,226,175 pink:245,194,231 red:243,139,168 sky:137,220,235 lavender:180,190,254 \
-           text:205,214,244 sub:166,173,200 ov:127,132,156 s2:88,91,112 s1:69,71,90 s0:49,50,68 tint:40,40,58 crust:17,17,27 mantle:24,24,37; do
-    rgb=${c#*:}; c=${c%%:*}
+           text:205,214,244 sub:166,173,200 ov:127,132,156 s2:88,91,112 s1:69,71,90 s0:49,50,68 head:35,35,54 base:30,30,46 crust:17,17,27 mantle:24,24,37; do
+    rgb=${c#*:}; c=${c%%:*}; eval "RGB_$c=$rgb"
     if [ "$BC" = 1 ]; then
       eval "F_$c=\$'\\033[38;2;${rgb//,/;}m'"; eval "K_$c=\$'\\033[48;2;${rgb//,/;}m'"
     else
@@ -1471,6 +1471,13 @@ palette_init() {
   done
   if [ "$BC" = 1 ]; then R=$'\033[0m'; BLD=$'\033[1m'; else R=""; BLD=""; fi
 }
+mixc() { # <colour> <percent> <fg|bg>: the colour blended over the base, as in the mockup's rgba()
+  [ "$BC" = 1 ] || return 0
+  local rgb r g b; eval "rgb=\$RGB_$1"; IFS=, read -r r g b <<<"$rgb"
+  r=$(( 30 + (r - 30) * $2 / 100 )); g=$(( 30 + (g - 30) * $2 / 100 )); b=$(( 46 + (b - 46) * $2 / 100 ))
+  if [ "$3" = bg ]; then printf '\033[48;2;%d;%d;%dm' "$r" "$g" "$b"; else printf '\033[38;2;%d;%d;%dm' "$r" "$g" "$b"; fi
+}
+onbg() { local x=$2; [ -n "$R" ] && x=${x//"$R"/"$R$1"}; printf '%s%s' "$1" "$x"; }   # <bg> <coloured>: keep the background through each reset
 fgc() { eval "printf '%s' \"\$F_$1\""; }
 bgc() { eval "printf '%s' \"\$K_$1\""; }
 
@@ -1672,8 +1679,8 @@ board_render() { # <selected index> <tick> -> BL[] (left) and BRT[] (right)
     l2="    $(fgc text)$(seat_sub "$i")$R"
     if [ "$i" = "$sel" ]; then
       BL[3 * i]="$(fgc "$col")╭$(rep_char $((LW - 2)) ─)╮$R"
-      BL[3 * i + 1]="$(fgc "$col")│$R $(vcut "$cw" "$l1") $(fgc "$col")│$R"
-      BL[3 * i + 2]="$(fgc "$col")│$R $(vcut "$cw" "$l2") $(fgc "$col")│$R"
+      BL[3 * i + 1]="$(fgc "$col")│$R$(bgc mantle) $(onbg "$(bgc mantle)" "$(vcut "$cw" "$l1")") $R$(fgc "$col")│$R"
+      BL[3 * i + 2]="$(fgc "$col")│$R$(bgc mantle) $(onbg "$(bgc mantle)" "$(vcut "$cw" "$l2")") $R$(fgc "$col")│$R"
       BL[3 * i + 3]="$(fgc "$col")╰$(rep_char $((LW - 2)) ─)╯$R"
     else
       BL[3 * i + 1]="  $(vcut "$cw" "$l1")"; BL[3 * i + 2]="  $(vcut "$cw" "$l2")"
@@ -1683,7 +1690,8 @@ board_render() { # <selected index> <tick> -> BL[] (left) and BRT[] (right)
   return 0
 }
 
-fr() { BRT+=("$(fgc s1)│$R $(vcut "$1" "$2") $(fgc s1)│$R"); }   # <inner width> <content>: one framed row
+fr() { BRT+=("$(fgc s1)│$R${3:-} $(onbg "${3:-}" "$(vcut "$1" "$2")") $R$(fgc s1)│$R"); }   # <inner width> <content> [background]: one framed row
+sepl() { BRT+=("$(fgc s1)├$(fgc s0)$1$(fgc s1)┤$R"); }   # <inner line>: a divider, dim inside the frame
 
 mission_view() { # <index> <width> <tick>
   local i=$1 W=$2 tick=$3 seat=${S_NAME[$1]} col task title wt sha br rnd now mins typ IW C1 C2 C3
@@ -1711,11 +1719,13 @@ mission_view() { # <index> <width> <tick>
   done
   if [ "${S_ROLE[$i]}" = dev ] || [ -z "$dev_seat" ]; then dev_disp=$(seat_disp "$i"); dev_seat=$seat; hi=$i; hc=$col; fi   # a selected developer is the developer
   wt=$(seat_cwd "$(seat_index "$dev_seat")")
-  fr "$IW" ""
-  fr "$IW" "$(lr "$IW" "$(badge "$hi")  $BLD$(fgc "$hc")$task$R $BLD$(fgc text)$(pad_trim $((IW - ${#task} - 22)) "$title")$R" "$(fgc ov)on this task$R")"
-  fr "$IW" "$(lr "$IW" "     $(fgc "$hc")$dev_disp$R$(fgc sub) · $dev_seat · round ${rnd:-1} · branch $R$(fgc blue)$br$R$(fgc sub) @ $sha$R" "$BLD$(fgc "$hc")$mins$R")"
-  fr "$IW" "$(lr "$IW" "" "$(fgc ov)typical dev step $R$BLD$(fgc text)$typ$R")"
-  BRT+=("$(fgc s1)├$(rep_char $((W - 2)) ─)┤$R")
+  local HB; HB=$(bgc head)
+  fr "$IW" "" "$HB"
+  fr "$IW" "$(lr "$IW" "$(badge "$hi")  $BLD$(fgc "$hc")$task$R $BLD$(fgc text)$(pad_trim $((IW - ${#task} - 22)) "$title")$R" "$(fgc ov)on this task$R")" "$HB"
+  fr "$IW" "$(lr "$IW" "     $(fgc "$hc")$dev_disp$R$(fgc sub) · $dev_seat · round ${rnd:-1} · branch $R$(fgc blue)$br$R$(fgc sub) @ $sha$R" "$BLD$(fgc "$hc")$mins$R")" "$HB"
+  fr "$IW" "$(lr "$IW" "" "$(fgc ov)typical dev step $R$BLD$(fgc text)$typ$R")" "$HB"
+  fr "$IW" "" "$HB"
+  sepl "$(rep_char $((W - 2)) ─)"
   # step track
   local evs st_brief st_con st_dev st_test st_rev st_mrg cur="" k t c g lab who sw ci=0 kk=0 nodes="" labels="" times=""
   evs=$(ev_lines "$task")
@@ -1756,7 +1766,7 @@ mission_view() { # <index> <width> <tick>
     kk=$((kk + 1))
   done
   fr "$IW" ""; fr "$IW" "$nodes"; fr "$IW" "$labels"; fr "$IW" "$times"; fr "$IW" ""
-  BRT+=("$(fgc s1)├$(rep_char $((C1 + 2)) ─)┬$(rep_char $((C2 + 2)) ─)┬$(rep_char $((C3 + 2)) ─)┤$R")
+  sepl "$(rep_char $((C1 + 2)) ─)┬$(rep_char $((C2 + 2)) ─)┬$(rep_char $((C3 + 2)) ─)"
   local li; li=$(seat_index "$dev_seat")   # live, proof and timeline follow the developer of the task
   # column 1: proof
   local -a A=() L=() T=()
@@ -1788,7 +1798,7 @@ mission_view() { # <index> <width> <tick>
     [ "$idx" -lt 2 ] || [ "$idx" -ge "$start" ] || continue
     case "${RR[$idx]}" in pass) g="$(fgc green)✔$R"; c=text ;; fail) g="$(fgc red)✖$R"; c=red ;; *) g="$(fgc s2)○$R"; c=sub ;; esac
     if [ "$idx" = "$inwork" ]; then
-      A+=("$(bgc tint)$(fgc "$hc")◐  $(printf '%3s' "${RN[$idx]}") $BLD$(pad $((C1 - 9)) "${RT[$idx]}") $R")
+      A+=("$(mixc yellow 7 bg)$(fgc "$hc")◐  $(printf '%3s' "${RN[$idx]}") $BLD$(pad $((C1 - 9)) "${RT[$idx]}") $R")
     else A+=("$g  $(fgc sub)$(printf '%3s' "${RN[$idx]}")$R $(fgc "$c")$(pad_trim $((C1 - 8)) "${RT[$idx]}")$R"); fi
     shown=$((shown + 1))
   done
@@ -1807,18 +1817,18 @@ mission_view() { # <index> <width> <tick>
   if [ "$st" = working ]; then L+=("$(lr "$C2" "$(fgc ov)LIVE · NOW$R" "$(fgc green)●$R $BLD$(fgc green)WORKING$R")")
   else L+=("$(lr "$C2" "$(fgc ov)LIVE · NOW$R" "$(fgc s2)○$R $(fgc sub)$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')$R")"); fi
   L+=("")
-  local l1t l2t="" bc=$hc; [ "$st" = working ] || bc=s1
+  local l1t l2t="" BXF BXB; BXF=$(mixc "$hc" 35 fg); BXB=$(mixc "$hc" 6 bg)   # the mockup: border at 35 %, fill at 6 % of the colour
   l1t="$spin $lt"
   if [ "${#l1t}" -gt "$bw" ]; then   # wrap at a space
     local cutp=$bw; while [ "$cutp" -gt $((bw / 2)) ] && [ "${l1t:$cutp:1}" != " " ]; do cutp=$((cutp - 1)); done
     [ "${l1t:$cutp:1}" = " " ] || cutp=$bw
     l2t=$(pad_trim "$bw" "  ${l1t:$cutp}"); l2t=${l2t/#   /  }; l1t=${l1t:0:$cutp}
   fi
-  L+=("$(fgc "$bc")╭$(rep_char $((C2 - 2)) ─)╮$R")
-  L+=("$(fgc "$bc")│$R$(bgc tint) $BLD$(fgc "$([ "$st" = working ] && echo "$hc" || echo sub)")$(pad "$bw" "$l1t")$(bgc tint) $R$(fgc "$bc")│$R")
-  [ -z "$l2t" ] || L+=("$(fgc "$bc")│$R$(bgc tint) $BLD$(fgc "$hc")$(pad "$bw" "$l2t")$(bgc tint) $R$(fgc "$bc")│$R")
-  L+=("$(fgc "$bc")│$R$(bgc tint) $(vcut "$bw" "$(lr "$bw" "$(bgc tint)$(fgc sub)activity 30 min" "$(fgc "$hc")$(sp=$(spark "$dev_seat"); n2=$((bw - 17)); [ "$n2" -lt 15 ] && sp=${sp:$((15 - n2))}; printf '%s' "$sp")")")$(bgc tint) $R$(fgc "$bc")│$R")
-  L+=("$(fgc "$bc")╰$(rep_char $((C2 - 2)) ─)╯$R")
+  L+=("${BXF}╭$(rep_char $((C2 - 2)) ─)╮$R")
+  L+=("${BXF}│$R${BXB} $BLD$(fgc "$hc")$(pad "$bw" "$l1t")${BXB} $R${BXF}│$R")
+  [ -z "$l2t" ] || L+=("${BXF}│$R${BXB} $BLD$(fgc "$hc")$(pad "$bw" "$l2t")${BXB} $R${BXF}│$R")
+  L+=("${BXF}│$R${BXB} $(vcut "$bw" "$(lr "$bw" "${BXB}$(fgc sub)activity 30 min" "$(fgc "$hc")$(sp=$(spark "$dev_seat"); n2=$((bw - 17)); [ "$n2" -lt 15 ] && sp=${sp:$((15 - n2))}; printf '%s' "$sp")")")${BXB} $R${BXF}│$R")
+  L+=("${BXF}╰$(rep_char $((C2 - 2)) ─)╯$R")
   L+=("$(lr "$C2" "$(fgc sub)files changed$R" "$BLD$(fgc text)$files$R$(fgc sub)${flist:+ $flist}$R")")
   L+=("$(lr "$C2" "$(fgc sub)last commit$R" "$(fgc text)$last$R")")
   L+=("$(lr "$C2" "$(fgc sub)heavy runs$R" "$(fgc green)$okr ✔$R$(fgc sub) · $R$(fgc "$([ "$badr" -gt 0 ] && echo red || echo sub)")$badr ✖$R")")
@@ -1828,8 +1838,8 @@ mission_view() { # <index> <width> <tick>
   [ -n "${SC_TROUBLE[$li]}" ] && { blk1=$(trouble_hint "${SC_TROUBLE[$li]}" "$dev_seat"); blk2=""; }
   if [ -n "$blk1" ]; then
     L+=("")
-    L+=("$(fgc yellow)▌$R$(bgc tint)$(fgc yellow)▲ $(fgc text)$(pad $((C2 - 3)) "$blk1")$R")
-    [ -z "$blk2" ] || L+=("$(fgc yellow)▌$R$(bgc tint)$(fgc sub)  $(pad $((C2 - 3)) "$blk2")$R")
+    L+=("$(fgc yellow)▌$R$(mixc yellow 7 bg)$(fgc yellow)▲ $(fgc text)$(pad $((C2 - 3)) "$blk1")$R")
+    [ -z "$blk2" ] || L+=("$(fgc yellow)▌$R$(mixc yellow 7 bg)$(fgc sub)  $(pad $((C2 - 3)) "$blk2")$R")
   fi
   # column 3: timeline
   T+=("$(lr "$C3" "$(fgc ov)TIMELINE$R" "$(fgc text)TODAY$R")")
@@ -1866,7 +1876,7 @@ mission_view() { # <index> <width> <tick>
   [ "${#L[@]}" -le "$rowsn" ] || rowsn=${#L[@]}; [ "${#T[@]}" -le "$rowsn" ] || rowsn=${#T[@]}
   [ "${BOARD_ROWS:-0}" -le $(( ${#BRT[@]} + rowsn + 3 )) ] || rowsn=$(( BOARD_ROWS - ${#BRT[@]} - 3 ))
   for ((r1 = 0; r1 < rowsn; r1++)); do
-    BRT+=("$(fgc s1)│$R $(vcut "$C1" "${A[$r1]:-}") $(fgc s1)│$R $(vcut "$C2" "${L[$r1]:-}") $(fgc s1)│$R $(vcut "$C3" "${T[$r1]:-}") $(fgc s1)│$R")
+    BRT+=("$(fgc s1)│$R $(vcut "$C1" "${A[$r1]:-}") $(fgc s0)│$R $(vcut "$C2" "${L[$r1]:-}") $(fgc s0)│$R $(vcut "$C3" "${T[$r1]:-}") $(fgc s1)│$R")
   done
   # decisions on this task, and Owl's findings
   local decs finds
@@ -1877,8 +1887,8 @@ mission_view() { # <index> <width> <tick>
       printf "%s%s%s%s ", B, X, $1, R
       if (s ~ /^to test/) printf "%s◆ to test by you%s %s%s%s   ", Y, R, S, see, R; else if (s ~ /^final/) printf "%sfinal%s   ", G, R; else printf "%s%s%s   ", S, s, R }' || true)
   finds=$(grep -c -- "$task" "$TEAM_DIR/observer/NOW.md" 2>/dev/null || true)
-  BRT+=("$(fgc s1)├$(rep_char $((C1 + 2)) ─)┴$(rep_char $((C2 + 2)) ─)┴$(rep_char $((C3 + 2)) ─)┤$R")
-  fr "$IW" "$(lr "$IW" "$(fgc sub)decisions on this task$R   ${decs:-$(fgc sub)none$R}" "$(fgc sub)findings from Owl: $R$(fgc text)$([ "${finds:-0}" -gt 0 ] && echo "$finds open" || echo none)$R")"
+  sepl "$(rep_char $((C1 + 2)) ─)┴$(rep_char $((C2 + 2)) ─)┴$(rep_char $((C3 + 2)) ─)"
+  fr "$IW" "$(lr "$IW" "$(fgc sub)decisions on this task$R   ${decs:-$(fgc sub)none$R}" "$(fgc sub)findings from Owl: $R$(fgc text)$([ "${finds:-0}" -gt 0 ] && echo "$finds open" || echo none)$R")" "$(bgc mantle)"
   BRT+=("$(fgc s1)╰$(rep_char $((W - 2)) ─)╯$R")
   return 0
 }
@@ -1944,7 +1954,7 @@ board_draw() { # <selected> <tick> <once>
     done
   fi
   local kc kk out=" "
-  kc() { printf '%s%s %s %s %s%s%s  ' "$(bgc s1)" "$(fgc text)" "$1" "$R" "$(fgc sub)" "$2" "$R"; }
+  kc() { printf '%s%s%s %s %s %s%s%s  ' "$(bgc sub)" "$(fgc crust)" "$BLD" "$1" "$R" "$(fgc sub)" "$2" "$R"; }
   out="$out$(kc ↑↓ agent)$(kc ⏎ 'all rows')$(kc b brief)$(kc c contract)$(kc r report)$(kc d diff)$(kc t 'to test')$(kc f feedback)$(kc p pane)$(kc q quit)"
   printf '\033[%d;1H %s' $((BH - 1)) "$(fgc s0)$(rep_char $((BW - 2)) ─)$R"
   printf '\033[%d;1H%s' "$BH" "$out"
