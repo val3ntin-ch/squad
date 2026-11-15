@@ -1860,9 +1860,10 @@ mission_view() { # <index> <width> <tick>
   local kb; kb() { printf '%s %s%s%s%s %s %s' "$(bgc s0)" "$(fgc blue)" "$BLD" "$1" "$R$(bgc s0)$(fgc sub)" "$2" "$R"; }
   T+=("$(kb b brief) $(kb c contract)")
   T+=("$(kb r report) $(kb d diff)")
-  # compose the three columns
+  # compose the three columns; on a live board they stretch the panel to the key bar
   local rowsn=${#A[@]} r1
   [ "${#L[@]}" -le "$rowsn" ] || rowsn=${#L[@]}; [ "${#T[@]}" -le "$rowsn" ] || rowsn=${#T[@]}
+  [ "${BOARD_ROWS:-0}" -le $(( ${#BRT[@]} + rowsn + 3 )) ] || rowsn=$(( BOARD_ROWS - ${#BRT[@]} - 3 ))
   for ((r1 = 0; r1 < rowsn; r1++)); do
     BRT+=("$(fgc s1)│$R $(vcut "$C1" "${A[$r1]:-}") $(fgc s1)│$R $(vcut "$C2" "${L[$r1]:-}") $(fgc s1)│$R $(vcut "$C3" "${T[$r1]:-}") $(fgc s1)│$R")
   done
@@ -1920,6 +1921,7 @@ board_header() {
 
 board_draw() { # <selected> <tick> <once>
   local i rows LW=34; [ "$BW" -lt 150 ] || LW=40
+  BOARD_ROWS=0; [ "$3" = 1 ] || [ "$BW" -lt 110 ] || BOARD_ROWS=$((BH - 5))   # rows 4 to BH-2: header, rule and gap above, rule and keys below
   board_render "$1" "$2"
   if [ "$3" = 1 ]; then
     board_header; printf '%s\n' "${BL[@]}"; printf '%s\n' "${BRT[@]}"; return
