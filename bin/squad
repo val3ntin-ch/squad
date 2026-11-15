@@ -1461,7 +1461,7 @@ palette_init() {
   local c rgb
   for c in mauve:203,166,247 blue:137,180,250 teal:148,226,213 peach:250,179,135 green:166,227,161 \
            yellow:249,226,175 pink:245,194,231 red:243,139,168 sky:137,220,235 lavender:180,190,254 \
-           text:205,214,244 sub:166,173,200 ov:127,132,156 s2:88,91,112 s1:69,71,90 s0:49,50,68 crust:17,17,27 mantle:24,24,37; do
+           text:205,214,244 sub:166,173,200 ov:127,132,156 s2:88,91,112 s1:69,71,90 s0:49,50,68 tint:40,40,58 crust:17,17,27 mantle:24,24,37; do
     rgb=${c#*:}; c=${c%%:*}
     if [ "$BC" = 1 ]; then
       eval "F_$c=\$'\\033[38;2;${rgb//,/;}m'"; eval "K_$c=\$'\\033[48;2;${rgb//,/;}m'"
@@ -1750,13 +1750,14 @@ mission_view() { # <index> <width> <tick>
     local segc=s2; { [ "$kk" -lt $((ci - 1)) ] || [ "$ci" = 6 ]; } && segc=green; [ "$kk" = "$ci" ] && segc=$hc
     [ "$kk" = $((ci - 1)) ] && segc=green
     if [ "$k" = mrg ]; then nodes="$nodes$(fgc "$c")$g$R"; else nodes="$nodes$(fgc "$c")$g$R$(fgc "$segc")$(rep_char $((sw - 1)) ─)$R"; fi
-    if [ "$kk" = "$ci" ]; then labels="$labels$BLD$(fgc "$c")$(pad "$sw" "$lab")$R"; times="$times$(fgc "$c")$(pad $((sw - 1)) "$smin${who:+ · $who}") $R"
-    elif [ "$kk" -lt "$ci" ]; then labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc text)$(pad $((sw - 1)) "${t:-—}${who:+ · $who}") $R"
-    else labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc text)$(pad $((sw - 1)) "$who") $R"; fi
+    if [ "$kk" = "$ci" ]; then labels="$labels$BLD$(fgc "$c")$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$smin${who:+ · $who}") $R"
+    elif [ "$kk" -lt "$ci" ]; then labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "${t:-—}${who:+ · $who}") $R"
+    else labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$who") $R"; fi
     kk=$((kk + 1))
   done
   fr "$IW" ""; fr "$IW" "$nodes"; fr "$IW" "$labels"; fr "$IW" "$times"; fr "$IW" ""
   BRT+=("$(fgc s1)├$(rep_char $((C1 + 2)) ─)┬$(rep_char $((C2 + 2)) ─)┬$(rep_char $((C3 + 2)) ─)┤$R")
+  local li; li=$(seat_index "$dev_seat")   # live, proof and timeline follow the developer of the task
   # column 1: proof
   local -a A=() L=() T=()
   local rows res report nrow txt r passn=0 total=0 inwork="" firstopen="" shown=0
@@ -1773,10 +1774,10 @@ mission_view() { # <index> <width> <tick>
     RN+=("$nrow"); RT+=("$txt"); RR+=("$r")
   done <<<"$rows"
   local cells="" k2 nc=10 pc=0 ic=0
-  [ -n "$firstopen" ] && [ "${SC_STATE[$i]}" = working ] && [ "${RR[$firstopen]}" != fail ] && { inwork=$firstopen; ic=1; }
+  [ -n "$firstopen" ] && [ "${SC_STATE[$li]}" = working ] && [ "${RR[$firstopen]}" != fail ] && { inwork=$firstopen; ic=1; }
   [ "$total" -gt 0 ] && pc=$(( passn * nc / total ))
   for ((k2 = 0; k2 < nc; k2++)); do
-    if [ "$k2" -lt "$pc" ]; then cells="$cells$(fgc green)▰"; elif [ "$k2" -lt $((pc + ic)) ]; then cells="$cells$(fgc yellow)▰"; else cells="$cells$(fgc s2)▱"; fi
+    if [ "$k2" -lt "$pc" ]; then cells="$cells$(fgc green)▰"; elif [ "$k2" -lt $((pc + ic)) ]; then cells="$cells$(fgc "$hc")▰"; else cells="$cells$(fgc s2)▱"; fi
   done
   A+=("$(lr "$C1" "$(fgc ov)PROOF · ACCEPTANCE$R" "$(fgc text)CONTRACT ${st_con:-—}$R")")
   A+=("")
@@ -1787,26 +1788,26 @@ mission_view() { # <index> <width> <tick>
     [ "$idx" -lt 2 ] || [ "$idx" -ge "$start" ] || continue
     case "${RR[$idx]}" in pass) g="$(fgc green)✔$R"; c=text ;; fail) g="$(fgc red)✖$R"; c=red ;; *) g="$(fgc s2)○$R"; c=sub ;; esac
     if [ "$idx" = "$inwork" ]; then
-      A+=("$(bgc s0)$(fgc yellow)◐  $(printf '%3s' "${RN[$idx]}") $BLD$(pad $((C1 - 9)) "${RT[$idx]}") $R")
+      A+=("$(bgc tint)$(fgc "$hc")◐  $(printf '%3s' "${RN[$idx]}") $BLD$(pad $((C1 - 9)) "${RT[$idx]}") $R")
     else A+=("$g  $(fgc sub)$(printf '%3s' "${RN[$idx]}")$R $(fgc "$c")$(pad_trim $((C1 - 8)) "${RT[$idx]}")$R"); fi
     shown=$((shown + 1))
   done
   [ "$total" -le "$shown" ] || A+=("$(fgc ov)+ $((total - shown)) more · ⏎ for all rows$R")
   # column 2: live
-  local lt spin files flist last okr badr q blk1="" blk2="" st=${SC_STATE[$i]} bw=$((C2 - 4))
+  local lt spin files flist last okr badr q blk1="" blk2="" st=${SC_STATE[$li]} bw=$((C2 - 4))
   spin=$(printf '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' | cut -c$(( tick % 10 + 1 )))
   [ "${NO_MOTION:-0}" = 1 ] && spin="●"
-  lt=$(live_title "$AGENTS_JSON" "$seat"); [ -n "$lt" ] || lt=$st
+  lt=$(live_title "$AGENTS_JSON" "$dev_seat"); [ -n "$lt" ] || lt=$st
   files=$(git -C "$wt" status --porcelain 2>/dev/null | grep -vc '\.agents-verify-off$' || true)
   flist=$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '\.agents-verify-off$' | awk '{ f = $NF; sub(/.*\//, "", f); sub(/\..*/, "", f); print tolower(f) }' | awk '!s[$0]++' | head -3 | paste -sd'|' - | sed 's/|/ · /g' || true)
   last=$(git -C "$wt" log -1 --format='%cd · %cr' --date=format:%H:%M 2>/dev/null | sed 's/ seconds* ago/ s ago/; s/ minutes* ago/ min ago/; s/ hours* ago/ h ago/' || echo "—")
   okr=$(ev_lines "$task" | awk -v s="$dev_seat" '$2 == s && $3 == "HEAVY_END" && $4 == "rc=0"' | wc -l | tr -d ' ')
   badr=$(ev_lines "$task" | awk -v s="$dev_seat" '$2 == s && $3 == "HEAVY_END" && $4 != "rc=0"' | wc -l | tr -d ' ')
-  q=$(queue_place "$seat")
+  q=$(queue_place "$dev_seat")
   if [ "$st" = working ]; then L+=("$(lr "$C2" "$(fgc ov)LIVE · NOW$R" "$(fgc green)●$R $BLD$(fgc green)WORKING$R")")
   else L+=("$(lr "$C2" "$(fgc ov)LIVE · NOW$R" "$(fgc s2)○$R $(fgc sub)$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')$R")"); fi
   L+=("")
-  local l1t l2t="" bc=$col; [ "$st" = working ] || bc=s1
+  local l1t l2t="" bc=$hc; [ "$st" = working ] || bc=s1
   l1t="$spin $lt"
   if [ "${#l1t}" -gt "$bw" ]; then   # wrap at a space
     local cutp=$bw; while [ "$cutp" -gt $((bw / 2)) ] && [ "${l1t:$cutp:1}" != " " ]; do cutp=$((cutp - 1)); done
@@ -1814,9 +1815,9 @@ mission_view() { # <index> <width> <tick>
     l2t=$(pad_trim "$bw" "  ${l1t:$cutp}"); l2t=${l2t/#   /  }; l1t=${l1t:0:$cutp}
   fi
   L+=("$(fgc "$bc")╭$(rep_char $((C2 - 2)) ─)╮$R")
-  L+=("$(fgc "$bc")│$R $BLD$(fgc "$([ "$st" = working ] && echo "$col" || echo sub)")$(pad "$bw" "$l1t")$R $(fgc "$bc")│$R")
-  [ -z "$l2t" ] || L+=("$(fgc "$bc")│$R $BLD$(fgc "$col")$(pad "$bw" "$l2t")$R $(fgc "$bc")│$R")
-  L+=("$(fgc "$bc")│$R $(vcut "$bw" "$(lr "$bw" "$(fgc sub)activity 30 min$R" "$(fgc "$col")$(sp=$(spark "$seat"); n2=$((bw - 17)); [ "$n2" -lt 15 ] && sp=${sp:$((15 - n2))}; printf '%s' "$sp")$R")") $(fgc "$bc")│$R")
+  L+=("$(fgc "$bc")│$R$(bgc tint) $BLD$(fgc "$([ "$st" = working ] && echo "$hc" || echo sub)")$(pad "$bw" "$l1t")$(bgc tint) $R$(fgc "$bc")│$R")
+  [ -z "$l2t" ] || L+=("$(fgc "$bc")│$R$(bgc tint) $BLD$(fgc "$hc")$(pad "$bw" "$l2t")$(bgc tint) $R$(fgc "$bc")│$R")
+  L+=("$(fgc "$bc")│$R$(bgc tint) $(vcut "$bw" "$(lr "$bw" "$(bgc tint)$(fgc sub)activity 30 min" "$(fgc "$hc")$(sp=$(spark "$dev_seat"); n2=$((bw - 17)); [ "$n2" -lt 15 ] && sp=${sp:$((15 - n2))}; printf '%s' "$sp")")")$(bgc tint) $R$(fgc "$bc")│$R")
   L+=("$(fgc "$bc")╰$(rep_char $((C2 - 2)) ─)╯$R")
   L+=("$(lr "$C2" "$(fgc sub)files changed$R" "$BLD$(fgc text)$files$R$(fgc sub)${flist:+ $flist}$R")")
   L+=("$(lr "$C2" "$(fgc sub)last commit$R" "$(fgc text)$last$R")")
@@ -1824,11 +1825,11 @@ mission_view() { # <index> <width> <tick>
   if [ -n "$q" ]; then L+=("$(lr "$C2" "$(fgc sub)lock queue$R" "$(fgc yellow)place #$q$R")"); else L+=("$(lr "$C2" "$(fgc sub)lock queue$R" "$(fgc text)not queued$R")"); fi
   [ "${files:-0}" -gt 0 ] && [ "${S_ROLE[$(seat_index "$dev_seat")]}" = dev ] && { blk1="commit before the next heavy run"; blk2="(squad heavy refuses a dirty tree)"; }
   [ -n "$q" ] && { blk1="waiting for the lock"; blk2="place $q in the queue"; }
-  [ -n "${SC_TROUBLE[$i]}" ] && { blk1=$(trouble_hint "${SC_TROUBLE[$i]}" "$seat"); blk2=""; }
+  [ -n "${SC_TROUBLE[$li]}" ] && { blk1=$(trouble_hint "${SC_TROUBLE[$li]}" "$dev_seat"); blk2=""; }
   if [ -n "$blk1" ]; then
     L+=("")
-    L+=("$(fgc yellow)▌$R$(bgc s0)$(fgc yellow)▲ $R$(bgc s0)$(fgc text)$(pad $((C2 - 3)) "$blk1")$R")
-    [ -z "$blk2" ] || L+=("$(fgc yellow)▌$R$(bgc s0)$(fgc sub)  $(pad $((C2 - 3)) "$blk2")$R")
+    L+=("$(fgc yellow)▌$R$(bgc tint)$(fgc yellow)▲ $(fgc text)$(pad $((C2 - 3)) "$blk1")$R")
+    [ -z "$blk2" ] || L+=("$(fgc yellow)▌$R$(bgc tint)$(fgc sub)  $(pad $((C2 - 3)) "$blk2")$R")
   fi
   # column 3: timeline
   T+=("$(lr "$C3" "$(fgc ov)TIMELINE$R" "$(fgc text)TODAY$R")")
@@ -1852,7 +1853,7 @@ mission_view() { # <index> <width> <tick>
       HUNG) T+=("$(fgc sub)$t$R  $(fgc red)✖$R $(fgc text)run hung$R") ;;
     esac
   done <<<"$(ev_lines "$task" | grep -vE ' HEAVY_START| HEARTBEAT' | tail -6)"
-  [ "$st" = working ] && [ "$ci" = 2 ] && T+=("$(fgc sub)now  $R  $(fgc "$col")◉$R $(fgc "$col")working$R")
+  [ "$st" = working ] && [ "$ci" = 2 ] && T+=("$(fgc sub)now  $R  $(fgc "$hc")◉$R $(fgc "$hc")working$R")
   local nx=""
   case "$cur" in brief|con) nx="contract → dev" ;; dev) nx="DONE → $tester tests" ;; test) nx="$tester tests" ;; rev) nx="$reviewer reviews" ;; mrg) nx="merge after the candidate" ;; esac
   [ -z "$nx" ] || T+=("$(fgc ov)next $R  $(fgc s2)○$R $(fgc sub)$nx$R")
