@@ -5,6 +5,7 @@
 # mockup one to one. Nothing outside a temporary directory is written.
 # Usage: test/demo-board.sh [--once]
 set -euo pipefail
+unset SQUAD_HEAVY_DIR   # the demo keeps its own lock and queue
 squad=$(cd "$(dirname "$0")/.." && pwd)/bin/squad
 d=$(cd -P "$(mktemp -d)" && pwd); trap 'rm -rf "$d"' EXIT
 mkdir -p "$d/bin" "$d/cache/squad/heavy/queue" "$d/cache/squad/teams" "$d/tonus/.team"

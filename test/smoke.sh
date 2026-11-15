@@ -290,6 +290,7 @@ ev() { grep -qE "$1" .team/events.log; }
 
 # 001 · squad heavy: one at a time, first come first served, an owner, a time limit
 export SQUAD_HEAVY_POLL=1 SQUAD_HEAVY_DIR="$tmp/heavy"; HV="$tmp/heavy"
+demo="$here/demo-board.sh"
 rm -f "$tmp/order"
 "$squad" heavy dev-a T-1 -- sh -c "sleep 2; echo A >>'$tmp/order'" >/dev/null 2>&1 &
 sleep 0.5
@@ -888,6 +889,12 @@ printf '%s dev-a T-12 DISPATCH round=1\n' "$now_d" >>.team/events.log
 printf '%s dev-a T-1-fix DISPATCH round=1\n' "$now_d" >>.team/events.log
 check "decisions match the literal task id (T-1 is not T-1-fix)" sh -c "! COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'D-301'"
 check "the lock place is printed once" sh -c "mkdir -p '$HV/queue'; : >'$HV/queue/000000000001-1-x@other'; : >'$HV/queue/000000000002-'\$\$'-dev-a@proj4'; COLUMNS=200 '$squad' board --once --seat=dev-a | grep -c 'place #2' | grep -qx 1; rc=\$?; rm -f '$HV'/queue/*; exit \$rc"
+agents_idle='{"result":{"agents":[{"name":"dev-c","agent_status":"idle","pane_id":"w2:p7","agent":"claude"}]}}'
+rm -rf .team/observer/.seen
+MOCK_AGENTS="$agents_idle" COLUMNS=200 "$squad" board --once --preview --seat=dev-c >/dev/null 2>&1
+check "the preview board writes no stall marker" refuses test -e .team/observer/.seen/dev-c
+check "the header fits a 110-column screen" bash -c "export LC_ALL=en_US.UTF-8; x=\$(COLUMNS=110 '$demo' --once | head -1); [ -n \"\$x\" ] && [ \${#x} -le 109 ]"
+check "another team's seat in the queue keeps its team name" sh -c "mkdir -p '$HV/queue'; : >'$HV/queue/000000000001-1-dev-a@other'; COLUMNS=300 '$squad' board --once --preview --seat=dev-c | head -1 | grep -q 'other/dev-a'; rc=\$?; rm -f '$HV'/queue/*; exit \$rc"
 check "decisions match the exact task id (T-1 is not T-12)" sh -c "! COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'D-301'"
 narrow=$(COLUMNS=80 "$squad" board --once --seat=dev-c 2>&1)
 wide=0; while IFS= read -r ln; do [ "$(LC_ALL=en_US.UTF-8 bash -c 'printf %s "${#1}"' _ "$ln")" -le 80 ] || wide=1; done <<<"$narrow"
