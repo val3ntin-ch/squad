@@ -25,6 +25,7 @@ case "\$1 \$2" in "agent list") cat "$d/agents.json" ;; *) echo '{"result":{}}' 
 EOF
 chmod +x "$d/bin/herdr"
 
+mtime_ago() { perl -e '$t = time - $ARGV[0] * 60; utime $t, $t, $ARGV[1]' "$1" "$2"; }   # <minutes> <file>: GNU and BSD alike
 r="$d/hive"; mkdir -p "$r/.team/tasks" "$r/.team/reports" "$r/.team/observer/.act"
 git -C "$r" init -q -b main; git -C "$r" -c user.email=d@d -c user.name=d commit -q --allow-empty -m init
 git -C "$r" branch team/integration
@@ -73,7 +74,7 @@ cat >"$r/.team/tasks/T-117.md" <<'EOF'
 EOF
 printf '# CANDIDATE-23: the whole list, once\n\n- Branch: `team/candidate-23` = `task/T-129` + `task/T-113`\n' >"$r/.team/tasks/CANDIDATE-23.md"
 printf 'STATUS: DONE\n## Acceptance\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n| 2 | pass | ok |\n' >"$r/.team/reports/T-117-dev.md"
-touch -t "$(date -v-74M +%Y%m%d%H%M)" "$r/.team/tasks/T-117.md"
+mtime_ago 74 "$r/.team/tasks/T-117.md"
 cat >"$r/.team/DECISIONS.md" <<'EOF'
 # Decisions
 
@@ -100,7 +101,7 @@ cat >"$r/.team/DECISIONS.md" <<'EOF'
 - Status: to test by V!
 - See: feedback-toast--states
 EOF
-ago() { date -v-"$1"M '+%Y-%m-%d %H:%M:%S'; }
+ago() { perl -MPOSIX -e 'print strftime("%Y-%m-%d %H:%M:%S", localtime(time - $ARGV[0] * 60))' "$1"; }
 {
   echo "$(ago 300) dev-b T-110 DISPATCH round=1"; echo "$(ago 250) rev-gpt T-110 APPROVE"; echo "$(ago 240) lead T-110 MERGE"
   echo "$(ago 56) tester T-117 CONTRACT report=x"; echo "$(ago 55) dev-c T-117 DISPATCH round=1"
@@ -118,15 +119,16 @@ wt="$r-team"; mkdir -p "$wt"
 git -C "$r" worktree add -q "$wt/integration" team/integration
 git -C "$r" branch task/T-117 team/integration
 git -C "$r" worktree add -q "$wt/dev-c" task/T-117
-GIT_COMMITTER_DATE="$(ago 31)" git -C "$wt/dev-c" -c user.email=d@d -c user.name=d commit -q --allow-empty -m wip
+GIT_COMMITTER_DATE="$(( $(date +%s) - 31 * 60 )) +0000" git -C "$wt/dev-c" -c user.email=d@d -c user.name=d commit -q --allow-empty -m wip
 for f in alert toast banner; do for k in $(seq 1 7); do echo x >"$wt/dev-c/$f-$k.tsx"; done; done; echo x >"$wt/dev-c/toast.css"
 for s in dev-a dev-b; do git -C "$r" worktree add -q --detach "$wt/$s" team/integration; done
 
 # the machine's lock: Vera runs, Rook and Nova wait; tonus is idle
 ln -s "tester@hive:1:$now" "$d/cache/squad/heavy/lock"
 : >"$d/cache/squad/heavy/queue/000000000001-1-dev-b@hive"; : >"$d/cache/squad/heavy/queue/000000000002-1-dev-a@hive"
-printf '%s\n' "$d/tonus/.team" >"$d/cache/squad/teams/tonus"; : >"$d/tonus/.team/events.log"; touch -t 202601010000 "$d/tonus/.team/events.log"
+printf '%s\n' "$d/tonus/.team" >"$d/cache/squad/teams/tonus"; : >"$d/tonus/.team/events.log"; mtime_ago 600 "$d/tonus/.team/events.log"
 printf '{"p5":36,"r5":0,"p7":20,"r7":0}\n' >"$d/cache/squad/claude-usage.json"
 
 cd "$r"
+case " $* " in *" --seat="*|*" --view="*) ;; *) set -- --seat=dev-c "$@" ;; esac   # Iris, as in the mockup
 PATH="$d/bin:$PATH" XDG_CACHE_HOME="$d/cache" "$squad" board --preview "$@"

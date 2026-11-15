@@ -895,6 +895,10 @@ MOCK_AGENTS="$agents_idle" COLUMNS=200 "$squad" board --once --preview --seat=de
 check "the preview board writes no stall marker" refuses test -e .team/observer/.seen/dev-c
 check "the header fits a 110-column screen" bash -c "export LC_ALL=en_US.UTF-8; x=\$(COLUMNS=110 '$demo' --once | head -1); [ -n \"\$x\" ] && [ \${#x} -le 109 ]"
 check "another team's seat in the queue keeps its team name" sh -c "mkdir -p '$HV/queue'; : >'$HV/queue/000000000001-1-dev-a@other'; COLUMNS=300 '$squad' board --once --preview --seat=dev-c | head -1 | grep -q 'other/dev-a'; rc=\$?; rm -f '$HV'/queue/*; exit \$rc"
+printf '| T-902-ui | Wide id | dev-a | dev | - |\n' >>.team/TASKS.md
+printf '# CANDIDATE-9\n\n- Branch: `team/candidate-9` = `task/T-902-ui`\n' >.team/tasks/CANDIDATE-9.md
+printf '%s tester CANDIDATE-9 DISPATCH round=1\n' "$now_d" >>.team/events.log
+check "a candidate names the developer of a task id with a suffix" sh -c "MOCK_AGENTS='{\"result\":{\"agents\":[{\"name\":\"tester\",\"agent_status\":\"working\",\"pane_id\":\"w2:p9\",\"agent\":\"claude\"}]}}' COLUMNS=200 '$squad' board --once --preview --seat=tester | grep -q 'candidate 9 · tests Nova'"
 check "decisions match the exact task id (T-1 is not T-12)" sh -c "! COLUMNS=200 '$squad' board --once --seat=dev-a | grep -q 'D-301'"
 narrow=$(COLUMNS=80 "$squad" board --once --seat=dev-c 2>&1)
 wide=0; while IFS= read -r ln; do [ "$(LC_ALL=en_US.UTF-8 bash -c 'printf %s "${#1}"' _ "$ln")" -le 80 ] || wide=1; done <<<"$narrow"

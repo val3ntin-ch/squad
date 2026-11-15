@@ -830,12 +830,18 @@ cmd_dispatch() {
 
 cand_devs() { # <CANDIDATE-n>: names of the developers whose tasks the candidate carries ("Iris + Nova")
   local t sn out=""
-  for t in $(grep -m1 -- '- Branch:' "$TEAM_DIR/tasks/$1.md" 2>/dev/null | grep -oE 'task/T-[0-9A-Za-z]+' | cut -d/ -f2 | sort -u); do
+  for t in $(grep -m1 -- '- Branch:' "$TEAM_DIR/tasks/$1.md" 2>/dev/null | grep -oE 'task/T-[0-9A-Za-z._-]*[0-9A-Za-z]' | cut -d/ -f2 | sort -u); do
     sn=$(awk -F'|' -v t="$t" '{ id = $2; gsub(/ /, "", id) } id == t { o = $4; gsub(/ /, "", o); print o; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null)
     [ -n "$sn" ] || continue; sn=$(disp_of "$sn")
     case " + $out + " in *" + $sn + "*) ;; *) out="${out:+$out + }$sn" ;; esac
   done
   printf '%s' "$out"
+}
+
+reviewer_of() { # <dev seat>: the reviewer that reviews it (team.conf), else the first reviewer
+  local i n; n=$(seat_count)
+  for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = reviewer ] && [[ ",${S_REVIEWS[$i]}," == *",$1,"* ]] && { echo "${S_NAME[$i]}"; return 0; }; done
+  first_role reviewer
 }
 
 first_role() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = "$1" ] && { echo "${S_NAME[$i]}"; return 0; }; done; return 0; }
@@ -1335,7 +1341,7 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   state=$(seat_state "$json" "$name")
   f="$TEAM_DIR/observer/.seen/$name"
   now=$(date +%s)
-  [ "$PREVIEW" = 0 ] || f=/dev/null/no-marker   # preview: read only, no stall marker is written or removed
+  [ "$PREVIEW" = 0 ] || f=/nonexistent-squad-preview/marker   # preview: read only, no stall marker is written or removed
   if [ "$state" = working ]; then rm -f "$f"; return 0; fi
   if [ "$state" = off ]; then [ -n "$task" ] && echo dead; return 0; fi
   text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -12 || true)
@@ -1694,7 +1700,8 @@ board_render() { # <selected index> <tick> -> BL[] (left) and BRT[] (right)
   return 0
 }
 
-fr() { BRT+=("$(fgc s1)│$R${3:-} $(onbg "${3:-}" "$(vcut "$1" "$2")") $R$(fgc s1)│$R"); }   # <inner width> <content> [background]: one framed row
+fr() { [ "${NARROW:-0}" = 1 ] && [ -z "$2" ] && return 0   # narrow: no spacer rows, so the task fits
+  BRT+=("$(fgc s1)│$R${3:-} $(onbg "${3:-}" "$(vcut "$1" "$2")") $R$(fgc s1)│$R"); }   # <inner width> <content> [background]: one framed row
 sepl() { BRT+=("$(fgc s1)├$(fgc s0)$1$(fgc s1)┤$R"); }   # <inner line>: a divider, dim inside the frame
 
 mission_view() { # <index> <width> <tick>
@@ -1756,7 +1763,7 @@ mission_view() { # <index> <width> <tick>
   local since sev; case "$cur" in dev) sev='DISPATCH|FAIL|CHANGES' ;; test) sev='DONE' ;; rev) sev='PASS' ;; mrg) sev='APPROVE' ;; con) sev='CONTRACT' ;; *) sev='' ;; esac
   since=$(ev_full "$task" "$sev" last)
   local smin="—"; [ -z "$since" ] || smin="$(( (now - $(ev_epoch "$since")) / 60 ))m"
-  local tester reviewer; tester=$(disp_of "$(first_role tester)"); reviewer=$(disp_of "$(first_role reviewer)")
+  local tester reviewer; tester=$(disp_of "$(first_role tester)"); reviewer=$(disp_of "$(reviewer_of "$dev_seat")")
   sw=$(( IW / 6 ))
   for k in brief con dev test rev mrg; do
     eval "t=\$st_$k"
@@ -1790,7 +1797,7 @@ mission_view() { # <index> <width> <tick>
     RN+=("$nrow"); RT+=("$txt"); RR+=("$r")
   done <<<"$rows"
   local cells="" k2 nc=12 pc=0 ic=0; [ "$C1" -ge 40 ] || nc=8
-  [ -n "$firstopen" ] && [ "${SC_STATE[$li]}" = working ] && [ "${RR[$firstopen]}" != fail ] && { inwork=$firstopen; ic=1; }
+  [ -n "$firstopen" ] && [ "${SC_STATE[$li]}" = working ] && [ "${SC_TASK[$li]:-}" = "$task" ] && [ "${RR[$firstopen]}" != fail ] && { inwork=$firstopen; ic=1; }
   [ "$total" -gt 0 ] && pc=$(( passn * nc / total ))
   for ((k2 = 0; k2 < nc; k2++)); do
     if [ "$k2" -lt "$pc" ]; then cells="$cells$(fgc green)━"; elif [ "$k2" -lt $((pc + ic)) ]; then cells="$cells$(fgc "$hc")━"; else cells="$cells$(fgc s1)━"; fi
@@ -1949,6 +1956,7 @@ board_header() {
 board_draw() { # <selected> <tick> <once>
   local i rows LW=34; [ "$BW" -lt 150 ] || LW=40
   BOARD_ROWS=0; [ "$3" = 1 ] || [ "$BW" -lt 110 ] || BOARD_ROWS=$((BH - 5))   # rows 4 to BH-2: header, rule and gap above, rule and keys below
+  NARROW=0; [ "$BW" -ge 110 ] || [ "$3" = 1 ] || NARROW=1
   board_render "$1" "$2"
   if [ "$3" = 1 ]; then
     board_header; printf '%s\n' "${BL[@]}"; printf '%s\n' "${BRT[@]}"; return
@@ -1959,9 +1967,8 @@ board_draw() { # <selected> <tick> <once>
   rows=${#BL[@]}; [ "${#BRT[@]}" -le "$rows" ] || rows=${#BRT[@]}
   [ "$rows" -le $((BH - 5)) ] || rows=$((BH - 5))   # never over the key bar
   if [ "$BW" -lt 110 ]; then
-    local -a S=()
-    for ((i = 1; i < ${#BL[@]}; i += 3)); do S+=("${BL[$i]}"); done
-    S+=("") ; S+=("${BRT[@]}")
+    # narrow: the selected agent only (↑↓ picks another), then its task
+    local -a S=("${BL[$((3 * $1 + 1))]}" ${BRT[@]+"${BRT[@]}"})
     for ((i = 0; i < ${#S[@]} && i < BH - 5; i++)); do printf '\033[%d;2H%s' $((i + 4)) "${S[$i]}"; done
   else
     for ((i = 0; i < rows; i++)); do
