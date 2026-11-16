@@ -82,7 +82,7 @@ reset_log
 check "up starts the default team" "$squad" up
 check "six agents started" test "$(grep -c '^herdr agent start' "$MOCK_LOG")" = 6
 check "lead runs codex with the Sol model" log_has "agent start lead --kind codex --pane w2:p1 --timeout 90000 -- -m gpt-6.1-sol --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git -c developer_instructions="
-check "codex seats get their role as developer_instructions" grep -qE '^herdr agent start lead .* -c developer_instructions="# You are seat `lead`' "$MOCK_LOG"
+check "codex seats get a short pointer to their seat file as developer_instructions" grep -qE '^herdr agent start lead .* -c developer_instructions="You are seat lead on an agent team. Before anything else, read [^ ]+/seats/lead[^ ]*: it is your identity' "$MOCK_LOG"
 check "codex seats run in workspace-write" grep -qE '^herdr agent start lead .* -s workspace-write sock=' "$MOCK_LOG"
 check "claude seats get write access to .team" log_has "agent start dev-a --kind claude --pane w2:p3 --timeout 90000 -- --model claude-opus-5-5 --add-dir $tmp/proj/.team --add-dir $tmp/proj/.git --append-system-prompt-file $tmp/proj/.team/seats/dev-a.md"
 check "dev-a runs in its own worktree" log_has "--cwd $tmp/proj-team/dev-a"
