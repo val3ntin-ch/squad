@@ -364,7 +364,6 @@ check "a queued task already sent by hand is dropped, not sent twice" sh -c "for
 sleep 2; rm -f "$tmp/state"; mkdir -p .team/seats; ln -sfn 999999 .team/seats/dev-a.dispatching
 check "a lock left by a killed queue is cleared, so the seat is not blocked" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 '$squad' dispatch dev-a T-134 2>&1 | grep -qv 'is busy' && test ! -L .team/seats/dev-a.dispatching"
 rm -f "$tmp/state"
-agents_tb='{"result":{"agents":[{"name":"tester","agent_status":"working","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
 rm -f "$tmp/state"
 check "a dev starts without a contract while the tester is in a run, and the contract is queued for the tester" sh -c "MOCK_DYNAMIC=1 MOCK_TESTER=working SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-102 >/dev/null 2>&1 && grep -q ' dev-a T-102 CONTRACT_DEFERRED' .team/events.log && grep -q ' tester T-102 DISPATCH_QUEUED contract=1' .team/events.log"
 agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
