@@ -3,7 +3,6 @@
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 
 set -euo pipefail
-shopt -s extglob   # vl() strips colour codes with +([0-9;])
 VERSION="0.9.2"
 
 # ---- locate our own files (follow symlinks; works on macOS bash 3.2) ---------
@@ -43,7 +42,6 @@ Usage:
   squad presets                     list the built-in team presets
   squad permissions                 once per machine: Claude's usage status line
   squad herdr <args>                herdr, bound to this team's session (used by agents)
-  squad board                       the team board: agents, their tasks, steps, proof, live work (team tab)
   squad watch [--observe]           live board: usage, tasks, seats and their trouble (team tab);
                                     --observe also starts the observer's passes (observer tab)
   squad report [--live|--open]      the report page: decisions, observer, timeline, QA, cost
@@ -83,10 +81,8 @@ find_repo() {
 
 # ---- team.conf ---------------------------------------------------------------
 
-S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=() S_DISP=() S_COL=()
+S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=()
 TEAM_BASE="team/integration"
-NOTIFY=on               # off: no herdr notifications
-TEAM_STEP=""            # team.conf "step <text>": the project step the board header shows
 SETUP_CMD=""
 REVIEW_ROUNDS=5
 LEAD=""
@@ -105,9 +101,9 @@ CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium
 SESSION_NAME=""         # herdr session of this team (default: the repository's name)
 
 load_conf() {
-  local conf="$TEAM_DIR/team.conf" kw name kind role reviews rest n=0 line_no=0 names=""
+  local conf="$TEAM_DIR/team.conf" kw name kind role reviews rest n=0 line_no=0
   [ -f "$conf" ] || die "$conf not found. Run 'squad init' first."
-  S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=() S_DISP=() S_COL=()
+  S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=()
   while IFS= read -r line || [ -n "$line" ]; do
     line_no=$((line_no + 1))
     line=${line%%#*}
@@ -127,12 +123,7 @@ load_conf() {
               rest=$((10#$rest))
               case "$kw" in heavy_timeout) HEAVY_TIMEOUT=$rest ;; heavy_timeout_dev) HEAVY_TIMEOUT_DEV=$rest ;; stall_minutes) STALL_MINUTES=$rest ;; *) OBSERVE_MINUTES=$rest ;; esac ;;
       verify_hook) case "$rest" in on|off) VERIFY_HOOK=$rest ;; *) die "team.conf line $line_no: 'verify_hook' is on or off." ;; esac ;;
-      name) read -r name role kind rest <<<"$rest" || true   # name <seat> <Display> <colour>
-            [[ "${role:-}" =~ ^[A-Za-z][A-Za-z0-9_-]{0,15}$ ]] || die "team.conf line $line_no: 'name <seat> <Name> <colour>' needs a short name (letters, digits, - or _)."
-            case "${kind:-}" in mauve|blue|teal|peach|green|yellow|pink|red|sky|lavender|"") ;; *) die "team.conf line $line_no: colour '$kind' must be one of mauve blue teal peach green yellow pink red sky lavender." ;; esac
-            names="$names$name $role ${kind:-}"$'\n' ;;
-      step) TEAM_STEP=$rest ;;
-      notify) case "$rest" in on|off) NOTIFY=$rest ;; *) die "team.conf line $line_no: 'notify' is on or off." ;; esac ;;
+      name|notify|step) ;;   # Squad Deck lines (reverted 16 Nov 2026): a team.conf that has them still loads
       # read by update_conf from the file itself; here it is only checked
       upgrade) case "$rest" in on|off) ;; *) die "team.conf line $line_no: 'upgrade' is on or off." ;; esac ;;
       owner) case "$rest" in visual|all) OWNER_MODE=$rest ;; *) die "team.conf line $line_no: 'owner' is visual or all." ;; esac ;;
@@ -164,14 +155,6 @@ load_conf() {
   for ((i = 0; i < n; i++)); do
     if [ "${S_ROLE[$i]}" = lead ]; then leads=$((leads + 1)); LEAD=${S_NAME[$i]}; fi
   done
-  # agent names and colours (name lines may come before or after the seats)
-  local nseat ndisp ncol
-  while read -r nseat ndisp ncol; do
-    [ -n "$nseat" ] || continue
-    for ((i = 0; i < n; i++)); do
-      [ "${S_NAME[$i]}" = "$nseat" ] && { S_DISP[$i]=$ndisp; S_COL[$i]=$ncol; }
-    done
-  done <<<"$names"
   [ "$leads" = 1 ] || die "team.conf must define exactly one seat with the role 'lead' (found $leads)."
   [ -n "$SESSION_NAME" ] || SESSION_NAME=$(basename "$REPO" | tr -c 'A-Za-z0-9._\n-' '-')
 
@@ -203,13 +186,6 @@ role_file() { # role -> path
     observer) echo "$TEAM_DIR/roles/observer.md" ;;
   esac
 }
-
-seat_disp() { echo "${S_DISP[$1]:-${S_NAME[$1]}}"; }   # <index> -> the agent's name for people
-seat_col() {  # <index> -> its colour (team.conf name line, or one by role)
-  if [ -n "${S_COL[$1]:-}" ]; then echo "${S_COL[$1]}"; return; fi
-  case "${S_ROLE[$1]}" in lead) echo mauve ;; tester) echo green ;; reviewer) echo yellow ;; observer) echo pink ;; *) echo blue ;; esac
-}
-disp_of() { local i; i=$(seat_index "$1" 2>/dev/null) && seat_disp "$i" || echo "$1"; }   # <seat name> -> display name
 
 seat_index() { # name -> index, or fail
   local i n; n=$(seat_count)
@@ -828,24 +804,6 @@ cmd_dispatch() {
   say "$seat started on $task (round $round${model:+, $model})."
 }
 
-cand_devs() { # <CANDIDATE-n>: names of the developers whose tasks the candidate carries ("Iris + Nova")
-  local t sn out=""
-  for t in $(grep -m1 -- '- Branch:' "$TEAM_DIR/tasks/$1.md" 2>/dev/null | grep -oE 'task/T-[0-9A-Za-z._-]*[0-9A-Za-z]' | cut -d/ -f2 | sort -u); do
-    sn=$(awk -F'|' -v t="$t" '{ id = $2; gsub(/ /, "", id) } id == t { o = $4; gsub(/ /, "", o); print o; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null)
-    [ -n "$sn" ] || continue; sn=$(disp_of "$sn")
-    case " + $out + " in *" + $sn + "*) ;; *) out="${out:+$out + }$sn" ;; esac
-  done
-  printf '%s' "$out"
-}
-
-reviewer_of() { # <dev seat>: the reviewer that reviews it (team.conf), else the first reviewer
-  local i n; n=$(seat_count)
-  for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = reviewer ] && [[ ",${S_REVIEWS[$i]}," == *",$1,"* ]] && { echo "${S_NAME[$i]}"; return 0; }; done
-  first_role reviewer
-}
-
-first_role() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = "$1" ] && { echo "${S_NAME[$i]}"; return 0; }; done; return 0; }
-
 dev_seats() { local i n out=""; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = dev ] && out="$out ${S_NAME[$i]}"; done; echo "${out# }"; }
 
 has_role() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = "$1" ] && return 0; done; return 1; }
@@ -1341,7 +1299,6 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   state=$(seat_state "$json" "$name")
   f="$TEAM_DIR/observer/.seen/$name"
   now=$(date +%s)
-  [ "$PREVIEW" = 0 ] || f=/nonexistent-squad-preview/marker   # preview: read only, no stall marker is written or removed
   if [ "$state" = working ]; then rm -f "$f"; return 0; fi
   if [ "$state" = off ]; then [ -n "$task" ] && echo dead; return 0; fi
   text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -12 || true)
@@ -1355,7 +1312,6 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   if [ $((now - ${hb:-0})) -lt 180 ] || { [ -n "$op" ] && kill -0 "$op" 2>/dev/null; }; then
     rm -f "$f"; return 0
   fi
-  [ "$PREVIEW" = 0 ] || return 0
   mkdir -p "$(dirname "$f")"
   [ -f "$f" ] || echo "$now" >"$f"
   since=$(cat "$f")
@@ -1458,605 +1414,6 @@ watch_once() {
     }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true
   printf ' %s%s\n' "$states" "${ev:+  last: $ev}"
   [ ! -L "$HEAVY_DIR/lock" ] || printf ' %s\n' "$(heavy_status | tr '\n' ' ')"
-}
-
-# ---- the board: the team tab (ticket 011a; the look: docs/design/squad-deck-team.html) ----------
-# Plain terminal text: colours, box lines, block bars, Braille spinners. Left: the agents with live
-# labels; right: the mission view of the selected agent's task. Every value comes from squad's files,
-# git, the heavy lock and herdr's agent list.
-BC=0   # colour on
-palette_init() {
-  local c rgb
-  for c in mauve:203,166,247 blue:137,180,250 teal:148,226,213 peach:250,179,135 green:166,227,161 \
-           yellow:249,226,175 pink:245,194,231 red:243,139,168 sky:137,220,235 lavender:180,190,254 \
-           text:205,214,244 sub:166,173,200 ov:127,132,156 s2:88,91,112 s1:69,71,90 s0:49,50,68 head:35,35,54 base:30,30,46 crust:17,17,27 mantle:24,24,37; do
-    rgb=${c#*:}; c=${c%%:*}; eval "RGB_$c=$rgb"
-    if [ "$BC" = 1 ]; then
-      eval "F_$c=\$'\\033[38;2;${rgb//,/;}m'"; eval "K_$c=\$'\\033[48;2;${rgb//,/;}m'"
-    else
-      eval "F_$c=''"; eval "K_$c=''"
-    fi
-  done
-  if [ "$BC" = 1 ]; then R=$'\033[0m'; BLD=$'\033[1m'; else R=""; BLD=""; fi
-}
-mixc() { # <colour> <percent> <fg|bg>: the colour blended over the base, as in the mockup's rgba()
-  [ "$BC" = 1 ] || return 0
-  local rgb r g b; eval "rgb=\$RGB_$1"; IFS=, read -r r g b <<<"$rgb"
-  r=$(( 30 + (r - 30) * $2 / 100 )); g=$(( 30 + (g - 30) * $2 / 100 )); b=$(( 46 + (b - 46) * $2 / 100 ))
-  if [ "$3" = bg ]; then printf '\033[48;2;%d;%d;%dm' "$r" "$g" "$b"; else printf '\033[38;2;%d;%d;%dm' "$r" "$g" "$b"; fi
-}
-onbg() { local x=$2; [ -n "$R" ] && x=${x//"$R"/"$R$1"}; printf '%s%s' "$1" "$x"; }   # <bg> <coloured>: keep the background through each reset
-fgc() { eval "printf '%s' \"\$F_$1\""; }
-bgc() { eval "printf '%s' \"\$K_$1\""; }
-
-pad() { # <width> <plain text>: cut or fill to exactly width characters
-  local s=$2 w=$1 l
-  [ "$w" -gt 0 ] || return 0
-  [ "${#s}" -le "$w" ] || s="${s:0:$((w - 1))}…"
-  l=${#s}
-  printf '%s%*s' "$s" $((w - l)) ""
-}
-
-vl() { local x=$1; x=${x//$'\033'\[+([0-9;])m/}; VL=${#x}; }   # visible length of a coloured string -> VL (extglob)
-fit() { vl "$2"; if [ "$VL" -le "$1" ]; then printf '%s%*s' "$2" $(( $1 - VL )) ''; else printf '%s' "$2"; fi; }   # <width> <coloured>: fill to width
-lr() { local l=$2 r=$3; vl "$l"; local a=$VL; vl "$r"; printf '%s%*s%s' "$l" $(( $1 - a - VL > 1 ? $1 - a - VL : 1 )) '' "$r"; }   # <width> <left> <right>
-
-rep_char() { local k s=""; for ((k = 0; k < $1; k++)); do s="$s$2"; done; printf '%s' "$s"; }   # <n> <char>: tr is byte-wise on GNU
-
-pad_trim() { local w=$1 s=$2; [ "$w" -gt 0 ] || { printf ''; return; }; [ "${#s}" -le "$w" ] || s="${s:0:$((w - 1))}…"; printf '%s' "$s"; }
-
-badge() { printf '%s%s%s %s %s' "$(bgc "$(seat_col "$1")")" "$(fgc crust)" "$BLD" "$(seat_disp "$1" | cut -c1)" "$R"; }
-
-task_title() { awk -F'|' -v id="$1" '{ t = $2; gsub(/^ +| +$/, "", t) } t == id { x = $3; gsub(/^ +| +$/, "", x); sub(/ \[.*/, "", x); print x; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true; }
-
-ev_lines() { # <task>: its events as "HH:MM seat EVENT detail"
-  awk -v t="$1" '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { tm = substr($2, 1, 5); s = $3; id = $4; e = $5; d = 6 } else { tm = substr($1, 1, 5); s = $2; id = $3; e = $4; d = 5 }
-    if (id != t) next; x = ""; for (k = d; k <= NF; k++) x = x " " $k; print tm, s, e x }' "$TEAM_DIR/events.log" 2>/dev/null || true
-}
-
-last_task_of() { # <seat>: the newest task id in its events
-  awk -v s="$1" '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { a = $3; t = $4 } else { a = $2; t = $3 } if (a == s && t != "-") last = t } END { print last }' "$TEAM_DIR/events.log" 2>/dev/null || true
-}
-
-live_title() { jq -r --arg n "$2" '[.result.agents[] | select(.name == $n) | .terminal_title_stripped // empty][0] // empty' <<<"$1" 2>/dev/null | sed 's/^[^A-Za-z0-9]* //' || true; }
-
-seat_label() { # <index> -> the short state label (also herdr's sidebar)
-  local i=$1 name=${S_NAME[$1]} st=${SC_STATE[$1]} task=${SC_TASK[$1]} tr=${SC_TROUBLE[$1]} n q since
-  [ -z "$tr" ] || { printf '%s' "$tr" | tr '[:lower:]' '[:upper:]'; return; }
-  [ "$st" = off ] && { echo OFF; return; }
-  q=$(queue_place "$name")
-  case "${S_ROLE[$i]}" in
-    dev) [ -n "$q" ] && { echo "LOCK #$q"; return; }
-         [ -n "$task" ] || { echo IDLE; return; }
-         n=$(ev_lines "$task" | awk -v s="$name" '$2 == s && $3 == "DISPATCH"' | wc -l | tr -d ' ')
-         if [ "${n:-1}" -gt 1 ]; then echo "DEV r$n"; else echo DEV; fi ;;
-    tester) case "$(heavy_owner)" in "$name@$(basename "$REPO"):"*)
-              since=$(heavy_owner | cut -d: -f3); echo "TEST $(( ($(date +%s) - since) / 60 ))m"; return ;; esac
-            [ -n "$q" ] && { echo "LOCK #$q"; return; }
-            [ -n "$task" ] && { if [ -f "$TEAM_DIR/reports/$task-contract.md" ]; then echo TEST; else echo CONTRACT; fi; return; }
-            echo IDLE ;;
-    reviewer) if [ -n "$task" ]; then echo REVIEW; else echo IDLE; fi ;;
-    observer) n=$(grep -ciE '^- status: *open' "$TEAM_DIR/observer/SUGGESTIONS.md" 2>/dev/null || true)
-              if [ "${n:-0}" -gt 0 ]; then echo "$n OPEN"; else echo IDLE; fi ;;
-    *) if [ "$st" = working ]; then echo WORKING; else echo IDLE; fi ;;
-  esac
-}
-
-queue_place() { # <seat> -> its place in the machine's heavy queue, or nothing
-  local f k=0
-  for f in "$HEAVY_DIR"/queue/*; do
-    [ -e "$f" ] || continue
-    k=$((k + 1))
-    case "$f" in *"-$1@$(basename "$REPO")") echo "$k"; return 0 ;; esac
-  done
-  return 0
-}
-
-label_col() { case "$1" in LOCK*|BLOCKED|STALLED) echo yellow ;; LOGIN|DEAD|*OPEN) echo red ;; IDLE|OFF) echo s2 ;; *) echo "$2" ;; esac; }
-
-record_activity() { # one sample per seat per minute: 1 working, 0 not
-  local i n now f; now=$(date +%s); n=$(seat_count)
-  mkdir -p "$TEAM_DIR/observer/.act"
-  for ((i = 0; i < n; i++)); do
-    f="$TEAM_DIR/observer/.act/${S_NAME[$i]}"
-    [ "$(tail -1 "$f" 2>/dev/null | cut -d' ' -f1)" -ge $((now - 60)) ] 2>/dev/null && continue
-    printf '%s %s\n' "$now" "$([ "${SC_STATE[$i]}" = working ] && echo 1 || echo 0)" >>"$f"
-    [ "$(wc -l <"$f")" -le 400 ] || { tail -200 "$f" >"$f.t" && mv "$f.t" "$f"; }
-  done
-  return 0
-}
-
-spark() { # <seat>: the last 30 minutes in 15 cells
-  awk -v now="$(date +%s)" '{ b = int((now - $1) / 120); if (b >= 0 && b < 15) { s[b] += $2; c[b]++ } }
-    END { split("▁ ▂ ▃ ▄ ▅ ▆ ▇ █", g, " "); out = ""; for (k = 14; k >= 0; k--) { v = c[k] ? s[k] / c[k] : 0; out = out g[int(v * 7.99) + 1] } print out }' \
-    "$TEAM_DIR/observer/.act/$1" 2>/dev/null || echo "▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁"
-}
-
-PREVIEW=0   # squad board --preview: read only, no alerts, labels, notifications or files
-team_scan() { # sets SC_STATE, SC_TASK, SC_TROUBLE per seat and AGENTS_JSON; raises alerts (as watch does)
-  local i n opens up=0
-  AGENTS_JSON=$(herdr_team agent list 2>/dev/null) || AGENTS_JSON='{"result":{"agents":[]}}'
-  n=$(seat_count); opens=$(open_tasks)
-  [ "$PREVIEW" = 1 ] || record_sessions "$AGENTS_JSON"
-  for ((i = 0; i < n; i++)); do [ "$(seat_state "$AGENTS_JSON" "${S_NAME[$i]}")" = off ] || up=1; done
-  for ((i = 0; i < n; i++)); do
-    SC_STATE[$i]=$(seat_state "$AGENTS_JSON" "${S_NAME[$i]}")
-    SC_TASK[$i]=$(awk -v s="${S_NAME[$i]}" '$1 == s { print $2; exit }' <<<"$opens")
-    SC_TROUBLE[$i]=""
-    if [ "$up" = 1 ]; then
-      SC_TROUBLE[$i]=$(seat_trouble "$AGENTS_JSON" "$i" "${SC_TASK[$i]}")
-      [ "$PREVIEW" = 1 ] && continue
-      if [ -n "${SC_TROUBLE[$i]}" ]; then alert_trouble "$i" "${SC_TROUBLE[$i]}" "${SC_TASK[$i]}"; else rm -f "$TEAM_DIR/observer/.alerted/${S_NAME[$i]}"; fi
-      [ "${S_ROLE[$i]}" = dev ] && idle_dev_check "$i" "${SC_STATE[$i]}" "${SC_TASK[$i]}"
-    fi
-  done
-  return 0
-}
-
-# herdr's sidebar: the agent's name, its task as the title, and its label for every state
-sidebar_sync() {
-  local i n pane kind lbl title key f
-  n=$(seat_count)
-  mkdir -p "$TEAM_DIR/observer/.meta"
-  for ((i = 0; i < n; i++)); do
-    pane=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .pane_id][0] // empty' <<<"$AGENTS_JSON" 2>/dev/null || true)
-    [ -n "$pane" ] || continue
-    kind=${S_KIND[$i]}; lbl=$(seat_label "$i")
-    title=""; [ -z "${SC_TASK[$i]}" ] || title="${SC_TASK[$i]} · $(task_title "${SC_TASK[$i]}")"
-    key="$(seat_disp "$i")|$lbl|$title|$(( ${SQUAD_CLOCK:-$(date +%s)} / 60 ))"   # resent each minute (herdr's TTL)
-    f="$TEAM_DIR/observer/.meta/${S_NAME[$i]}"
-    [ "$(cat "$f" 2>/dev/null)" = "$key" ] && continue
-    printf '%s' "$key" >"$f"
-    herdr_team pane report-metadata "$pane" --source user:squad --agent "$kind" \
-      --display-agent "$(seat_disp "$i") · ${S_ROLE[$i]}" ${title:+--title "$title"} \
-      --state-label "working=$lbl" --state-label "idle=$lbl" --state-label "blocked=$lbl" --state-label "done=$lbl" \
-      --ttl-ms 180000 >/dev/null 2>&1 || true
-  done
-  return 0
-}
-
-# herdr notifications: once per event, read from events.log after the last offset
-notify_events() {
-  [ "$NOTIFY" = on ] || return 0
-  local off f="$TEAM_DIR/observer/.notify" size line t s ev d title body snd
-  mkdir -p "$TEAM_DIR/observer"
-  [ -f "$TEAM_DIR/events.log" ] || return 0
-  mutex "$TEAM_DIR/.notify.lock"
-  size=$(wc -c <"$TEAM_DIR/events.log" | tr -d ' ')
-  off=$(cat "$f" 2>/dev/null || echo "")
-  # first run: start from now; a shorter file (rotated): start again from its end; nothing new: done
-  if [ -z "$off" ] || [ "$off" -gt "$size" ]; then echo "$size" >"$f"; rmdir "$TEAM_DIR/.notify.lock"; return 0; fi
-  if [ "$off" -eq "$size" ]; then rmdir "$TEAM_DIR/.notify.lock"; return 0; fi
-  tail -c +$((off + 1)) "$TEAM_DIR/events.log" | head -c $((size - off)) | while IFS= read -r line; do
-    set -f; set -- $line; set +f   # no glob expansion of event details
-    if [[ "$1" =~ ^[0-9]{4}- ]]; then shift; fi
-    t=${1:-}; s=${2:-}; ev=${4:-}; d="${3:-}"; title=""; snd="done"
-    case "$ev" in
-      MERGE) title="✔ $d merged"; body="$(task_title "$d")" ;;
-      FAIL) title="✖ $d failed in test"; body="$(disp_of "$s"): read reports/$d-test.md"; snd=request ;;
-      HEAVY_END) case "$line" in *" rc=0 "*) ;; *) if [ "$(seat_index "$s" >/dev/null 2>&1 && echo "${S_ROLE[$(seat_index "$s")]}")" = tester ]; then
-                   title="✖ test run failed${d:+ · $d}"; body="$(disp_of "$s")'s heavy run ended $(printf '%s' "$line" | grep -o 'rc=[0-9]*')"; snd=request; fi ;; esac ;;
-      DECISION) case "$line" in *to-test*) title="◆ new to test: ${5:-}"; body="open the report tab"; snd=request ;; esac ;;
-      LOGIN|BLOCKED|DEAD) title="! $(disp_of "$s") needs you"; body="$(trouble_hint "$(echo "$ev" | tr '[:upper:]' '[:lower:]')" "$s")"; snd=request ;;
-    esac
-    [ -z "$title" ] || herdr_team notification show "$title" --body "$body" --sound "$snd" >/dev/null 2>&1 || true
-  done
-  echo "$size" >"$f"
-  rmdir "$TEAM_DIR/.notify.lock"
-  return 0
-}
-
-vcut() { # <width> <coloured>: fill to width; a longer one loses its colours and is cut
-  vl "$2"
-  if [ "$VL" -le "$1" ]; then printf '%s%*s' "$2" $(( $1 - VL )) ''; return 0; fi
-  local x=$2; x=${x//$'\033'\[+([0-9;])m/}; printf '%s%s' "$(pad "$1" "$x")" "$R"
-}
-chip() { printf '%s%s%s %s %s' "$(bgc "$1")" "$(fgc crust)" "$BLD" "$2" "$R"; }   # <colour> <text>
-role_txt() { # <index> -> the role as people say it
-  case "${S_ROLE[$1]}" in dev) echo "${S_NAME[$1]}" ;; tester) echo QA ;; observer) echo observer ;; lead) echo lead ;;
-    reviewer) case "${S_NAME[$1]}" in *gpt*) echo "GPT review" ;; *) echo review ;; esac ;; *) echo "${S_ROLE[$1]}" ;; esac
-}
-seat_sub() { # <index> -> the second line of an agent in the list
-  local i=$1 task=${SC_TASK[$1]} last
-  if [ "${S_ROLE[$i]}" = observer ]; then
-    local p l
-    p=$(tail -1 "$TEAM_DIR/observer/passes.log" 2>/dev/null | grep -oE 'pass [0-9]+' | head -1 || true)
-    l=$(grep -m1 '^Largest loss' "$TEAM_DIR/observer/NOW.md" 2>/dev/null | grep -oE '[0-9]+ min' | head -1 || true)
-    printf '%s' "${p:-no pass yet}${l:+ · loss $l}"; return 0
-  fi
-  case "$task" in CANDIDATE-*) printf 'candidate %s · tests %s' "${task#CANDIDATE-}" "$(cand_devs "$task")"; return 0 ;; esac
-  if [ -n "$task" ]; then printf '%s · %s' "$task" "$(task_title "$task")"; return 0; fi
-  if [ "${SC_STATE[$i]}" = working ]; then printf '%s' "$(live_title "$AGENTS_JSON" "${S_NAME[$i]}")"; return 0; fi
-  last=$(last_task_of "${S_NAME[$i]}")
-  if [ -n "$last" ]; then
-    if ev_lines "$last" | awk '$3 == "MERGE" || $3 == "APPROVE" || $3 == "PASS" { f = 1 } END { exit !f }'; then printf 'idle · last %s ✔' "$last"
-    else printf 'idle · last %s' "$last"; fi
-  else printf 'idle'; fi
-}
-
-board_render() { # <selected index> <tick> -> BL[] (left) and BRT[] (right)
-  local sel=$1 tick=$2 i n W=$BW LW RW nm col lbl l1 l2 cw
-  LW=34; [ "$W" -lt 150 ] || LW=40
-  [ "$W" -ge 110 ] || LW=$((W - 2))
-  RW=$((W - LW - 4)); [ "$W" -ge 110 ] || RW=$((W - 2))
-  n=$(seat_count); cw=$((LW - 4))
-  BL=() BRT=()
-  for ((i = 0; i <= 3 * n; i++)); do BL+=(""); done   # agent i: rows 3i+1 and 3i+2; rows 3i are the gaps
-  for ((i = 0; i < n; i++)); do
-    nm=$(seat_disp "$i"); col=$(seat_col "$i"); lbl=$(seat_label "$i")
-    l1="$(badge "$i") $BLD$(fgc "$col")$nm$R $(fgc ov)$(role_txt "$i")$R"
-    case "$lbl" in IDLE|"") ;; *) l1="$l1 $(chip "$(label_col "$lbl" "$col")" "$lbl")" ;; esac
-    l2="    $(fgc text)$(seat_sub "$i")$R"
-    if [ "$i" = "$sel" ]; then
-      BL[3 * i]="$(fgc "$col")╭$(rep_char $((LW - 2)) ─)╮$R"
-      BL[3 * i + 1]="$(fgc "$col")│$R$(bgc mantle) $(onbg "$(bgc mantle)" "$(vcut "$cw" "$l1")") $R$(fgc "$col")│$R"
-      BL[3 * i + 2]="$(fgc "$col")│$R$(bgc mantle) $(onbg "$(bgc mantle)" "$(vcut "$cw" "$l2")") $R$(fgc "$col")│$R"
-      BL[3 * i + 3]="$(fgc "$col")╰$(rep_char $((LW - 2)) ─)╯$R"
-    else
-      BL[3 * i + 1]="  $(vcut "$cw" "$l1")"; BL[3 * i + 2]="  $(vcut "$cw" "$l2")"
-    fi
-  done
-  mission_view "$sel" "$RW" "$tick"
-  return 0
-}
-
-fr() { [ "${NARROW:-0}" = 1 ] && [ -z "$2" ] && return 0   # narrow: no spacer rows, so the task fits
-  BRT+=("$(fgc s1)│$R${3:-} $(onbg "${3:-}" "$(vcut "$1" "$2")") $R$(fgc s1)│$R"); }   # <inner width> <content> [background]: one framed row
-sepl() { BRT+=("$(fgc s1)├$(fgc s0)$1$(fgc s1)┤$R"); }   # <inner line>: a divider, dim inside the frame
-
-mission_view() { # <index> <width> <tick>
-  local i=$1 W=$2 tick=$3 seat=${S_NAME[$1]} col task title wt sha br rnd now mins typ IW C1 C2 C3
-  IW=$((W - 4)); C1=$(( (W - 10) * 35 / 100 )); C2=$(( (W - 10) * 33 / 100 )); C3=$(( W - 10 - C1 - C2 ))
-  col=$(seat_col "$i"); task=${SC_TASK[$i]}; [ -n "$task" ] || task=$(last_task_of "$seat")
-  BRT+=("$(fgc s1)╭$(rep_char $((W - 2)) ─)╮$R")
-  if [ -z "$task" ]; then
-    fr "$IW" ""; fr "$IW" "$(badge "$i")  $BLD$(fgc "$col")$(seat_disp "$i")$R $(fgc ov)· $(role_txt "$i") · no task yet$R"
-    fr "$IW" "     $(fgc sub)$(live_title "$AGENTS_JSON" "$seat")$R"; fr "$IW" ""
-    BRT+=("$(fgc s1)╰$(rep_char $((W - 2)) ─)╯$R"); return 0
-  fi
-  title=$(task_title "$task"); [ -n "$title" ] || title=$(head -1 "$TEAM_DIR/tasks/$task.md" 2>/dev/null | sed 's/^# *[^ :]*:* *//' || true)
-  br="task/$task"
-  sha=$(git -C "$WT_ROOT/integration" rev-parse --short "$br" 2>/dev/null || echo "—")
-  rnd=$(ev_lines "$task" | awk -v d=" $(dev_seats) " '$3 == "DISPATCH" && index(d, " " $2 " ")' | wc -l | tr -d ' ')
-  [ "${rnd:-0}" -gt 0 ] || rnd=1
-  now=$(date +%s)
-  local first; first=$(ev_full "$task" DISPATCH first)
-  mins="—"; [ -z "$first" ] || mins="$(( (now - $(ev_epoch "$first")) / 60 ))m"
-  typ=$(task_stats_raw | awk -F'\t' '$2 == "merged" && $4 > 0 { s += $4; c++ } END { if (c) printf "%dm", s / c; else printf "—" }')
-  # the developer of the task: its badge and colour lead the view
-  local dev_disp="" dev_seat="" k3 hi=$i hc=$col
-  for ((k3 = 0; k3 < $(seat_count); k3++)); do
-    [ "${S_ROLE[$k3]}" = dev ] && ev_lines "$task" | awk -v s="${S_NAME[$k3]}" '$2 == s && $3 == "DISPATCH" { f = 1 } END { exit !f }' \
-      && { dev_disp=$(seat_disp "$k3"); dev_seat=${S_NAME[$k3]}; hi=$k3; hc=$(seat_col "$k3"); }
-  done
-  if [ "${S_ROLE[$i]}" = dev ] || [ -z "$dev_seat" ]; then dev_disp=$(seat_disp "$i"); dev_seat=$seat; hi=$i; hc=$col; fi   # a selected developer is the developer
-  wt=$(seat_cwd "$(seat_index "$dev_seat")")
-  local HB; HB=$(bgc head)
-  fr "$IW" "" "$HB"
-  fr "$IW" "$(lr "$IW" "$(badge "$hi")  $BLD$(fgc "$hc")$task$R $BLD$(fgc text)$(pad_trim $((IW - ${#task} - 22)) "$title")$R" "$(fgc ov)on this task$R")" "$HB"
-  fr "$IW" "$(lr "$IW" "     $(fgc "$hc")$dev_disp$R$(fgc sub) · $dev_seat · round ${rnd:-1} · branch $R$(fgc blue)$br$R$(fgc sub) @ $sha$R" "$BLD$(fgc "$hc")$mins$R")" "$HB"
-  fr "$IW" "$(lr "$IW" "" "$(fgc ov)typical dev step $R$BLD$(fgc text)$typ$R")" "$HB"
-  fr "$IW" "" "$HB"
-  sepl "$(rep_char $((W - 2)) ─)"
-  # step track
-  local evs st_brief st_con st_dev st_test st_rev st_mrg cur="" k t c g lab who sw ci=0 kk=0 nodes="" labels="" times=""
-  evs=$(ev_lines "$task")
-  st_brief=$( [ -f "$TEAM_DIR/tasks/$task.md" ] && date -r "$TEAM_DIR/tasks/$task.md" +%H:%M 2>/dev/null || true )
-  local devs; devs=" $(dev_seats) "
-  # shellcheck disable=SC2034  # read through eval below
-  st_con=$(awk '$3 == "CONTRACT" { t = $1 } END { print t }' <<<"$evs")
-  # shellcheck disable=SC2034
-  st_dev=$(awk -v d="$devs" 'index(d, " " $2 " ") && ($3 == "DISPATCH" || $3 == "DONE") { t = $1 } END { print t }' <<<"$evs")
-  # shellcheck disable=SC2034
-  st_test=$(awk -v d="$devs" '$3 == "PASS" || $3 == "FAIL" || ($3 == "DISPATCH" && !index(d, " " $2 " ")) { t = $1 } END { print t }' <<<"$evs")
-  # shellcheck disable=SC2034
-  st_rev=$(awk '$3 == "APPROVE" || $3 == "CHANGES" { t = $1 } END { print t }' <<<"$evs")
-  # shellcheck disable=SC2034
-  st_mrg=$(awk '$3 == "MERGE" { t = $1 } END { print t }' <<<"$evs")
-  cur=$(awk -v d="$devs" '
-    $3 == "CONTRACT" { c = "con" } $3 == "MERGE" { c = "end" }
-    index(d, " " $2 " ") && $3 == "DISPATCH" { c = "dev" }  index(d, " " $2 " ") && $3 == "DONE" { c = "test" }
-    $3 == "FAIL" || $3 == "CHANGES" { c = "dev" }  $3 == "PASS" { c = "rev" }  $3 == "APPROVE" { c = "mrg" }
-    END { print c }' <<<"$evs")
-  [ -n "$cur" ] || { [ -n "$st_brief" ] && cur=brief; }
-  case "$cur" in brief) ci=0 ;; con) ci=1 ;; dev) ci=2 ;; test) ci=3 ;; rev) ci=4 ;; mrg) ci=5 ;; end) ci=6 ;; *) ci=-1 ;; esac
-  local since sev; case "$cur" in dev) sev='DISPATCH|FAIL|CHANGES' ;; test) sev='DONE' ;; rev) sev='PASS' ;; mrg) sev='APPROVE' ;; con) sev='CONTRACT' ;; *) sev='' ;; esac
-  since=$(ev_full "$task" "$sev" last)
-  local smin="—"; [ -z "$since" ] || smin="$(( (now - $(ev_epoch "$since")) / 60 ))m"
-  local tester reviewer; tester=$(disp_of "$(first_role tester)"); reviewer=$(disp_of "$(reviewer_of "$dev_seat")")
-  sw=$(( IW / 6 ))
-  for k in brief con dev test rev mrg; do
-    eval "t=\$st_$k"
-    case "$k" in brief) lab=BRIEF; who="" ;; con) lab=CONTRACT; who=$tester ;; dev) lab=DEV; who=$dev_disp ;;
-      test) lab=TEST; who=$tester ;; rev) lab=REVIEW; who="$reviewer → $(disp_of "$LEAD")"; [ "$ci" -gt 4 ] && who=$(disp_of "$LEAD") ;; mrg) lab=MERGE; who=candidate ;; esac
-    if [ "$kk" -lt "$ci" ]; then c=green; g="●"; elif [ "$kk" = "$ci" ]; then c=$hc; g="◉"; else c=s2; g="○"; fi
-    local segc=s2; { [ "$kk" -lt $((ci - 1)) ] || [ "$ci" = 6 ]; } && segc=green; [ "$kk" = "$ci" ] && segc=$hc
-    [ "$kk" = $((ci - 1)) ] && segc=green
-    if [ "$k" = mrg ]; then nodes="$nodes$(fgc "$c")$g$R"; else nodes="$nodes$(fgc "$c")$g$R$(fgc "$segc")$(rep_char $((sw - 1)) ─)$R"; fi
-    if [ "$kk" = "$ci" ]; then labels="$labels$BLD$(fgc "$c")$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$smin${who:+ · ${who%% →*}}") $R"
-    elif [ "$kk" -lt "$ci" ]; then labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "${t:-—}${who:+ · $who}") $R"
-    else labels="$labels$(fgc ov)$(pad "$sw" "$lab")$R"; times="$times$(fgc sub)$(pad $((sw - 1)) "$who") $R"; fi
-    kk=$((kk + 1))
-  done
-  fr "$IW" ""; fr "$IW" "$nodes"; fr "$IW" "$labels"; fr "$IW" "$times"; fr "$IW" ""
-  sepl "$(rep_char $((C1 + 2)) ─)┬$(rep_char $((C2 + 2)) ─)┬$(rep_char $((C3 + 2)) ─)"
-  local li; li=$(seat_index "$dev_seat")   # live, proof and timeline follow the developer of the task
-  # column 1: proof
-  local -a A=() L=() T=()
-  local rows res report nrow txt r passn=0 total=0 inwork="" firstopen="" shown=0
-  report=$(ls -t "$TEAM_DIR/reports/$task-test.md" "$TEAM_DIR/reports/$task-dev.md" 2>/dev/null | head -1 || true)
-  rows=$(awk '/^#+ .*[Aa]cceptance/ { on = 1; next } on && /^#/ { exit } on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; r = a[3]; gsub(/ /, "", n); gsub(/^ +| +$/, "", r); print n "\t" r }' "$TEAM_DIR/tasks/$task.md" 2>/dev/null || true)
-  res=""; [ -z "$report" ] || res=$(report_rows "$report")
-  total=$(printf '%s' "$rows" | grep -c . || true)
-  local -a RN=() RT=() RR=()
-  while IFS=$'\t' read -r nrow txt; do
-    [ -n "$nrow" ] || continue
-    r=$(awk -v n="$nrow" '$1 == n { print $2; exit }' <<<"$res")
-    [ "$r" = pass ] && passn=$((passn + 1))
-    [ "$r" = pass ] || [ -n "$firstopen" ] || firstopen=${#RN[@]}
-    RN+=("$nrow"); RT+=("$txt"); RR+=("$r")
-  done <<<"$rows"
-  local cells="" k2 nc=12 pc=0 ic=0; [ "$C1" -ge 40 ] || nc=8
-  [ -n "$firstopen" ] && [ "${SC_STATE[$li]}" = working ] && [ "${SC_TASK[$li]:-}" = "$task" ] && [ "${RR[$firstopen]}" != fail ] && { inwork=$firstopen; ic=1; }
-  [ "$total" -gt 0 ] && pc=$(( passn * nc / total ))
-  for ((k2 = 0; k2 < nc; k2++)); do
-    if [ "$k2" -lt "$pc" ]; then cells="$cells$(fgc green)━"; elif [ "$k2" -lt $((pc + ic)) ]; then cells="$cells$(fgc "$hc")━"; else cells="$cells$(fgc s1)━"; fi
-  done
-  A+=("$(lr "$C1" "$(fgc ov)PROOF · ACCEPTANCE$R" "$(fgc text)CONTRACT ${st_con:-—}$R")")
-  A+=("")
-  A+=("$cells$R  $BLD$(fgc text)$passn$R$(fgc sub) / $total pass$R$( [ "$ic" = 0 ] || printf '%s · 1 in work%s' "$(fgc sub)" "$R")")
-  # the rows: the first two, then from the first open row on, at most six
-  local start=0 idx; [ -n "$firstopen" ] && [ "$firstopen" -gt 2 ] && start=$((firstopen - 0))
-  for ((idx = 0; idx < ${#RN[@]} && shown < 6; idx++)); do
-    [ "$idx" -lt 2 ] || [ "$idx" -ge "$start" ] || continue
-    case "${RR[$idx]}" in pass) g="$(fgc green)✔$R"; c=text ;; fail) g="$(fgc red)✖$R"; c=red ;; *) g="$(fgc s2)○$R"; c=sub ;; esac
-    if [ "$idx" = "$inwork" ]; then
-      A+=("$(mixc yellow 7 bg)$(fgc "$hc")◐  $(printf '%3s' "${RN[$idx]}") $BLD$(pad $((C1 - 9)) "${RT[$idx]}") $R")
-    else A+=("$g  $(fgc sub)$(printf '%3s' "${RN[$idx]}")$R $(fgc "$c")$(pad_trim $((C1 - 8)) "${RT[$idx]}")$R"); fi
-    shown=$((shown + 1))
-  done
-  [ "$total" -le "$shown" ] || A+=("$(fgc ov)+ $((total - shown)) more · ⏎ for all rows$R")
-  # column 2: live
-  local lt spin files flist last okr badr q blk1="" blk2="" st=${SC_STATE[$li]} bw=$((C2 - 4))
-  spin=$(printf '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' | cut -c$(( tick % 10 + 1 )))
-  [ "${NO_MOTION:-0}" = 1 ] && spin="●"
-  lt=$(live_title "$AGENTS_JSON" "$dev_seat"); [ -n "$lt" ] || lt=$st
-  files=$(git -C "$wt" status --porcelain 2>/dev/null | grep -vc '\.agents-verify-off$' || true)
-  flist=$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '\.agents-verify-off$' | awk '{ f = $NF; sub(/.*\//, "", f); sub(/\..*/, "", f); sub(/-[0-9]+$/, "", f); print tolower(f) }' | awk '!s[$0]++' | head -3 | paste -sd'|' - | sed 's/|/ · /g' || true)
-  last=$(git -C "$wt" log -1 --format='%cd · %cr' --date=format:%H:%M 2>/dev/null | sed 's/ seconds* ago/ s ago/; s/ minutes* ago/ min ago/; s/ hours* ago/ h ago/' || echo "—")
-  okr=$(ev_lines "$task" | awk -v s="$dev_seat" '$2 == s && $3 == "HEAVY_END" && $4 == "rc=0"' | wc -l | tr -d ' ')
-  badr=$(ev_lines "$task" | awk -v s="$dev_seat" '$2 == s && $3 == "HEAVY_END" && $4 != "rc=0"' | wc -l | tr -d ' ')
-  q=$(queue_place "$dev_seat")
-  if [ "$st" = working ]; then L+=("$(lr "$C2" "$(fgc ov)LIVE · NOW$R" "$(fgc green)●$R $BLD$(fgc green)WORKING$R")")
-  else L+=("$(lr "$C2" "$(fgc ov)LIVE · NOW$R" "$(fgc s2)○$R $(fgc sub)$(printf '%s' "$st" | tr '[:lower:]' '[:upper:]')$R")"); fi
-  L+=("")
-  local l1t l2t="" BXF BXB; BXF=$(mixc "$hc" 35 fg); BXB=$(mixc "$hc" 6 bg)   # the mockup: border at 35 %, fill at 6 % of the colour
-  l1t="$spin $lt"
-  if [ "${#l1t}" -gt "$bw" ]; then   # wrap at a space
-    local cutp=$bw; while [ "$cutp" -gt $((bw / 2)) ] && [ "${l1t:$cutp:1}" != " " ]; do cutp=$((cutp - 1)); done
-    [ "${l1t:$cutp:1}" = " " ] || cutp=$bw
-    l2t=$(pad_trim "$bw" "  ${l1t:$cutp}"); l2t=${l2t/#   /  }; l1t=${l1t:0:$cutp}
-  fi
-  L+=("${BXF}╭$(rep_char $((C2 - 2)) ─)╮$R")
-  L+=("${BXF}│$R${BXB} $BLD$(fgc "$hc")$(pad "$bw" "$l1t")${BXB} $R${BXF}│$R")
-  [ -z "$l2t" ] || L+=("${BXF}│$R${BXB} $BLD$(fgc "$hc")$(pad "$bw" "$l2t")${BXB} $R${BXF}│$R")
-  L+=("${BXF}│$R${BXB} $(vcut "$bw" "$(lr "$bw" "${BXB}$(fgc sub)activity 30 min" "$(fgc "$hc")$(sp=$(spark "$dev_seat"); n2=$((bw - 17)); [ "$n2" -lt 15 ] && sp=${sp:$((15 - n2))}; printf '%s' "$sp")")")${BXB} $R${BXF}│$R")
-  L+=("${BXF}╰$(rep_char $((C2 - 2)) ─)╯$R")
-  L+=("$(lr "$C2" "$(fgc sub)files changed$R" "$BLD$(fgc text)$files$R$(fgc sub)${flist:+ $(pad_trim $((C2 - 16 - ${#files})) "$flist")}$R")")
-  L+=("$(lr "$C2" "$(fgc sub)last commit$R" "$(fgc text)$last$R")")
-  L+=("$(lr "$C2" "$(fgc sub)heavy runs$R" "$(fgc green)$okr ✔$R$(fgc sub) · $R$(fgc "$([ "$badr" -gt 0 ] && echo red || echo sub)")$badr ✖$R")")
-  if [ -n "$q" ]; then L+=("$(lr "$C2" "$(fgc sub)lock queue$R" "$(fgc yellow)place #$q$R")"); else L+=("$(lr "$C2" "$(fgc sub)lock queue$R" "$(fgc text)not queued$R")"); fi
-  [ "${files:-0}" -gt 0 ] && [ "${S_ROLE[$(seat_index "$dev_seat")]}" = dev ] && { blk1="commit before the next heavy run"; blk2="(squad heavy refuses a dirty tree)"; }
-  [ -n "$q" ] && { blk1="waiting for the lock"; blk2="place $q in the queue"; }
-  [ -n "${SC_TROUBLE[$li]}" ] && { blk1=$(trouble_hint "${SC_TROUBLE[$li]}" "$dev_seat"); blk2=""; }
-  if [ -n "$blk1" ]; then
-    L+=("")
-    local bl k4=0
-    while IFS= read -r bl; do
-      [ "$k4" -lt 4 ] || break
-      if [ "$k4" = 0 ]; then L+=("$(fgc yellow)▌$R$(mixc yellow 7 bg)$(fgc yellow)▲ $(fgc text)$(pad $((C2 - 3)) "$bl")$R")
-      else L+=("$(fgc yellow)▌$R$(mixc yellow 7 bg)$(fgc sub)  $(pad $((C2 - 3)) "$bl")$R"); fi
-      k4=$((k4 + 1))
-    done <<<"$(printf '%s\n' "$blk1" | fold -s -w $((C2 - 3)) | sed 's/ *$//'; [ -z "$blk2" ] || printf '%s\n' "$blk2" | fold -s -w $((C2 - 3)) | sed 's/ *$//')"
-  fi
-  # column 3: timeline
-  T+=("$(lr "$C3" "$(fgc ov)TIMELINE$R" "$(fgc text)TODAY$R")")
-  T+=("")
-  [ -z "$st_brief" ] || T+=("$(fgc sub)$st_brief$R  $(fgc mauve)◆$R $(fgc text)brief written$R$(fgc sub) · $(disp_of "$LEAD")$R")
-  local s e rest
-  while read -r t s e rest; do
-    [ -n "$t" ] || continue
-    case "$e" in
-      DISPATCH) if [[ " $(dev_seats) " == *" $s "* ]]; then T+=("$(fgc sub)$t$R  $(fgc blue)→$R $(fgc text)dispatched to $R$(fgc "$(seat_col "$(seat_index "$s")")")$(disp_of "$s")$R")
-                else T+=("$(fgc sub)$t$R  $(fgc blue)→$R $(fgc text)to $(disp_of "$s")$R"); fi ;;
-      CONTRACT) T+=("$(fgc sub)$t$R  $(fgc green)●$R $(fgc text)contract agreed$R$(fgc sub) · $(disp_of "$s")$R") ;;
-      DONE) T+=("$(fgc sub)$t$R  $(fgc green)✔$R $(fgc text)$(disp_of "$s") done$R") ;;
-      BLOCKED) T+=("$(fgc sub)$t$R  $(fgc yellow)!$R $(fgc text)$(disp_of "$s") blocked$R") ;;
-      PASS) T+=("$(fgc sub)$t$R  $(fgc green)✔$R $(fgc text)test passed$R$(fgc sub) · $(disp_of "$s")$R") ;;
-      FAIL) T+=("$(fgc sub)$t$R  $(fgc red)✖$R $(fgc text)test failed$R$(fgc sub) · $(disp_of "$s")$R") ;;
-      HEAVY_END) case "$rest" in rc=0*) T+=("$(fgc sub)$t$R  $(fgc green)✔$R $(fgc text)run passed$R$(fgc sub) · $(disp_of "$s")$R") ;; *) T+=("$(fgc sub)$t$R  $(fgc red)✖$R $(fgc text)run failed$R$(fgc sub) · $(disp_of "$s")$R") ;; esac ;;
-      APPROVE) T+=("$(fgc sub)$t$R  $(fgc green)✔$R $(fgc text)$(disp_of "$s") approved$R") ;;
-      CHANGES) T+=("$(fgc sub)$t$R  $(fgc yellow)✎$R $(fgc text)$(disp_of "$s") asks changes$R") ;;
-      MERGE) T+=("$(fgc sub)$t$R  $(fgc green)✔$R $(fgc text)merged$R") ;;
-      HUNG) T+=("$(fgc sub)$t$R  $(fgc red)✖$R $(fgc text)run hung$R") ;;
-    esac
-  done <<<"$(ev_lines "$task" | grep -vE ' HEAVY_START| HEARTBEAT' | tail -6)"
-  [ "$st" = working ] && [ "$ci" = 2 ] && T+=("$(fgc sub)now  $R  $(fgc "$hc")◉$R $(fgc "$hc")working$R")
-  local nx=""
-  case "$cur" in brief|con) nx="contract → dev" ;; dev) nx="DONE → $tester tests" ;; test) nx="$tester tests" ;; rev) nx="$reviewer reviews" ;; mrg) nx="merge after the candidate" ;; esac
-  [ -z "$nx" ] || T+=("$(fgc ov)next $R  $(fgc s2)○$R $(fgc sub)$nx$R")
-  T+=("")
-  kb() { printf '%s▕%s%s%s%s %s%s▏%s' "$(fgc s1)" "$R$(fgc blue)" "$BLD" "$1" "$R$(fgc text)" "$2" "$(fgc s1)" "$R"; }
-  T+=("$(kb b brief) $(kb c contract)")
-  T+=("$(kb r report) $(kb d diff)")
-  # compose the three columns; on a live board they stretch the panel to the key bar
-  local rowsn=${#A[@]} r1
-  [ "${#L[@]}" -le "$rowsn" ] || rowsn=${#L[@]}; [ "${#T[@]}" -le "$rowsn" ] || rowsn=${#T[@]}
-  [ "${BOARD_ROWS:-0}" -le $(( ${#BRT[@]} + rowsn + 3 )) ] || rowsn=$(( BOARD_ROWS - ${#BRT[@]} - 3 ))
-  for ((r1 = 0; r1 < rowsn; r1++)); do
-    BRT+=("$(fgc s1)│$R $(vcut "$C1" "${A[$r1]:-}") $(fgc s0)│$R $(vcut "$C2" "${L[$r1]:-}") $(fgc s0)│$R $(vcut "$C3" "${T[$r1]:-}") $(fgc s1)│$R")
-  done
-  # decisions on this task, and Owl's findings
-  local decs finds
-  decs=$(decisions_tsv | awk -F'\t' -v t="$task" -v B="$BLD" -v R="$R" -v G="$(fgc green)" -v Y="$(fgc yellow)" -v S="$(fgc sub)" -v X="$(fgc text)" '
-    function has(x, t,   p, a, b) { while ((p = index(x, t)) > 0) { a = substr(x, p - 1, 1); b = substr(x, p + length(t), 1)
-        if ((p == 1 || a !~ /[A-Za-z0-9._-]/) && (b == "" || b !~ /[A-Za-z0-9._-]/)) return 1; x = substr(x, p + 1) } return 0 }
-    has($0, t) { s = ""; see = ""; for (k = 3; k <= NF; k++) { if ($k ~ /^Status=/) s = substr($k, 8); if ($k ~ /^See=/) see = substr($k, 5) }
-      printf "%s%s%s%s ", B, X, $1, R
-      if (s ~ /^to test/) printf "%s◆ to test by you%s %s%s%s   ", Y, R, S, see, R; else if (s ~ /^final/) printf "%sfinal%s   ", G, R; else printf "%s%s%s   ", S, s, R }' || true)
-  finds=$(grep -cE -- "(^|[^A-Za-z0-9_-])$task([^A-Za-z0-9_-]|\$)" "$TEAM_DIR/observer/NOW.md" 2>/dev/null || true)   # T-1 is not T-12
-  vl "$decs"; [ $((VL + 50)) -le "$IW" ] || decs=$(printf '%s' "$decs" | sed "s/$(printf '\033')\[38;2;166;173;200m[^ ]*$(printf '\033')\[0m//g; s/  */ /g")
-  sepl "$(rep_char $((C1 + 2)) ─)┴$(rep_char $((C2 + 2)) ─)┴$(rep_char $((C3 + 2)) ─)"
-  fr "$IW" "$(lr "$IW" "$(fgc sub)decisions on this task$R   ${decs:-$(fgc sub)none$R}" "$(fgc sub)findings from Owl: $R$(fgc text)$([ "${finds:-0}" -gt 0 ] && echo "$finds open" || echo none)$R")" "$(bgc mantle)"
-  BRT+=("$(fgc s1)╰$(rep_char $((W - 2)) ─)╯$R")
-  return 0
-}
-
-ev_full() { # <task> <event or empty> <first|last> -> its "YYYY-MM-DD HH:MM:SS"
-  awk -v t="$1" -v e="$2" -v w="$3" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && (e == "" || $5 ~ ("^(" e ")$")) && $5 != "HEARTBEAT" { d = $1 " " $2; if (w == "first") { print d; exit } l = d } END { if (w == "last" && l != "") print l }' "$TEAM_DIR/events.log" 2>/dev/null || true
-}
-ev_epoch() { date -j -f '%Y-%m-%d %H:%M:%S' "$1" +%s 2>/dev/null || date -d "$1" +%s 2>/dev/null || date +%s; }
-
-team_disp() { # <seat> <team>: the agent's name for this team's seats; team/seat for another team's
-  if [ -z "$2" ] || [ "$2" = "$(basename "$REPO")" ] || [ "$2" = "$1" ]; then disp_of "$1"; else printf '%s/%s' "$2" "$1"; fi
-}
-
-board_header() {
-  local merged total owner q="" other="" f nm lw cells="" k who tm qs
-  merged=$(grep -cE '^\| *T-[^|]*\|[^|]*\|[^|]*\| *\**merged' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
-  total=$(grep -cE '^\| *T-[0-9]' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
-  owner=$(heavy_owner | cut -d: -f1)
-  if [ -n "$owner" ]; then who=${owner%@*}; tm=${owner#*@}; [ "$tm" = "$owner" ] && tm=""; owner="${tm:+$tm/}$(team_disp "$who" "$tm")"; fi
-  for f in "$HEAVY_DIR"/queue/*; do
-    [ -e "$f" ] || continue; qs=$(basename "$f" | cut -d- -f3-); q="$q → $(team_disp "${qs%@*}" "${qs#*@}")"
-  done
-  for f in "${HEAVY_DIR%/heavy}/teams"/*; do
-    [ -f "$f" ] || continue; nm=$(basename "$f"); [ "$nm" = "$SESSION_NAME" ] && continue
-    lw=$(cat "$f")
-    if [ -n "$(find "$lw/events.log" -mmin -15 2>/dev/null)" ]; then other="$other$nm $(fgc green)active$R  "; else other="$other$nm $(fgc sub)idle$R  "; fi
-  done
-  for ((k = 0; k < 20; k++)); do if [ "${total:-0}" -gt 0 ] && [ "$k" -lt $(( merged * 20 / total )) ]; then cells="$cells$(fgc green)━"; else cells="$cells$(fgc s1)━"; fi; done
-  local us="" cj xj
-  cj=$(usage_claude); xj=$(usage_codex 2>/dev/null || true)
-  [ -z "$cj" ] || us="$(fgc sub)Claude $R$BLD$(fgc text)$(jq -r '.p5 // 0 | floor' <<<"$cj")%$R"
-  [ -z "$xj" ] || us="$us${us:+$(fgc sub) · $R}$(fgc sub)Codex $R$BLD$(fgc text)$(jq -r '.p5 // 0 | floor' <<<"$xj" 2>/dev/null)%$R"
-  local hl
-  hl=" $BLD$(fgc text)$(basename "$REPO")$R"
-  [ -z "${TEAM_STEP:-}" ] || hl="$hl$(fgc sub) · step $TEAM_STEP$R"
-  if [ "${BW:-120}" -lt 110 ]; then
-    printf '%s\n' "$(vcut $((${BW:-120} - 1)) "$(printf '%s  %s%s/%s%s merged · lock %s%s%s' "$hl" "$BLD" "${merged:-0}" "${total:-0}" "$R" "$(fgc green)" "${owner:-free}" "$R")")"; return 0
-  fi
-  hl="$hl   $cells$R  $BLD$(fgc text)${merged:-0}/${total:-0}$R $(fgc sub)merged$R    $(fgc sub)lock$R $BLD$(fgc green)${owner:-free}$R$(fgc sub)$q$R"
-  hl="$hl    $(fgc sub)other teams:$R ${other:-$(fgc sub)none$R}"
-  vl "$hl  $us"; [ "$VL" -lt "${BW:-120}" ] && hl="$hl  $us"
-  printf '%s\n' "$(vcut $((${BW:-120} - 1)) "$hl")"
-  return 0
-}
-
-board_draw() { # <selected> <tick> <once>
-  local i rows LW=34; [ "$BW" -lt 150 ] || LW=40
-  BOARD_ROWS=0; [ "$3" = 1 ] || [ "$BW" -lt 110 ] || BOARD_ROWS=$((BH - 5))   # rows 4 to BH-2: header, rule and gap above, rule and keys below
-  NARROW=0; [ "$BW" -ge 110 ] || [ "$3" = 1 ] || NARROW=1
-  board_render "$1" "$2"
-  if [ "$3" = 1 ]; then
-    board_header; printf '%s\n' "${BL[@]}"; printf '%s\n' "${BRT[@]}"; return
-  fi
-  printf '\033[H\033[2J'
-  board_header
-  printf '%s\n' " $(fgc s0)$(rep_char $((BW - 2)) ─)$R"
-  rows=${#BL[@]}; [ "${#BRT[@]}" -le "$rows" ] || rows=${#BRT[@]}
-  [ "$rows" -le $((BH - 5)) ] || rows=$((BH - 5))   # never over the key bar
-  if [ "$BW" -lt 110 ]; then
-    # narrow: the selected agent only (↑↓ picks another), then its task
-    local -a S=("${BL[$((3 * $1 + 1))]}" ${BRT[@]+"${BRT[@]}"})
-    for ((i = 0; i < ${#S[@]} && i < BH - 5; i++)); do printf '\033[%d;2H%s' $((i + 4)) "${S[$i]}"; done
-  else
-    for ((i = 0; i < rows; i++)); do
-      printf '\033[%d;2H%s' $((i + 4)) "${BL[$i]:-}"
-      printf '\033[%d;%dH%s' $((i + 4)) $((LW + 4)) "${BRT[$i]:-}"
-    done
-  fi
-  local out=" "
-  kc() { printf '%s%s%s %s %s %s%s%s  ' "$(bgc sub)" "$(fgc crust)" "$BLD" "$1" "$R" "$(fgc sub)" "$2" "$R"; }
-  out="$out$(kc ↑↓ agent)$(kc ⏎ 'all rows')$(kc b brief)$(kc c contract)$(kc r report)$(kc d diff)$(kc t 'to test')$(kc f feedback)$(kc p pane)$(kc q quit)"
-  printf '\033[%d;1H %s' $((BH - 1)) "$(fgc s0)$(rep_char $((BW - 2)) ─)$R"
-  printf '\033[%d;1H%s' "$BH" "$(vcut $((BW - 1)) "$out")"
-  return 0
-}
-
-all_rows() { # <task> <index>: every acceptance row with its result, in less
-  local t=$1 res report
-  [ -n "$t" ] || return 0
-  [ -f "$TEAM_DIR/tasks/$t.md" ] || { board_note "no brief for $t yet"; return 0; }
-  report=$(ls -t "$TEAM_DIR/reports/$t-test.md" "$TEAM_DIR/reports/$t-dev.md" 2>/dev/null | head -1 || true)
-  res=""; [ -z "$report" ] || res=$(report_rows "$report")
-  awk '/^#+ .*[Aa]cceptance/ { on = 1; next } on && /^#/ { exit } on && /^\| *[0-9]+ *\|/ { split($0, a, "|"); n = a[2]; r = a[3]; gsub(/ /, "", n); gsub(/^ +| +$/, "", r); print n "\t" r }' "$TEAM_DIR/tasks/$t.md" 2>/dev/null \
-    | { printf '%s · acceptance rows (results from %s)\n\n' "$t" "${report##*/}"
-        while IFS=$'\t' read -r n txt; do r=$(awk -v n="$n" '$1 == n { print $2; exit }' <<<"$res"); printf '%-12s %3s  %s\n' "${r:-open}" "$n" "$txt"; done; } \
-    | less -R || true   # piped straight to less: no temporary file
-}
-
-view_file() { # <path>: show a file in less; a missing one is a note, never an exit
-  if [ -n "$1" ] && [ -f "$1" ]; then less -R "$1" || true; else board_note "not written yet: ${1#"$TEAM_DIR"/}"; fi
-}
-board_note() { printf '\033[%d;1H\033[2K %s%s%s' "$BH" "$(fgc yellow)" "$1" "$R"; sleep 1; }
-
-term_size() { # TS_ROWS, TS_COLS from the terminal itself: tput in $( ) sees a pipe and answers 80 x 24
-  local sz; TS_ROWS=""; TS_COLS=""
-  sz=$(stty size 2>/dev/null </dev/tty) || return 0
-  TS_ROWS=${sz% *}; TS_COLS=${sz#* }
-  return 0
-}
-
-cmd_board() {
-  find_repo; load_conf
-  export LC_ALL=${SQUAD_LOCALE:-en_US.UTF-8}
-  local once=0 sel=-1 tick=0 key a k task got
-  for a in "$@"; do case "$a" in --once) once=1 ;; --preview) PREVIEW=1 ;; --seat=*) sel=$(seat_index "${a#--seat=}") || die "no seat ${a#--seat=}" ;; esac; done
-  BC=0; [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && BC=1
-  palette_init
-  term_size
-  BW=${COLUMNS:-${TS_COLS:-120}}; BH=${LINES:-${TS_ROWS:-40}}
-  [ "${BW:-0}" -ge 40 ] 2>/dev/null || BW=120   # no size known (no client yet): assume 120
-  [ "$PREVIEW" = 1 ] || { mkdir -p "${HEAVY_DIR%/heavy}/teams" && printf '%s\n' "$TEAM_DIR" >"${HEAVY_DIR%/heavy}/teams/$SESSION_NAME"; }
-  # notifications start from now: a board that was down does not replay old events
-  [ "$once" = 1 ] || [ "$PREVIEW" = 1 ] || { mkdir -p "$TEAM_DIR/observer"; wc -c <"$TEAM_DIR/events.log" 2>/dev/null | tr -d ' ' >"$TEAM_DIR/observer/.notify" || true; }
-  if [ "$sel" = -1 ]; then   # start on the first developer with a task
-    sel=0; team_scan
-    for ((a = 0; a < $(seat_count); a++)); do [ "${S_ROLE[$a]}" = dev ] && [ -n "${SC_TASK[$a]}" ] && { sel=$a; break; }; done
-  fi
-  while :; do
-    if [ "$once" = 0 ]; then term_size; BW=${TS_COLS:-$BW}; BH=${TS_ROWS:-$BH}; fi
-    [ "${BW:-0}" -ge 40 ] 2>/dev/null || BW=120; [ "${BH:-0}" -ge 12 ] 2>/dev/null || BH=40   # no client yet: stty says 0 0
-    team_scan
-    [ "$PREVIEW" = 1 ] || { record_activity; sidebar_sync; notify_events; }
-    board_draw "$sel" "$tick" "$once"
-    [ "$once" = 1 ] && return 0
-    key=""; got=0; if IFS= read -rsn1 -t 2 key; then got=1; fi   # Enter reads as an empty key; a timeout fails
-    if [ "$key" = $'\033' ]; then k=""; read -rsn2 -t 1 k 2>/dev/null || true; key="$key$k"; fi   # whole seconds: bash 3.2
-    task=${SC_TASK[$sel]}; [ -n "$task" ] || task=$(last_task_of "${S_NAME[$sel]}")
-    case "$key" in
-      $'\033[A'|k) [ "$sel" -gt 0 ] && sel=$((sel - 1)) ;;
-      $'\033[B'|j) [ "$sel" -lt $(( $(seat_count) - 1 )) ] && sel=$((sel + 1)) ;;
-      [1-9]) [ "$key" -le "$(seat_count)" ] && sel=$((key - 1)) ;;
-      p) herdr_team agent focus "${S_NAME[$sel]}" >/dev/null 2>&1 || true ;;
-      ""|$'\n'|$'\r') [ "$got" = 0 ] || all_rows "$task" "$sel" ;;
-      b) view_file "$TEAM_DIR/tasks/$task.md" ;;
-      c) view_file "$TEAM_DIR/reports/$task-contract.md" ;;
-      r) view_file "$(ls -t "$TEAM_DIR/reports/$task"-*.md 2>/dev/null | head -1 || true)" ;;
-      d) if [ -n "$task" ] && git -C "$WT_ROOT/integration" rev-parse -q --verify "task/$task" >/dev/null 2>&1; then
-           { git -C "$WT_ROOT/integration" diff --color=always "$TEAM_BASE...task/$task" | less -R; } || true
-         else board_note "no branch task/${task:-?} yet"; fi ;;
-      f) printf '\033[%d;1H\033[2K feedback for %s: ' "$BH" "${task:-the team}"
-         a=""; IFS= read -r a || true
-         [ "$PREVIEW" = 0 ] || { board_note "preview: feedback is off"; a=""; }
-         [ -z "${a//[[:space:]]/}" ] || ( cmd_feedback "${task:+$task: }$a" >/dev/null 2>&1 ) || board_note "feedback was not saved" ;;
-      t) a=$(decisions_tsv | awk -F'\t' '{ s = ""; see = ""; for (k = 3; k <= NF; k++) { if ($k ~ /^Status=/) s = substr($k, 8); if ($k ~ /^See=/) see = substr($k, 5) } } s ~ /^to test/ { print $1 "  " $2 (see != "" ? "\n      see: " see : "") "\n" }' || true)
-         if [ -n "$a" ]; then printf 'To test by you\n\n%s\n' "$a" | less -R || true; else board_note "nothing to test by you"; fi ;;
-      q) printf '\033[2J\033[H'; return 0 ;;
-    esac
-    tick=$((tick + 1))
-  done
 }
 
 # ---- observer passes --------------------------------------------------------------
@@ -2400,43 +1757,12 @@ update_conf_locked() {
     say "  updated  .team/team.conf: seats that must never wait on a prompt:"
     printf '%s\n' "$fixed" | sed 's/^/             /'
   fi
-  # a name and a colour for every seat that has none (the board, herdr's sidebar and every message use them)
-  local seatn have prop
-  have=$(awk '{ sub(/^[[:space:]]+/, "") } $1 == "name" { print $2 }' "$conf")
-  for seatn in $( { cat "$conf"; printf '%s' "$adds"; } | awk '{ sub(/^[[:space:]]+/, "") } $1 == "seat" { print $2 }'); do
-    printf '%s\n' "$have" | grep -qx -- "$seatn" && continue
-    prop=$(propose_name "$seatn" "$conf" "$adds")
-    adds="${adds}name $seatn $prop"$'\n'
-  done
   [ -n "$adds" ] || return 0
   tmp="$conf.tmp.$$"
   { cat "$conf"; printf '\n# added by squad update-conf on %s (preset %s)\n%s' "$(date '+%Y-%m-%d %H:%M')" "$preset" "$adds"; } >"$tmp" && mv "$tmp" "$conf"
   n=$(printf '%s' "$adds" | grep -c .)
   say "  updated  .team/team.conf: $n line(s) added from preset '$preset' (put 'upgrade off' in it to stop this):"
   printf '%s' "$adds" | sed 's/^/             /'
-}
-
-propose_name() { # <seat> <conf> <names added so far> -> "<Name> <colour>" (a name nobody has, a free colour when one is left)
-  local seat=$1 role taken c fixed="" usedn
-  usedn=$( { cat "$2"; printf '%s' "$3"; } | awk '{ sub(/^[[:space:]]+/, "") } $1 == "name" { print $3 }')
-  case "$seat" in
-    lead) fixed="Atlas mauve" ;; dev-a) fixed="Nova blue" ;; dev-b) fixed="Rook teal" ;; dev-c) fixed="Iris peach" ;;
-    dev-d) fixed="Juno sky" ;; dev-e) fixed="Kite lavender" ;; tester) fixed="Vera green" ;; rev-gpt) fixed="Sol yellow" ;; observer) fixed="Owl pink" ;;
-  esac
-  if [ -n "$fixed" ] && ! printf '%s\n' "$usedn" | grep -qx -- "${fixed%% *}"; then echo "$fixed"; return; fi
-  role=$( { cat "$2"; printf '%s' "$3"; } | awk -v s="$seat" '{ sub(/^[[:space:]]+/, "") } $1 == "seat" && $2 == s { print $4; exit }')
-  taken=$( { cat "$2"; printf '%s' "$3"; } | awk '{ sub(/^[[:space:]]+/, "") } $1 == "name" { print $4 }')
-  # the role's colour when free, else the first free colour
-  case "$role" in lead) c=mauve ;; tester) c=green ;; reviewer) c=yellow ;; observer) c=pink ;; *) c="" ;; esac
-  if [ -z "$c" ] || printf '%s\n' "$taken" | grep -qx "$c"; then
-    for c in blue teal peach sky lavender green yellow pink mauve red; do printf '%s\n' "$taken" | grep -qx "$c" || break; done
-  fi
-  local nm; nm=$(printf '%s' "$seat" | tr -d '_-')
-  nm="$(printf '%s' "${nm:0:1}" | tr '[:lower:]' '[:upper:]')${nm:1}"
-  nm=${nm:0:16}
-  local base=$nm k=2
-  while printf '%s\n' "$usedn" | grep -qx -- "$nm"; do nm="${base:0:$((16 - ${#k}))}$k"; k=$((k + 1)); done
-  echo "$nm $c"
 }
 
 cmd_update_conf() {
@@ -2633,22 +1959,24 @@ new_tab() { # <workspace> <label> <cwd> -> root pane of the new tab
 #   mission  (>= 220 cols)  one tab: lead | each dev | reviewers + tester, strip below
 #   focus    (< 120 cols)   tabs: lead + strip · devs · review · changes
 make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
-  local ws=$1 tab=$2 root=$3 width mode i p obs=""
+  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio obs=""
   local devs=() others=()
   for ((i = 0; i < $(seat_count); i++)); do
     case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; observer) obs=$i ;; esac
   done
-  read -r width _ < <(herdr pane layout --pane "$root" | jq -r '.result.layout.area | "\(.width) \(.height)"')
+  read -r width height < <(herdr pane layout --pane "$root" | jq -r '.result.layout.area | "\(.width) \(.height)"')
   mode=${SQUAD_LAYOUT:-}
   if [ -z "$mode" ]; then
     # no client attached yet (started from outside herdr): width 0 -> talk
     if [ "${width:-0}" -ge 220 ]; then mode=mission; elif [ "${width:-0}" -gt 0 ] && [ "${width:-0}" -lt 120 ]; then mode=focus; else mode="talk"; fi
   fi
-  # the team tab is the board (docs/design/squad-deck-team.html); the agents' panes are in "seats"
   herdr tab rename "$tab" team >/dev/null 2>&1 || true
-  herdr pane rename "$root" board >/dev/null 2>&1 || true
-  herdr pane run "$root" "$SQUAD_HOME/bin/squad board" >/dev/null
-  root=$(new_tab "$ws" seats "$WT_ROOT/integration")
+  # live board: 5 rows at the bottom of the first tab
+  [ "${height:-0}" -gt 0 ] 2>/dev/null || height=40
+  ratio=$(awk -v h="$height" 'BEGIN { r = 1 - 6 / h; if (r < 0.75) r = 0.75; if (r > 0.95) r = 0.95; printf "%.3f", r }')
+  strip=$(split "$root" down "$WT_ROOT/integration" "$ratio")
+  herdr pane rename "$strip" watch >/dev/null 2>&1 || true
+  herdr pane run "$strip" "$SQUAD_HOME/bin/squad watch" >/dev/null
   PANES[$LEAD_I]=$root
   case "$mode" in
     mission)
@@ -3033,12 +2361,6 @@ cmd_up() {
     if [ -z "$(jq -r '.result.panes[] | select(.label == "report") | .pane_id' <<<"$panes_json" | head -1)" ]; then
       report_tab "$ws"; say "  added the report tab"
     fi
-    if [ -z "$(jq -r '.result.panes[] | select(.label == "board") | .pane_id' <<<"$panes_json" | head -1)" ]; then
-      local bp; bp=$(new_tab "$ws" board "$WT_ROOT/integration")
-      herdr pane rename "$bp" board >/dev/null 2>&1 || true
-      herdr pane run "$bp" "$SQUAD_HOME/bin/squad board" >/dev/null
-      say "  added the board tab (a restart of the team puts it first, as the team tab)"
-    fi
   fi
 
   say "Starting agents"
@@ -3166,7 +2488,6 @@ case "$cmd" in
   done)    cmd_done "$@" ;;
   usage)   cmd_usage ;;
   watch)   cmd_watch "$@" ;;
-  board)   cmd_board "$@" ;;
   statusline) cmd_statusline ;;
   git)     cmd_git "$@" ;;
   heavy)   cmd_heavy "$@" ;;
