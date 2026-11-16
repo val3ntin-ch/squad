@@ -755,7 +755,8 @@ seat_model_arg() { # <index> -> the --model / -m value in the seat's arguments, 
 
 cmd_dispatch() {
   find_repo; load_conf
-  local seat=${1:-} task=${2:-} escalate=0 started=0 i role kind clear text round
+  local seat=${1:-} task=${2:-} escalate=0 started=0 i role kind clear text round deferred=0
+  local -a orig=("$@")
   [ -n "$seat" ] && [ -n "$task" ] || die "usage: squad dispatch <seat> <task> [--escalate] [text...]"
   valid_task "$task"
   shift 2
@@ -774,15 +775,27 @@ cmd_dispatch() {
   if [ "$role" = dev ] && has_role tester && [ ! -f "$TEAM_DIR/reports/$task-contract.md" ] \
      && ! awk -v t="$task" -v devs=" $(dev_seats) " '
           { if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; id = $4; e = $5 } else { s = $2; id = $3; e = $4 } }
-          (id "") == (t "") && index(devs, " " s " ") && e != "DISPATCH_FAILED" { f = 1 }
+          (id "") == (t "") && index(devs, " " s " ") && e !~ /^(DISPATCH_FAILED|DISPATCH_QUEUED|DISPATCH_DROPPED|DISPATCH_NOT_STARTED|CONTRACT_DEFERRED)$/ { f = 1 }
           END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null; then
-    die "no contract for $task yet: send the tester 'squad dispatch <tester> $task --contract' first ($TEAM_DIR/reports/$task-contract.md)."
+    # the tester busy in a run (a candidate takes 45 min): the dev starts on the brief, the contract follows (observer S-47)
+    local tst; tst=$(first_role tester)
+    if [ "${SQUAD_CONTRACT_DEFERRED:-0}" = 1 ] || [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$tst")" = working ]; then
+      deferred=1
+    else
+      die "no contract for $task yet: send the tester 'squad dispatch <tester> $task --contract' first ($TEAM_DIR/reports/$task-contract.md)."
+    fi
   fi
   if [ "${1:-}" = --contract ]; then
     [ "$role" = tester ] || die "--contract goes to the tester."
-    shift; text="Contract for task $task: read $TEAM_DIR/tasks/$task.md and follow 'The contract' in your role file."
+    shift; text="Contract for task $task: read $TEAM_DIR/tasks/$task.md and follow 'The contract' in your role file."; CONTRACT_TEXT=1
   else
     text=${*:-$(default_task_line "$role" "$task" "$round")}
+  fi
+  [ "$deferred" = 0 ] || text="$text The contract is not written yet: the tester is in a run. Start on the brief; the tester's contract notes come to you as a RULE line."
+  # a busy seat: the task waits for it and is sent when it is free (observer S-39); the call returns at once
+  if [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] && { [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ] || queue_lock_held "$seat" || queue_pending "$seat"; }; then
+    SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
+    return 0
   fi
   clear=$(clear_cmd "$kind")
   if [ "$clear" != "-" ]; then
@@ -803,10 +816,14 @@ cmd_dispatch() {
     fi
   fi
   # the seat must be at its own prompt, with no menu open (Gas Town: WaitForRuntimeReady)
-  wait_ready "$seat" "$kind" "$DISPATCH_WAIT" || { log_event "$seat" "$task" DISPATCH_FAILED "not at its prompt"; die "$seat is not at its prompt (a menu, a dialog or its start screen). Read its pane: squad herdr agent read $seat --source visible"; }
+  local ready=1; wait_ready "$seat" "$kind" "$DISPATCH_WAIT" || ready=0
+  if [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] && [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ]; then
+    SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"; return 0
+  fi
+  [ "$ready" = 1 ] || wait_ready "$seat" "$kind" 5 || { log_event "$seat" "$task" DISPATCH_FAILED "not at its prompt"; die "$seat is not at its prompt (a menu, a dialog or its start screen). Read its pane: squad herdr agent read $seat --source visible"; }
   # logged before the task is sent: a fast seat's report can never come before its dispatch
   [ "$started" = 1 ] || plan_gate "$task"   # again: the plan may have changed during the waits above
-  log_event "$seat" "$task" DISPATCH "round=$round${model:+ model=$model} $(usage_tag)"
+  log_event "$seat" "$task" DISPATCH "$([ "${CONTRACT_TEXT:-0}" = 1 ] && printf 'contract=1 ')round=$round${model:+ model=$model} $(usage_tag)"
   herdr_team agent prompt "$seat" "$text" >/dev/null || { log_event "$seat" "$task" DISPATCH_FAILED "could not send"; die "could not send the task to $seat."; }
   # started = the pane shows a running turn, or the task left the input line (Gas Town: submit_verify.go)
   if ! wait_started "$seat" "$text" "$DISPATCH_WAIT"; then
@@ -814,6 +831,78 @@ cmd_dispatch() {
     die "$seat did not start on $task within ${DISPATCH_WAIT}s. Read its pane: squad herdr agent read $seat --source visible"
   fi
   say "$seat started on $task (round $round${model:+, $model})."
+  if [ "$deferred" = 1 ]; then   # the contract follows: queued for the tester, sent when its run ends
+    log_event "$seat" "$task" CONTRACT_DEFERRED "the tester was in a run"
+    local tq; tq=$(first_role tester)
+    # a contract request already waiting (or the contract written): no second one
+    if [ -f "$TEAM_DIR/reports/$task-contract.md" ] || awk -v s="$tq" -v t="$task" '$3 == s && $4 == t { if ($5 == "DISPATCH_QUEUED") q = 1; else if ($5 == "DISPATCH" || $5 == "DISPATCH_DROPPED" || $5 == "DISPATCH_FAILED") q = 0 } END { exit !q }' "$TEAM_DIR/events.log" 2>/dev/null; then :
+    elif ! ( SQUAD_DISPATCH_QUEUED=0 SQUAD_CONTRACT_DEFERRED=0 "$SQUAD_HOME/bin/squad" dispatch "$(first_role tester)" "$task" --contract ) >/dev/null 2>&1; then
+      say "squad dispatch: the contract for $task could not be sent to $(first_role tester); send it: squad dispatch $(first_role tester) $task --contract"
+      herdr_team agent prompt "$LEAD" "[squad] the contract for $task was not sent to $(first_role tester): send it again (squad dispatch $(first_role tester) $task --contract)." >/dev/null 2>&1 || true
+    fi
+  fi
+}
+
+DISPATCH_QUEUE_WAIT=${SQUAD_DISPATCH_QUEUE_WAIT:-7200}
+# A seat's queue: a pending file per waiting dispatch (first come, first served) and one delivery
+# lock, a symlink to its owner's pid (made in one step, like the heavy lock).
+queue_lock_held() { # <seat>: a queued dispatch is being delivered to it now (its owner is alive)
+  local l="$TEAM_DIR/seats/$1.dispatching" p
+  p=$(readlink "$l" 2>/dev/null) || return 1
+  if kill -0 "$p" 2>/dev/null; then return 0; fi
+  [ "$(readlink "$l" 2>/dev/null)" = "$p" ] && rm -f "$l"   # left over from a killed queue: cleared
+  return 1
+}
+queue_pending() { # <seat> [<my pending file>]: another dispatch waits for this seat (ahead of mine, when given)
+  local f p
+  for f in "$TEAM_DIR/seats/$1.pending"/*; do
+    [ -e "$f" ] || continue
+    [ "$f" = "${2:-}" ] && return 1   # sorted: the files before mine are ahead of me
+    p=$(cut -d- -f2 <<<"$(basename "$f")")
+    if kill -0 "$p" 2>/dev/null; then return 0; fi
+    rm -f "$f"   # its waiter is gone
+  done
+  return 1
+}
+dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the background until the seat is free, then dispatch
+  local seat=$1 task=$2; shift 2
+  local log="$TEAM_DIR/seats/$seat.queue.log" since contract=0 a
+  for a in "$@"; do [ "$a" = --contract ] && contract=1; done
+  mkdir -p "$TEAM_DIR/seats/$seat.pending"
+  since=$(wc -l <"$TEAM_DIR/events.log" | tr -d ' ')   # before the QUEUED line: a DISPATCH right after it still counts
+  log_event "$seat" "$task" DISPATCH_QUEUED "$([ "$contract" = 1 ] && printf 'contract=1 ')waits for $seat to be free"
+  (
+    set +e
+    me=$(sh -c 'echo $PPID'); mine="$TEAM_DIR/seats/$seat.pending/$(date +%s%N 2>/dev/null | tr -dc 0-9 | cut -c1-19)-$me-$task"
+    : >"$mine"; lockd="$TEAM_DIR/seats/$seat.dispatching"
+    trap 'rm -f "$mine"; [ "$(readlink "$lockd" 2>/dev/null)" = "$me" ] && rm -f "$lockd"' EXIT
+    end=$(( $(date +%s) + DISPATCH_QUEUE_WAIT ))
+    sent() { # this request is done meanwhile: sent for the same purpose (a contract, or the task), or the contract written
+      local lines; lines=$(tail -n +"$((since + 1))" "$TEAM_DIR/events.log" 2>/dev/null | grep -E "^[0-9-]+ [0-9:]+ $seat $task DISPATCH " || true)
+      if [ "$contract" = 1 ]; then printf '%s\n' "$lines" | grep -q 'contract=1' || [ -f "$TEAM_DIR/reports/$task-contract.md" ]
+      else printf '%s\n' "$lines" | grep -v 'contract=1' | grep -q .; fi
+    }
+    while [ "$(date +%s)" -lt "$end" ]; do
+      if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
+      st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
+      case "$st" in
+        idle|done)   # free, my turn (no earlier waiter), the delivery lock taken in one step
+          if ! queue_pending "$seat" "$mine" && ! queue_lock_held "$seat" && ln -s "$me" "$lockd" 2>/dev/null; then
+            st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
+            if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
+            case "$st" in idle|done) ;; *) rm -f "$lockd"; sleep "${SQUAD_QUEUE_POLL:-15}"; continue ;; esac
+            if SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@"; then exit 0; fi
+            herdr_team agent prompt "$LEAD" "[squad] the queued dispatch of $task to $seat failed: $log" >/dev/null 2>&1 || true
+            exit 1
+          fi ;;
+      esac   # working, blocked (a prompt or a question), off: wait
+      sleep "${SQUAD_QUEUE_POLL:-15}"
+    done
+    log_event "$seat" "$task" DISPATCH_FAILED "still busy after $((DISPATCH_QUEUE_WAIT / 60)) min in the queue"
+    herdr_team agent prompt "$LEAD" "[squad] $task waited $((DISPATCH_QUEUE_WAIT / 60)) min for $seat and was not sent." >/dev/null 2>&1 || true
+  ) >>"$log" 2>&1 </dev/null &
+  disown $! 2>/dev/null || true
+  say "$seat is busy: $task waits and is sent when $seat is free (queued; log: ${log#"$REPO"/})."
 }
 
 dev_seats() { local i n out=""; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = dev ] && out="$out ${S_NAME[$i]}"; done; echo "${out# }"; }
