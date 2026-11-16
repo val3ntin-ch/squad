@@ -984,14 +984,20 @@ cmd_start_seat() { # <seat>: start one seat in the running team (a seat added to
   case "${S_ROLE[$i]}" in
     planner) pane=$(plan_tab "$ws" "$i") ;;
     observer) pane=$(observer_tab "$ws" "$i") ;;
-    *) die "start-seat starts a planner (and its critic) or an observer; for other seats run 'squad up'." ;;
+    critic) # beside the planner, in the plan tab
+      local pp; pp=$(herdr_team pane list --workspace "$ws" | jq -r --arg l "$(first_role planner)" '.result.panes[] | select(.label == $l) | .pane_id' | head -1)
+      [ -n "$pp" ] || die "no planner pane: start the planner first (squad start-seat $(first_role planner))."
+      pane=$(split "$pp" right "$WT_ROOT/integration" 0.5) ;;
+    *) die "start-seat starts a planner (and its critic), a critic or an observer; for other seats run 'squad up'." ;;
   esac
   START_FAILED=0; start_seat "$i" "$pane"
   [ "$START_FAILED" = 0 ] || die "$seat did not start: see its pane in the plan tab."
   say "$seat started in its tab."
   local c ci; c=$(first_role critic)
   if [ "${S_ROLE[$i]}" = planner ] && [ -n "$c" ] && [ -z "$(herdr_team agent list 2>/dev/null | jq -r --arg n "$c" '.result.agents[] | select(.name == $n) | .name' | head -1)" ]; then
-    ci=$(seat_index "$c"); start_seat "$ci" "$(split "$pane" right "$WT_ROOT/integration" 0.5)"; say "$c started beside it."
+    ci=$(seat_index "$c"); START_FAILED=0; start_seat "$ci" "$(split "$pane" right "$WT_ROOT/integration" 0.5)"
+    [ "$START_FAILED" = 0 ] || die "$c did not start beside it: close its pane and run squad start-seat $c."
+    say "$c started beside it."
   fi
 }
 
@@ -2372,7 +2378,9 @@ start_seat() { # <index> <pane>
   if loads_role "$kind"; then
     local seat_file; seat_file=$(write_seat_file "$i")
     if [ "$kind" = claude ]; then agent_args+=(--append-system-prompt-file "$seat_file")
-    else agent_args+=(-c "developer_instructions=$(jq -Rs . <"$seat_file")"); fi
+    else   # Codex: a short pointer; the whole text typed into the pane is cut by the terminal's input line limit
+      agent_args+=(-c "developer_instructions=$(printf 'You are seat %s on an agent team. Before anything else, read %s: it is your identity, the team protocol and your role, and it stays true across context clears. Read it again after a clear.' "$name" "$seat_file" | jq -Rs .)")
+    fi
   fi
   # Codex rejects --add-dir under its read-only default (an untrusted folder)
   # and exits; workspace-write is its normal mode in a trusted project.
