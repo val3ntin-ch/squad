@@ -755,7 +755,7 @@ seat_model_arg() { # <index> -> the --model / -m value in the seat's arguments, 
 
 cmd_dispatch() {
   find_repo; load_conf
-  local seat=${1:-} task=${2:-} escalate=0 i role kind clear text round
+  local seat=${1:-} task=${2:-} escalate=0 started=0 i role kind clear text round
   [ -n "$seat" ] && [ -n "$task" ] || die "usage: squad dispatch <seat> <task> [--escalate] [text...]"
   valid_task "$task"
   shift 2
@@ -766,7 +766,8 @@ cmd_dispatch() {
   # the gate holds a task's first start; a task already under way (its test, review, a fix) goes on
   # (started = real work on it: a run, a report, a verdict; a dispatch that failed does not count)
   awk -v t="$task" '{ id = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $4 : $3; e = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $5 : $4 }
-    id == t && e ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES|HEAVY_START|HEAVY_END|BLOCKED|CONTRACT|DONE-FOR-SWITCH)$/ { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null || plan_gate "$task"
+    id == t && e ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES|HEAVY_START|HEAVY_END|BLOCKED|CONTRACT|DONE-FOR-SWITCH)$/ { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null && started=1
+  [ "$started" = 1 ] || plan_gate "$task"
   round=$(review_round "$task")
   # the contract comes first: a dev starts only on a table the tester agreed
   # (only a task's first hand-out: a task already under way, for example from an older squad, goes on)
@@ -804,6 +805,7 @@ cmd_dispatch() {
   # the seat must be at its own prompt, with no menu open (Gas Town: WaitForRuntimeReady)
   wait_ready "$seat" "$kind" "$DISPATCH_WAIT" || { log_event "$seat" "$task" DISPATCH_FAILED "not at its prompt"; die "$seat is not at its prompt (a menu, a dialog or its start screen). Read its pane: squad herdr agent read $seat --source visible"; }
   # logged before the task is sent: a fast seat's report can never come before its dispatch
+  [ "$started" = 1 ] || plan_gate "$task"   # again: the plan may have changed during the waits above
   log_event "$seat" "$task" DISPATCH "round=$round${model:+ model=$model} $(usage_tag)"
   herdr_team agent prompt "$seat" "$text" >/dev/null || { log_event "$seat" "$task" DISPATCH_FAILED "could not send"; die "could not send the task to $seat."; }
   # started = the pane shows a running turn, or the task left the input line (Gas Town: submit_verify.go)
