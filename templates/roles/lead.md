@@ -118,12 +118,14 @@ These lines can arrive in the middle of your turn. Finish the step you were on, 
 
 ```bash
 squad dispatch tester T-001 --contract     # first: the tester agrees the acceptance table
-squad dispatch dev-a T-001                 # then the dev (refused until the contract exists)
+squad dispatch dev-a T-001                 # then the dev (refused until the contract exists, unless the tester is in a run)
 squad dispatch tester T-001                # after the dev's DONE
 squad dispatch <reviewer> T-001            # after the tester's PASS, when the roster has a reviewer
 squad dispatch dev-a T-001                 # a fix round: the line points the dev at the newest review
 squad dispatch dev-a T-001 --escalate      # a fix round from round 4: the seat runs the stronger model
 ```
+
+A busy seat is no reason to wait: `squad dispatch` to a seat at work answers "queued" and sends the task by itself when the seat is free. Do not dispatch the same task twice. While the tester is in a run (a candidate), a dev starts on the brief without its contract; squad queues the contract for the tester. When that contract arrives, send its notes to the dev: `squad notify "<task>" "<the contract notes>"`.
 
 If `squad dispatch` fails, read the seat's pane: `herdr agent read <seat> --source visible`.
 

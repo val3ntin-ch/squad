@@ -347,7 +347,16 @@ reset_log; rm -f "$tmp/state"; printf 'x\n' >.team/reports/T-100-contract.md
 check "dispatch gives dev-a its task once it is idle again" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-100
 check "dispatch sends the clear first, then the task line" sh -c "grep -n 'agent prompt dev-a' '$MOCK_LOG' | head -1 | grep -q '/clear' && grep -q 'agent prompt dev-a Task T-100 is yours. Read $tmp/proj4/.team/tasks/T-100.md' '$MOCK_LOG'"
 check "dispatch logs the event with the round" ev ' dev-a T-100 DISPATCH round=1'
-check "dispatch fails when the seat never starts, and logs it" sh -c "! MOCK_DYNAMIC=1 MOCK_NEVER_WORK=1 SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-100 2>/dev/null && grep -q ' dev-a T-100 DISPATCH_NOT_STARTED' .team/events.log"
+check "dispatch fails when the seat never starts, and logs it" sh -c "rm -f '$tmp/state'; ! MOCK_DYNAMIC=1 MOCK_NEVER_WORK=1 SQUAD_DISPATCH_WAIT=2 '$squad' dispatch dev-a T-100 2>/dev/null && grep -q ' dev-a T-100 DISPATCH_NOT_STARTED' .team/events.log"
+echo working >"$tmp/state"; printf 'x\n' >.team/reports/T-131-contract.md
+check "dispatch to a busy seat queues it and returns at once" sh -c "MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 '$squad' dispatch dev-a T-131 | grep -q 'is busy: T-131 waits' && grep -q ' dev-a T-131 DISPATCH_QUEUED' .team/events.log"
+echo idle >"$tmp/state"
+check "the queued task is sent when the seat is free" sh -c "for k in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do grep -q ' dev-a T-131 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
+sleep 3; rm -f "$tmp/state"
+agents_tb='{"result":{"agents":[{"name":"tester","agent_status":"working","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
+check "a dev starts without a contract while the tester is in a run (the contract follows)" sh -c "out=\$(MOCK_AGENTS='$agents_tb' SQUAD_DISPATCH_WAIT=1 '$squad' dispatch dev-a T-102 2>&1); ! printf '%s' \"\$out\" | grep -q 'no contract for T-102'"
+agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
+check "with an idle tester the contract still comes first" sh -c "MOCK_AGENTS='$agents_ti' '$squad' dispatch dev-a T-103 2>&1 | grep -q 'no contract for T-103'"
 check "dispatch refuses a dev task with no contract from the tester" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a T-101
 printf '19:09:44 dev-a T-150 DONE\n' >>.team/events.log; reset_log; rm -f "$tmp/state"
 check "a task already under way (an older squad) goes on without a contract" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-150
