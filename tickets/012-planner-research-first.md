@@ -10,10 +10,11 @@ nobody checked that before days of work.
 
 ## Scope
 - In:
-  - A new seat role `planner` (Claude Fable 5.2) with its role file `templates/roles/planner.md`.
+  - A new seat role `planner` (Claude Fable 5.2) and a new seat role `critic` (GPT Sol 6.1 on Codex,
+    `-a never`), with their role files; both run in the herdr tab "plan", side by side (V!, 16 Nov 2026).
   - A new command `squad plan "<goal>"`: the planner researches and writes `.team/PLAN.md`.
-  - A critique step: GPT Sol (through `squad consult`) reads the plan and lists every claim it
-    cannot verify. The planner answers each item.
+  - A critique step: the GPT critic seat reads the plan and the proofs and lists every claim it
+    cannot verify, ending with `ITEMS: <n>`. The planner answers each item.
   - A check, `squad plan --check`, that refuses a plan with an unproven claim.
   - A gate: `squad dispatch` refuses work while the plan is not approved by V!. V! approves with
     `squad plan --approve`.
@@ -36,8 +37,7 @@ nobody checked that before days of work.
       the critique (`.team/plan/critique.md`) has no answer. It passes on a complete plan.
 - [ ] `squad dispatch` refuses to start any task while `PLAN.md` is not approved, and says why;
       `squad plan --approve` (V! only) records the approval with the date, and dispatch then works.
-- [ ] A new team (default preset) has the planner seat, in its own herdr tab "plan" (its agent pane,
-      as the observer has); `squad update-conf` adds the seat to an older team.conf once and skips a
+- [ ] A new team (default preset) has the planner and the GPT critic, both in the herdr tab "plan"; `squad update-conf` adds the seat to an older team.conf once and skips a
       team that has it. V! sees the plan tab in a new squad.
 - [ ] Smoke tests for each item above pass; shellcheck is clean; bash 3.2 runs them.
 

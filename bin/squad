@@ -141,7 +141,7 @@ load_conf() {
         read -r name kind role reviews rest <<<"$rest" || true
         [ -n "${role:-}" ] || die "team.conf line $line_no: expected 'seat <name> <agent> <role> <reviews> [args]'."
         [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || die "team.conf line $line_no: seat name '$name' must be lowercase letters, digits, - or _."
-        case "$role" in lead|dev|reviewer|tester|observer|planner) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer, tester, observer or planner." ;; esac
+        case "$role" in lead|dev|reviewer|tester|observer|planner|critic) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer, tester, observer, planner or critic." ;; esac
         local i
         for ((i = 0; i < n; i++)); do
           [ "${S_NAME[$i]}" != "$name" ] || die "team.conf line $line_no: seat '$name' is defined twice."
@@ -187,6 +187,7 @@ role_file() { # role -> path
     tester) echo "$TEAM_DIR/roles/tester.md" ;;
     observer) echo "$TEAM_DIR/roles/observer.md" ;;
     planner) echo "$TEAM_DIR/roles/planner.md" ;;
+    critic) echo "$TEAM_DIR/roles/critic.md" ;;
   esac
 }
 
@@ -200,7 +201,7 @@ seat_index() { # name -> index, or fail
 
 seat_cwd() { # index -> working directory
   case "${S_ROLE[$1]}" in
-    lead|reviewer|observer|planner) echo "$WT_ROOT/integration" ;;
+    lead|reviewer|observer|planner|critic) echo "$WT_ROOT/integration" ;;
     *) echo "$WT_ROOT/${S_NAME[$1]}" ;;
   esac
 }
@@ -947,7 +948,12 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
   done <<<"$(plan_rows "$plan")"
   [ "$rows" -gt 0 ] || echo "the feasibility table has no claim"
   if [ ! -f "$crit" ]; then echo "no critique yet: run squad plan --critique"
-  else grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160 || true; fi
+  else
+    local ci cn; ci=$(grep -E '^ITEMS: *[0-9]+ *$' "$crit" | tail -1 | grep -oE '[0-9]+' || true)
+    cn=$(grep -cE '^[[:space:]]*- \[[ x]\]' "$crit" || true)
+    if [ -z "$ci" ]; then echo "the critique has no 'ITEMS: <n>' line: it is not complete"
+    elif [ "$ci" != "$cn" ]; then echo "the critique says ITEMS: $ci but has $cn item lines"; fi
+    grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160 || true; fi
   return 0
 }
 
@@ -970,10 +976,14 @@ cmd_start_seat() { # <seat>: start one seat in the running team (a seat added to
   case "${S_ROLE[$i]}" in
     planner) pane=$(plan_tab "$ws" "$i") ;;
     observer) pane=$(observer_tab "$ws" "$i") ;;
-    *) die "start-seat starts a planner or an observer; for other seats run 'squad up'." ;;
+    *) die "start-seat starts a planner (and its critic) or an observer; for other seats run 'squad up'." ;;
   esac
   start_seat "$i" "$pane"
   say "$seat started in its tab."
+  local c ci; c=$(first_role critic)
+  if [ "${S_ROLE[$i]}" = planner ] && [ -n "$c" ] && [ -z "$(herdr_team agent list 2>/dev/null | jq -r --arg n "$c" '.result.agents[] | select(.name == $n) | .name' | head -1)" ]; then
+    ci=$(seat_index "$c"); start_seat "$ci" "$(split "$pane" right "$WT_ROOT/integration" 0.5)"; say "$c started beside it."
+  fi
 }
 
 cmd_plan() {
@@ -998,6 +1008,15 @@ cmd_plan() {
     critique)
       plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
       [ -f "$plan" ] || die "no plan: $plan"
+      local critic; critic=$(first_role critic)
+      if [ -n "$critic" ]; then
+        rm -f "$crit"
+        herdr_team agent prompt "$critic" "[squad] Critique the plan $plan (proofs in $TEAM_DIR/plan/proofs/). Write $crit by your role file ($(role_file critic)): one '- [ ] <id>: <problem>' line per problem, then 'ITEMS: <n>'. Then tell $(first_role planner)." >/dev/null 2>&1 \
+          || die "the critic seat ($critic) did not take the prompt: is the team up?"
+        log_event "$critic" "${feature:--}" PLAN_CRITIQUE "asked"
+        say "$critic critiques ${plan#"$REPO"/} in the plan tab; it writes ${crit#"$REPO"/} and tells the planner."
+        return 0
+      fi
       local out items
       out=$(CONSULT_TEMPLATE=critique-prompt.md cmd_consult --wait "Critique this plan: list every claim you cannot verify, each source that is not official, each proof that does not show its claim." "$plan" "$TEAM_DIR/plan/proofs") || die "the critique failed; see $TEAM_DIR/consult/"
       out=$(printf '%s\n' "$out" | tail -1)
@@ -1006,7 +1025,7 @@ cmd_plan() {
       [ -n "$items" ] || die "the critique did not end with 'ITEMS: <n>': it is not trusted; run squad plan --critique again ($out)"
       [ "$(grep -cE '^[[:space:]]*- \[ \]' "$out" || true)" = "$items" ] || die "the critique counts $items items but lists another number: not trusted ($out)"
       { printf '# Critique of %s (GPT, %s)\n\nThe planner answers each item: change "- [ ]" to "- [x]" and write what changed or why the claim holds, with a source.\n\n' "${plan##*/}" "$(date '+%Y-%m-%d %H:%M')"
-        if [ "$items" = 0 ]; then echo "- [x] no item: GPT verified every claim (ITEMS: 0)"; else grep -E '^[[:space:]]*- \[ \]' "$out"; fi; } >"$crit"
+        if [ "$items" != 0 ]; then grep -E '^[[:space:]]*- \[ \]' "$out"; fi; echo "ITEMS: $items"; } >"$crit"
       log_event "$(first_role planner)" "${feature:--}" PLAN_CRITIQUE "items=$items"
       say "critique written: ${crit#"$REPO"/}" ;;
     approve)
@@ -1890,7 +1909,7 @@ update_conf_locked() {
   done <"$src"
   # seats: each role of the preset that team.conf has no seat for
   devs=$(awk '$1 == "seat" && $4 == "dev" { d = d (d ? "," : "") $2 } END { print d }' "$conf")
-  for role in tester reviewer observer planner; do
+  for role in tester reviewer observer planner critic; do
     awk -v r="$role" '$1 == "seat" && $4 == r { f = 1 } END { exit !f }' "$conf" && continue
     line=$(awk -v r="$role" '$1 == "seat" && $4 == r { print; exit }' "$src")
     [ -n "$line" ] || continue
@@ -1911,7 +1930,7 @@ update_conf_locked() {
     { c = index($0, "#"); code = c ? substr($0, 1, c - 1) : $0; com = c ? substr($0, c) : ""; sub(/[[:space:]]+$/, "", code); sub(/^[[:space:]]+/, "", code)
       split(code, f, /[[:space:]]+/); add = ""
       # a seat that already bypasses approvals is left alone: codex refuses -a together with the bypass flag
-      if (f[1] == "seat" && f[3] == "codex" && f[4] == "reviewer" && (" " code " ") !~ / (-a|--ask-for-approval|--dangerously-bypass-approvals-and-sandbox|--yolo)[ =]/) add = "-a never"
+      if (f[1] == "seat" && f[3] == "codex" && (f[4] == "reviewer" || f[4] == "critic") && (" " code " ") !~ / (-a|--ask-for-approval|--dangerously-bypass-approvals-and-sandbox|--yolo)[ =]/) add = "-a never"
       if (f[1] == "seat" && f[3] == "claude" && f[4] == "observer" && (" " code " ") !~ / (--permission-mode|--dangerously-skip-permissions)[ =]/) add = "--permission-mode dontAsk" }'
   fixed=$(awk "$seatfix"' add != "" { print f[2] ": " add }' "$conf")
   if [ -n "$fixed" ]; then
@@ -2122,10 +2141,10 @@ new_tab() { # <workspace> <label> <cwd> -> root pane of the new tab
 #   mission  (>= 220 cols)  one tab: lead | each dev | reviewers + tester, strip below
 #   focus    (< 120 cols)   tabs: lead + strip · devs · review · changes
 make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
-  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio obs="" plnr=""
+  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio obs="" plnr="" crt=""
   local devs=() others=()
   for ((i = 0; i < $(seat_count); i++)); do
-    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; observer) obs=$i ;; planner) plnr=$i ;; esac
+    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; observer) obs=$i ;; planner) plnr=$i ;; critic) crt=$i ;; esac
   done
   read -r width height < <(herdr pane layout --pane "$root" | jq -r '.result.layout.area | "\(.width) \(.height)"')
   mode=${SQUAD_LAYOUT:-}
@@ -2165,7 +2184,10 @@ make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
     herdr pane rename "$p" changes >/dev/null 2>&1 || true
     herdr pane run "$p" "lazygit" >/dev/null
   fi
-  [ -z "$plnr" ] || PANES[$plnr]=$(plan_tab "$ws" "$plnr")
+  if [ -n "$plnr" ]; then
+    PANES[$plnr]=$(plan_tab "$ws" "$plnr")
+    [ -z "$crt" ] || PANES[$crt]=$(split "${PANES[$plnr]}" right "$WT_ROOT/integration" 0.5)   # the critic beside the planner
+  fi
   [ -z "$obs" ] || PANES[$obs]=$(observer_tab "$ws" "$obs")
   report_tab "$ws"
   # name every seat's pane now, not when its agent starts: a seat held back
@@ -2527,6 +2549,8 @@ cmd_up() {
       [ -z "${PANES[$i]}" ] || continue
       if [ "${S_ROLE[$i]}" = observer ]; then PANES[$i]=$(observer_tab "$ws" "$i")
       elif [ "${S_ROLE[$i]}" = planner ]; then PANES[$i]=$(plan_tab "$ws" "$i")
+      elif [ "${S_ROLE[$i]}" = critic ] && [ -n "${PANES[$(seat_index "$(first_role planner)" 2>/dev/null || echo 0)]:-}" ]; then
+        PANES[$i]=$(split "${PANES[$(seat_index "$(first_role planner)")]}" right "$WT_ROOT/integration" 0.5)
       else PANES[$i]=$(split "$p_lead" down "$(seat_cwd "$i")"); fi
       say "  added a pane for ${S_NAME[$i]}"
     done
