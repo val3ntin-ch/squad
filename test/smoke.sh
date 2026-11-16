@@ -255,8 +255,9 @@ check "every shipped preset turns the verify hook off and consults GPT Sol" sh -
 cd "$tmp"
 check "new creates a project with the shipped default team" "$squad" new proj4
 cd proj4; reset_log
-printf '# Plan: tests\n\nStatus: approved by V! 2026-11-16 10:00\n' >.team/PLAN.md   # the dispatch tests below start tasks
 check "init creates the goal, the decisions log and the task template" test -f .team/GOAL.md -a -f .team/DECISIONS.md -a -f .team/tasks/_TEMPLATE.md
+check "a new team starts with a draft plan (no task before V! approves it)" grep -qx 'Status: draft' .team/PLAN.md
+printf '# Plan: tests\n\nStatus: approved by V! 2026-11-16 10:00\n' >.team/PLAN.md   # the dispatch tests below start tasks
 check "up starts the shipped team" "$squad" up
 check "the lead runs the strongest model and may read the devs' worktrees" grep -qE "^herdr agent start lead --kind claude .* -- --model claude-fable-5-2 --add-dir $tmp/proj4/.team --add-dir [^ ]+ --add-dir $tmp/proj4-team " "$MOCK_LOG"
 check "devs run at medium effort" grep -qE '^herdr agent start dev-a --kind claude .* -- --model claude-opus-5-5 --effort medium ' "$MOCK_LOG"
@@ -423,6 +424,7 @@ check "the tabs come in order: review, changes, plan, observer, report" sh -c "g
 check "the planner has its own tab, plan" grep -q 'tab create --workspace .* --label plan' "$MOCK_LOG"
 # ---- 012: the plan -----------------------------------------------------------------
 cp .team/PLAN.md "$tmp/plan.keep"; rm -f .team/PLAN.md
+check "a team without a PLAN.md (started before the planner) goes on: the gate asks only for feature plans" sh -c "! '$squad' dispatch dev-a T-779 2>&1 | grep -q 'approves the plan'"
 check "plan writes PLAN.md with every section and gives the planner the goal" sh -c "'$squad' plan 'a todo app' >/dev/null && for h in 'Goal' 'Platform and versions' 'Sources' 'Limits of the platform' 'Feasibility' 'Risks' 'Tasks' 'Open decisions for V!'; do grep -q \"^## \$h\" .team/PLAN.md || exit 1; done && grep -q 'agent prompt planner .*Plan this: a todo app' '$MOCK_LOG'"
 check "dispatch refuses a task before V! approves the plan" sh -c "out=\$('$squad' dispatch dev-a T-777 2>&1); test \$? != 0 && printf '%s' \"\$out\" | grep -q 'before V! approves the plan'"
 mkdir -p .team/plan/proofs; echo "ran: node --version -> v24" >.team/plan/proofs/F1-node.txt

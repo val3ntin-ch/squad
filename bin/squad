@@ -938,6 +938,26 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
   return 0
 }
 
+cmd_start_seat() { # <seat>: start one seat in the running team (a seat added to team.conf later); the planner gets its plan tab
+  find_repo; load_conf
+  local seat=${1:-} i ws pane
+  [ -n "$seat" ] || die "usage: squad start-seat <seat>"
+  i=$(seat_index "$seat") || die "no seat named '$seat' in team.conf (run 'squad update-conf' to add the preset's new seats)."
+  [ -z "$(herdr_team agent list 2>/dev/null | jq -r --arg n "$seat" '.result.agents[] | select(.name == $n) | .name' | head -1)" ] || die "$seat runs already."
+  ws=$(herdr_team workspace list | jq -r --arg l "$(basename "$REPO") team" '.result.workspaces[] | select(.label == $l) | .workspace_id' | head -1)
+  [ -n "$ws" ] || die "no running team workspace: start the team with 'squad up'."
+  export HERDR_SOCKET_PATH; HERDR_SOCKET_PATH=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true)
+  [ -n "$HERDR_SOCKET_PATH" ] || unset HERDR_SOCKET_PATH
+  render_team_files
+  case "${S_ROLE[$i]}" in
+    planner) pane=$(plan_tab "$ws" "$i") ;;
+    observer) pane=$(observer_tab "$ws" "$i") ;;
+    *) die "start-seat starts a planner or an observer; for other seats run 'squad up'." ;;
+  esac
+  start_seat "$i" "$pane"
+  say "$seat started in its tab."
+}
+
 cmd_plan() {
   find_repo; load_conf
   local mode=start feature="" goal="" a
@@ -997,7 +1017,9 @@ cmd_plan() {
 plan_gate() { # <task>: dies when the task's plan is not approved (only in a team with a planner)
   [ -n "$(first_role planner)" ] || return 0
   local f="$TEAM_DIR/PLAN.md" fp
-  plan_approved "$f" || die "no task starts before V! approves the plan: ${f#"$REPO"/} (the planner: squad plan \"<goal>\"; V!: squad plan --approve)."
+  # a team that started before the planner has no PLAN.md: its work goes on, and only new features need a plan;
+  # a new team gets a draft PLAN.md at init, so nothing starts there before V! approves it
+  [ ! -f "$f" ] || plan_approved "$f" || die "no task starts before V! approves the plan: ${f#"$REPO"/} (the planner: squad plan \"<goal>\"; V!: squad plan --approve)."
   fp=$(grep -m1 -E '^- Plan: F-[0-9]+' "$TEAM_DIR/tasks/$1.md" 2>/dev/null | grep -oE 'F-[0-9]+' || true)
   [ -z "$fp" ] || plan_approved "$TEAM_DIR/plan/$fp.md" || die "$1 belongs to feature plan $fp, which V! has not approved yet (squad plan --approve $fp)."
   return 0
@@ -1763,6 +1785,9 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
   copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
   copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
+  # a new team starts with a draft plan: no task starts before the planner proves it and V! approves it
+  grep -qE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+planner([[:space:]]|$)' "$TEAM_DIR/team.conf" 2>/dev/null && [ ! -f "$TEAM_DIR/PLAN.md" ] \
+    && SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="(the goal: squad plan \"<goal>\")" subst "$TEMPLATES/PLAN.md" >"$TEAM_DIR/PLAN.md"
   copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
   mutex "$TEAM_DIR/.feedback.lock"   # the same lock as squad feedback: never copy over a saved entry
   copy_if_missing "$TEMPLATES/FEEDBACK.md" "$TEAM_DIR/FEEDBACK.md"
@@ -2611,6 +2636,7 @@ case "$cmd" in
   notify)  cmd_notify "$@" ;;
   consult) cmd_consult "$@" ;;
   plan)    cmd_plan "$@" ;;
+  start-seat) cmd_start_seat "$@" ;;
   decisions) cmd_decisions "$@" ;;
   feedback) cmd_feedback "$@" ;;
   _owner-filter) OWNER_MODE=${1:-visual}; owner_filter ;;   # internal: tests
