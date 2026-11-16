@@ -55,6 +55,8 @@ Usage:
   squad merge <task>                merge an approved task into the integration branch (the lead)
   squad notify "<where>" "<rule>"   tell the seats at work that a rule changed (the lead)
   squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
+  squad plan "<goal>" [--feature]   the planner researches and proves the plan before any work
+  squad plan --check|--critique|--approve [F-n]   check it, let GPT critique it, approve it (V! only)
   squad decisions [--check]         list the decisions; --check: every field filled
   squad feedback "<text>"           your feedback after testing what can be seen: saved, logged, sent to the lead
 
@@ -139,7 +141,7 @@ load_conf() {
         read -r name kind role reviews rest <<<"$rest" || true
         [ -n "${role:-}" ] || die "team.conf line $line_no: expected 'seat <name> <agent> <role> <reviews> [args]'."
         [[ "$name" =~ ^[a-z][a-z0-9_-]{0,31}$ ]] || die "team.conf line $line_no: seat name '$name' must be lowercase letters, digits, - or _."
-        case "$role" in lead|dev|reviewer|tester|observer) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer, tester or observer." ;; esac
+        case "$role" in lead|dev|reviewer|tester|observer|planner) ;; *) die "team.conf line $line_no: role '$role' must be lead, dev, reviewer, tester, observer or planner." ;; esac
         local i
         for ((i = 0; i < n; i++)); do
           [ "${S_NAME[$i]}" != "$name" ] || die "team.conf line $line_no: seat '$name' is defined twice."
@@ -184,8 +186,11 @@ role_file() { # role -> path
     reviewer) echo "$TEAM_DIR/roles/reviewer.md" ;;
     tester) echo "$TEAM_DIR/roles/tester.md" ;;
     observer) echo "$TEAM_DIR/roles/observer.md" ;;
+    planner) echo "$TEAM_DIR/roles/planner.md" ;;
   esac
 }
+
+first_role() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = "$1" ] && { echo "${S_NAME[$i]}"; return 0; }; done; return 0; }   # <role> -> its first seat, or nothing
 
 seat_index() { # name -> index, or fail
   local i n; n=$(seat_count)
@@ -195,7 +200,7 @@ seat_index() { # name -> index, or fail
 
 seat_cwd() { # index -> working directory
   case "${S_ROLE[$1]}" in
-    lead|reviewer|observer) echo "$WT_ROOT/integration" ;;
+    lead|reviewer|observer|planner) echo "$WT_ROOT/integration" ;;
     *) echo "$WT_ROOT/${S_NAME[$1]}" ;;
   esac
 }
@@ -757,6 +762,7 @@ cmd_dispatch() {
   i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
   role=${S_ROLE[$i]}; kind=${S_KIND[$i]}
   [ "$seat" != "$LEAD" ] || die "the lead does not dispatch to itself."
+  plan_gate "$task"
   round=$(review_round "$task")
   # the contract comes first: a dev starts only on a table the tester agreed
   # (only a task's first hand-out: a task already under way, for example from an older squad, goes on)
@@ -896,6 +902,105 @@ cmd_consult() {
     run_consult </dev/null >/dev/null 2>&1 &
     say "consult $n started in the background; you get a line when $out is written. Work on other steps meanwhile."
   fi
+}
+
+# ---- plan (ticket 012): research and proof before any work ------------------------
+# .team/PLAN.md (the project) and .team/plan/F-<n>.md (a feature). A plan passes the check only when
+# every claim has an official source and a proof file, no claim is unproven, and every critique item
+# has an answer. squad dispatch starts no task before V! approves its plan.
+plan_file() { # [F-<n>] -> the plan's path
+  if [ -n "${1:-}" ]; then echo "$TEAM_DIR/plan/$1.md"; else echo "$TEAM_DIR/PLAN.md"; fi
+}
+plan_critique_file() { if [ -n "${1:-}" ]; then echo "$TEAM_DIR/plan/critique-$1.md"; else echo "$TEAM_DIR/plan/critique.md"; fi; }
+plan_approved() { grep -qE '^Status: approved by V!' "$1" 2>/dev/null; }
+
+plan_check() { # <plan file> <critique file> -> the problems, one a line; empty when the plan is complete
+  local plan=$1 crit=$2 platform
+  [ -f "$plan" ] || { echo "no plan: $plan"; return 0; }
+  platform=$(awk '/^## Platform and versions/ { on = 1; next } /^## / { on = 0 } on' "$plan" | tr '[:upper:]' '[:lower:]')
+  awk -v proofs="$TEAM_DIR/plan/proofs" -v term="$(printf '%s' "$platform" | grep -qE 'terminal|tui|herdr|tmux|console|cli' && echo 1 || echo 0)" '
+    /^## Feasibility/ { on = 1; next } /^## / { on = 0 }
+    on && /^\|/ {
+      n = split($0, c, "|"); for (k = 2; k < n; k++) { gsub(/^ +| +$/, "", c[k]) }
+      id = c[2]; claim = c[3]; src = c[4]; proof = c[5]; res = tolower(c[6])
+      if (id == "#" || id ~ /^-+$/ || id == "") next
+      rows++
+      if (src !~ /https?:\/\//) print id ": no official source URL"
+      gsub(/`/, "", proof)
+      if (proof == "" || proof == "-") print id ": no proof file"
+      else { f = proof; if (f !~ /^\//) f = proofs "/" f; if ((getline line < f) < 0) print id ": proof file missing: " proof; close(f) }
+      if (res ~ /unproven/ || res == "") print id ": not proven (" (res == "" ? "no result" : res) ")"
+      if (term == 1 && tolower(claim) ~ /mockup|mock-up|screen|look/ && tolower(proof) ~ /\.html?$/) print id ": a mockup for a terminal must be a capture of a real program, not an HTML page"
+    }
+    END { if (rows == 0) print "the feasibility table has no claim" }' "$plan"
+  if [ ! -f "$crit" ]; then echo "no critique yet: run squad plan --critique"
+  else grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160; fi
+  return 0
+}
+
+cmd_plan() {
+  find_repo; load_conf
+  local mode=start feature="" goal="" a
+  for a in "$@"; do
+    case "$a" in
+      --check) mode=check ;; --approve) mode=approve ;; --critique) mode=critique ;; --feature) feature=new ;;
+      F-[0-9]*) feature=$a ;;
+      *) goal=${goal:+$goal }$a ;;
+    esac
+  done
+  [ "$feature" = new ] && [ "$mode" != start ] && die "--feature goes with a new goal: squad plan \"<goal>\" --feature"
+  mkdir -p "$TEAM_DIR/plan/proofs"
+  local plan crit problems
+  case "$mode" in
+    check)
+      plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
+      problems=$(plan_check "$plan" "$crit")
+      if [ -n "$problems" ]; then printf '%s\n' "$problems" | sed 's/^/  ✖ /' >&2; die "the plan is not complete: ${plan#"$REPO"/}"; fi
+      say "PLAN OK: ${plan#"$REPO"/}" ;;
+    critique)
+      plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
+      [ -f "$plan" ] || die "no plan: $plan"
+      local out
+      out=$(cmd_consult --wait "Critique this plan. For every claim, check its official source and its proof file in $TEAM_DIR/plan/proofs/. List each claim you cannot verify, each source that is not official, and each proof that does not show what the claim says. Write one line per item, in this form: '- [ ] <claim id>: <what is wrong>'. Write nothing else." "$plan" "$TEAM_DIR/plan/proofs") || die "the critique failed; see $TEAM_DIR/consult/"
+      out=$(printf '%s\n' "$out" | tail -1)
+      { printf '# Critique of %s (GPT, %s)\n\nThe planner answers each item: change "- [ ]" to "- [x]" and write what changed or why the claim holds, with a source.\n\n' "${plan##*/}" "$(date '+%Y-%m-%d %H:%M')"
+        grep -E '^[[:space:]]*- \[ \]' "$out" || echo "- [x] no item: GPT verified every claim"; } >"$crit"
+      log_event "$(first_role planner)" "${feature:--}" PLAN_CRITIQUE "items=$(grep -c '^- \[ \]' "$crit" || true)"
+      say "critique written: ${crit#"$REPO"/}" ;;
+    approve)
+      [ -z "${TEAM_ROLE:-}" ] || die "only V! approves a plan (an agent's pane cannot)."
+      plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
+      problems=$(plan_check "$plan" "$crit")
+      [ -z "$problems" ] || { printf '%s\n' "$problems" | sed 's/^/  ✖ /' >&2; die "not approved: the plan does not pass the check."; }
+      local tmp="$plan.tmp.$$"
+      awk -v s="Status: approved by V! $(date '+%Y-%m-%d %H:%M')" '!d && /^Status:/ { print s; d = 1; next } { print }' "$plan" >"$tmp" && mv "$tmp" "$plan"
+      log_event "$LEAD" "${feature:--}" PLAN_APPROVED "${plan##*/}"
+      say "approved: ${plan#"$REPO"/}" ;;
+    start)
+      [ -n "$goal" ] || die "usage: squad plan \"<goal>\" [--feature] | --check [F-n] | --critique [F-n] | --approve [F-n]"
+      local planner; planner=$(first_role planner)
+      [ -n "$planner" ] || die "this team has no planner seat: run 'squad update-conf' (it adds one), then 'squad up'."
+      if [ "$feature" = new ]; then
+        local n; n=$(( $(ls "$TEAM_DIR/plan" 2>/dev/null | sed -n 's/^F-\([0-9]*\)\.md$/\1/p' | sort -n | tail -1 || true) + 1 ))
+        feature="F-$n"
+      fi
+      plan=$(plan_file "$feature")
+      if [ -f "$plan" ]; then say "the plan exists: ${plan#"$REPO"/} (the planner goes on with it)"
+      else SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="$goal" subst "$TEMPLATES/PLAN.md" >"$plan"; fi
+      log_event "$planner" "${feature:--}" PLAN_START "$goal"
+      herdr_team agent prompt "$planner" "[squad] Plan this: $goal. Write $plan by your role file ($(role_file planner)): official sources, proofs in $TEAM_DIR/plan/proofs/, then 'squad plan --critique${feature:+ $feature}' and 'squad plan --check${feature:+ $feature}'." >/dev/null 2>&1 \
+        || die "the planner seat did not take the prompt: is the team up? ('squad up')"
+      say "the planner works on ${plan#"$REPO"/}; it tells the lead when it passes the check. Then: squad plan --approve${feature:+ $feature}" ;;
+  esac
+}
+
+plan_gate() { # <task>: dies when the task's plan is not approved (only in a team with a planner)
+  [ -n "$(first_role planner)" ] || return 0
+  local f="$TEAM_DIR/PLAN.md" fp
+  plan_approved "$f" || die "no task starts before V! approves the plan: ${f#"$REPO"/} (the planner: squad plan \"<goal>\"; V!: squad plan --approve)."
+  fp=$(grep -m1 -E '^- Plan: F-[0-9]+' "$TEAM_DIR/tasks/$1.md" 2>/dev/null | grep -oE 'F-[0-9]+' || true)
+  [ -z "$fp" ] || plan_approved "$TEAM_DIR/plan/$fp.md" || die "$1 belongs to feature plan $fp, which V! has not approved yet (squad plan --approve $fp)."
+  return 0
 }
 
 # ---- decisions -----------------------------------------------------------------------
@@ -1727,7 +1832,7 @@ update_conf_locked() {
   done <"$src"
   # seats: each role of the preset that team.conf has no seat for
   devs=$(awk '$1 == "seat" && $4 == "dev" { d = d (d ? "," : "") $2 } END { print d }' "$conf")
-  for role in tester reviewer observer; do
+  for role in tester reviewer observer planner; do
     awk -v r="$role" '$1 == "seat" && $4 == r { f = 1 } END { exit !f }' "$conf" && continue
     line=$(awk -v r="$role" '$1 == "seat" && $4 == r { print; exit }' "$src")
     [ -n "$line" ] || continue
@@ -1959,10 +2064,10 @@ new_tab() { # <workspace> <label> <cwd> -> root pane of the new tab
 #   mission  (>= 220 cols)  one tab: lead | each dev | reviewers + tester, strip below
 #   focus    (< 120 cols)   tabs: lead + strip · devs · review · changes
 make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
-  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio obs=""
+  local ws=$1 tab=$2 root=$3 width height mode i strip p ratio obs="" plnr=""
   local devs=() others=()
   for ((i = 0; i < $(seat_count); i++)); do
-    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; observer) obs=$i ;; esac
+    case "${S_ROLE[$i]}" in dev) devs+=("$i") ;; reviewer|tester) others+=("$i") ;; observer) obs=$i ;; planner) plnr=$i ;; esac
   done
   read -r width height < <(herdr pane layout --pane "$root" | jq -r '.result.layout.area | "\(.width) \(.height)"')
   mode=${SQUAD_LAYOUT:-}
@@ -2002,6 +2107,7 @@ make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
     herdr pane rename "$p" changes >/dev/null 2>&1 || true
     herdr pane run "$p" "lazygit" >/dev/null
   fi
+  [ -z "$plnr" ] || PANES[$plnr]=$(plan_tab "$ws" "$plnr")
   [ -z "$obs" ] || PANES[$obs]=$(observer_tab "$ws" "$obs")
   report_tab "$ws"
   # name every seat's pane now, not when its agent starts: a seat held back
@@ -2010,6 +2116,13 @@ make_layout() { # <workspace> <tab> <root pane>; sets PANES[] and says the mode
     [ -n "${PANES[$i]:-}" ] && herdr pane rename "${PANES[$i]}" "${S_NAME[$i]}" >/dev/null 2>&1
   done
   say "  layout: $mode (${width:-?} columns; SQUAD_LAYOUT=talk|mission|focus to choose)"
+}
+
+plan_tab() { # <workspace> <planner index> -> the planner's pane, in its own tab "plan"
+  local p
+  p=$(new_tab "$1" plan "$WT_ROOT/integration")
+  herdr pane rename "$p" "${S_NAME[$2]}" >/dev/null 2>&1 || true
+  echo "$p"
 }
 
 observer_tab() { # <workspace> <observer index> -> the observer's pane; the watcher that drives its passes below
@@ -2355,6 +2468,7 @@ cmd_up() {
     for ((i = 0; i < n; i++)); do
       [ -z "${PANES[$i]}" ] || continue
       if [ "${S_ROLE[$i]}" = observer ]; then PANES[$i]=$(observer_tab "$ws" "$i")
+      elif [ "${S_ROLE[$i]}" = planner ]; then PANES[$i]=$(plan_tab "$ws" "$i")
       else PANES[$i]=$(split "$p_lead" down "$(seat_cwd "$i")"); fi
       say "  added a pane for ${S_NAME[$i]}"
     done
@@ -2496,6 +2610,7 @@ case "$cmd" in
   merge)   cmd_merge "$@" ;;
   notify)  cmd_notify "$@" ;;
   consult) cmd_consult "$@" ;;
+  plan)    cmd_plan "$@" ;;
   decisions) cmd_decisions "$@" ;;
   feedback) cmd_feedback "$@" ;;
   _owner-filter) OWNER_MODE=${1:-visual}; owner_filter ;;   # internal: tests

@@ -80,6 +80,12 @@ Fill "Checks" with the real commands of the repository, and "Visual check" with 
 
 Set the status to `APPROVED` when the spec is complete enough to hand out tasks. Do not wait for the human.
 
+## Phase 1b: the plan (when the team has a planner)
+
+Before any task, the planner researches and proves the plan: `squad plan "<the goal from GOAL.md>"`. It writes `$TEAM_DIR/PLAN.md` with an official source and a proof for every claim, gets GPT's critique and passes `squad plan --check`. squad starts no task before V! approves it (`squad plan --approve`, V! only). Build the tasks from the plan's "Tasks"; do not promise anything the plan marks unproven.
+
+A new feature in the middle of the project gets its own plan: `squad plan "<goal>" --feature` writes `$TEAM_DIR/plan/F-<n>.md`. Write `- Plan: F-<n>` in the brief of each of its tasks; squad starts them only after V! approves that plan. A small fix inside an approved task needs no plan.
+
 ## Phase 2: tasks
 
 Split the goal into tasks. Write the status table in `$TEAM_DIR/TASKS.md` and one brief for each task in `$TEAM_DIR/tasks/<ID>.md`, from the template `$TEAM_DIR/tasks/_TEMPLATE.md`.

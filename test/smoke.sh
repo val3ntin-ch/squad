@@ -255,13 +255,14 @@ check "every shipped preset turns the verify hook off and consults GPT Sol" sh -
 cd "$tmp"
 check "new creates a project with the shipped default team" "$squad" new proj4
 cd proj4; reset_log
+printf '# Plan: tests\n\nStatus: approved by V! 2026-11-16 10:00\n' >.team/PLAN.md   # the dispatch tests below start tasks
 check "init creates the goal, the decisions log and the task template" test -f .team/GOAL.md -a -f .team/DECISIONS.md -a -f .team/tasks/_TEMPLATE.md
 check "up starts the shipped team" "$squad" up
 check "the lead runs the strongest model and may read the devs' worktrees" grep -qE "^herdr agent start lead --kind claude .* -- --model claude-fable-5-2 --add-dir $tmp/proj4/.team --add-dir [^ ]+ --add-dir $tmp/proj4-team " "$MOCK_LOG"
 check "devs run at medium effort" grep -qE '^herdr agent start dev-a --kind claude .* -- --model claude-opus-5-5 --effort medium ' "$MOCK_LOG"
 check "devs get no access to other worktrees" refuses grep -qE "^herdr agent start dev-a .* --add-dir $tmp/proj4-team " "$MOCK_LOG"
 check "the tester is the cheap seat" grep -qE '^herdr agent start tester --kind claude .* -- --model claude-sonnet-5-5 --effort low ' "$MOCK_LOG"
-check "seven seats start, the reviewer on Codex" sh -c "test \"\$(grep -c '^herdr agent start' '$MOCK_LOG')\" = 7 && grep -qE '^herdr agent start rev-gpt --kind codex .* -- -m gpt-6.1-sol -c model_reasoning_effort=medium ' '$MOCK_LOG'"
+check "eight seats start, the reviewer on Codex" sh -c "test \"\$(grep -c '^herdr agent start' '$MOCK_LOG')\" = 8 && grep -qE '^herdr agent start rev-gpt --kind codex .* -- -m gpt-6.1-sol -c model_reasoning_effort=medium ' '$MOCK_LOG'"
 check "the protocol states the review rounds" grep -qF 'Review rounds before a task goes to the human: 5.' .team/PROTOCOL.md
 check "READY.md links the lessons" grep -qF "the link to \`$tmp/proj4/.team/LESSONS.md\`" .team/roles/lead.md
 check "the lead role has every task reviewed and decides each finding" grep -qF 'Every task is reviewed by a fresh pair of eyes and decided by you' .team/roles/lead.md
@@ -418,7 +419,38 @@ layout_up 160
 check "the observer gets its own tab" grep -q 'tab create --workspace w2 --label observer' "$MOCK_LOG"
 check "the observer tab runs the watcher that starts its passes" grep -qF "$squad_abs watch --observe" "$MOCK_LOG"
 check "the report gets its own tab, live" sh -c "grep -q 'tab create --workspace w2 --label report' '$MOCK_LOG' && grep -qF '$squad_abs report --live' '$MOCK_LOG'"
-check "the tabs come in order: review, changes, observer, report" sh -c "grep -o 'label [a-z]*' '$MOCK_LOG' | tr '\n' ' ' | grep -q 'label review label changes label observer label report'"
+check "the tabs come in order: review, changes, plan, observer, report" sh -c "grep -o 'label [a-z]*' '$MOCK_LOG' | tr '\n' ' ' | grep -q 'label review label changes label plan label observer label report'"
+check "the planner has its own tab, plan" grep -q 'tab create --workspace .* --label plan' "$MOCK_LOG"
+# ---- 012: the plan -----------------------------------------------------------------
+cp .team/PLAN.md "$tmp/plan.keep"; rm -f .team/PLAN.md
+check "plan writes PLAN.md with every section and gives the planner the goal" sh -c "'$squad' plan 'a todo app' >/dev/null && for h in 'Goal' 'Platform and versions' 'Sources' 'Limits of the platform' 'Feasibility' 'Risks' 'Tasks' 'Open decisions for V!'; do grep -q \"^## \$h\" .team/PLAN.md || exit 1; done && grep -q 'agent prompt planner .*Plan this: a todo app' '$MOCK_LOG'"
+check "dispatch refuses a task before V! approves the plan" sh -c "out=\$('$squad' dispatch dev-a T-777 2>&1); test \$? != 0 && printf '%s' \"\$out\" | grep -q 'before V! approves the plan'"
+mkdir -p .team/plan/proofs; echo "ran: node --version -> v24" >.team/plan/proofs/F1-node.txt
+good='| F-1 | Node 24 runs the app | https://nodejs.org/docs/latest-v24.x/api/ | F1-node.txt | proven |'
+mkplan() { sed '/^| *#/,$d' .team/PLAN.md >.team/PLAN.tmp 2>/dev/null; { awk '/^## Feasibility/ { print; print "| # | Claim | Official source | Proof | Result |"; print "|---|---|---|---|---|"; while ((getline l < "/dev/stdin") > 0) print l; skip = 1; next } skip && /^\|/ { next } /^## / { skip = 0 } { print }' .team/PLAN.keep2; } >.team/PLAN.md; }
+cp .team/PLAN.md .team/PLAN.keep2
+printf '# Critique\n- [x] F-1: holds, see the Node docs\n' >.team/plan/critique.md
+printf '%s\n' "$good" | mkplan
+check "plan --check passes a complete plan" "$squad" plan --check
+printf '%s\n' '| F-1 | Node 24 runs the app | node docs | F1-node.txt | proven |' | mkplan
+check "plan --check fails a claim without an official URL, and names it" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: no official source URL'"
+printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | F9-missing.txt | proven |' | mkplan
+check "plan --check fails a missing proof file" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: proof file missing'"
+printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | F1-node.txt | unproven: no machine |' | mkplan
+check "plan --check fails an unproven claim" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: not proven'"
+sed -i.bak 's/^- (each part the goal touches.*/- herdr terminal, bash 3.2/' .team/PLAN.keep2; rm -f .team/PLAN.keep2.bak; echo '<html>' >.team/plan/proofs/F2-look.html
+printf '%s\n' "$good" '| F-2 | the board mockup shows hexagons | https://herdr.dev/docs | F2-look.html | proven |' | mkplan
+check "plan --check fails an HTML mockup for a terminal platform" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-2: a mockup for a terminal must be a capture of a real program'"
+printf '%s\n' "$good" | mkplan; printf '# Critique\n- [ ] F-1: the version is not in the lock file\n' >.team/plan/critique.md
+check "plan --check fails while a critique item has no answer" sh -c "'$squad' plan --check 2>&1 | grep -q 'has no answer: F-1: the version'"
+check "an agent cannot approve a plan" sh -c "TEAM_ROLE=lead '$squad' plan --approve 2>&1 | grep -q 'only V! approves'"
+check "a plan that fails the check cannot be approved" refuses "$squad" plan --approve
+printf '# Critique\n- [x] F-1: added the lock file line\n' >.team/plan/critique.md
+check "V! approves a complete plan, with the date" sh -c "'$squad' plan --approve >/dev/null && grep -qE '^Status: approved by V! [0-9]{4}-' .team/PLAN.md"
+check "dispatch passes the plan gate once the plan is approved" sh -c "! '$squad' dispatch dev-a T-777 2>&1 | grep -q 'approves the plan'"
+printf '# T-778\n- Plan: F-1\n' >.team/tasks/T-778.md
+check "a task of a feature plan waits for that plan's approval" sh -c "'$squad' dispatch dev-a T-778 2>&1 | grep -q 'feature plan F-1, which V! has not approved'"
+rm -f .team/tasks/T-778.md .team/PLAN.keep2 .team/PLAN.tmp; rm -rf .team/plan; cp "$tmp/plan.keep" .team/PLAN.md
 check "the observer is not a reviewer pane" refuses grep -qE 'pane split .* --cwd [^ ]+ .*observer' "$MOCK_LOG"
 check "the observer reads the devs' worktrees" grep -qE "^herdr agent start observer --kind claude .* --add-dir $tmp/proj4-team " "$MOCK_LOG"
 
@@ -619,6 +651,7 @@ check "it adds the new settings" sh -c "for k in heavy_timeout heavy_timeout_dev
 check "it adds the GPT reviewer for the team's own devs, and the observer" sh -c "grep -qE '^seat rev-gpt codex reviewer dev-a,dev-b -m gpt-6.1-sol' .team/team.conf && grep -qE '^seat +observer +claude +observer' .team/team.conf"
 check "it keeps what was there" sh -c "grep -qx 'rounds 4' .team/team.conf && grep -qx 'setup npm ci' .team/team.conf && test \$(grep -c '^rounds' .team/team.conf) = 1"
 check "the updated file is valid" "$squad" status
+check "update-conf adds the planner seat (Fable 5.2), once" sh -c "test \$(grep -cE '^seat +planner +claude +planner ' .team/team.conf) = 1 && grep -qE -- '--model claude-fable-5-2' .team/team.conf"
 check "a second run adds nothing" sh -c "'$squad' update-conf | grep -q 'nothing to add'"
 printf 'name lead Atlas mauve\nnotify on\nstep 2\n' >>.team/team.conf
 check "a team.conf with the Squad Deck lines (name, notify, step) still loads" "$squad" status
