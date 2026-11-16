@@ -23,7 +23,7 @@ case "$1 $2" in
   # MOCK_DYNAMIC=1: dev-a answers prompts like a real seat (a clear or /model leaves it
   # idle, a task makes it work; MOCK_NEVER_WORK=1: it never starts)
   "agent list") if [ "${MOCK_DYNAMIC:-}" = 1 ]; then st=$(cat "$(dirname "$MOCK_LOG")/state" 2>/dev/null || echo idle)
-                  echo "{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"$st\"},{\"name\":\"observer\",\"agent_status\":\"idle\"},{\"name\":\"lead\",\"agent_status\":\"working\"}]}}"
+                  echo "{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"$st\"},{\"name\":\"observer\",\"agent_status\":\"idle\"},{\"name\":\"lead\",\"agent_status\":\"working\"},{\"name\":\"tester\",\"agent_status\":\"${MOCK_TESTER:-idle}\"}]}}"
                 elif [ -n "${MOCK_AGENTS:-}" ]; then echo "$MOCK_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
   "agent prompt") if [ "${MOCK_DYNAMIC:-}" = 1 ] && [ "$3" = dev-a ]; then
                     case "$4" in /*) echo idle ;; *) if [ "${MOCK_NEVER_WORK:-}" = 1 ]; then echo idle; else echo working; fi ;; esac >"$(dirname "$MOCK_LOG")/state"; fi
@@ -361,11 +361,12 @@ check "it goes once the seat is idle" sh -c "for k in \$(seq 1 15); do grep -q '
 sleep 3; echo working >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" dispatch dev-a T-133 >/dev/null 2>&1
 printf '%s dev-a T-133 DISPATCH round=1 (sent by hand)\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log; echo idle >"$tmp/state"
 check "a queued task already sent by hand is dropped, not sent twice" sh -c "for k in \$(seq 1 15); do grep -q ' dev-a T-133 DISPATCH_DROPPED' .team/events.log && exit 0; sleep 1; done; exit 1"
-sleep 2; rm -f "$tmp/state"; mkdir -p .team/seats/dev-a.dispatching; echo 999999 >.team/seats/dev-a.dispatching/pid
-check "a lock left by a killed queue is cleared, so the seat is not blocked" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 '$squad' dispatch dev-a T-134 2>&1 | grep -qv 'is busy' && test ! -d .team/seats/dev-a.dispatching"
+sleep 2; rm -f "$tmp/state"; mkdir -p .team/seats; ln -sfn 999999 .team/seats/dev-a.dispatching
+check "a lock left by a killed queue is cleared, so the seat is not blocked" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 '$squad' dispatch dev-a T-134 2>&1 | grep -qv 'is busy' && test ! -L .team/seats/dev-a.dispatching"
 rm -f "$tmp/state"
 agents_tb='{"result":{"agents":[{"name":"tester","agent_status":"working","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
-check "a dev starts without a contract while the tester is in a run (the contract follows)" sh -c "out=\$(MOCK_AGENTS='$agents_tb' SQUAD_DISPATCH_WAIT=1 '$squad' dispatch dev-a T-102 2>&1); ! printf '%s' \"\$out\" | grep -q 'no contract for T-102'"
+rm -f "$tmp/state"
+check "a dev starts without a contract while the tester is in a run, and the contract is queued for the tester" sh -c "MOCK_DYNAMIC=1 MOCK_TESTER=working SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-102 >/dev/null 2>&1 && grep -q ' dev-a T-102 CONTRACT_DEFERRED' .team/events.log && grep -q ' tester T-102 DISPATCH_QUEUED contract=1' .team/events.log"
 agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
 check "with an idle tester the contract still comes first" sh -c "MOCK_AGENTS='$agents_ti' '$squad' dispatch dev-a T-103 2>&1 | grep -q 'no contract for T-103'"
 check "dispatch refuses a dev task with no contract from the tester" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=2 "$squad" dispatch dev-a T-101
