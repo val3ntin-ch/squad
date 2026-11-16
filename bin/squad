@@ -878,7 +878,7 @@ cmd_consult() {
   prompt=$(SUBST_N=4 SUBST_F1="{{QUESTION}}" SUBST_T1="$question" \
     SUBST_F2="{{FILES}}" SUBST_T2="${files:-"- (none named; read what you need in the repository)"}" \
     SUBST_F3="{{TEAM_DIR}}" SUBST_T3="$TEAM_DIR" SUBST_F4="{{REPO}}" SUBST_T4="$WT_ROOT/integration" \
-    subst "$TEMPLATES/consult-prompt.md")
+    subst "$TEMPLATES/${CONSULT_TEMPLATE:-consult-prompt.md}")
   local cwd="$WT_ROOT/integration"; [ -d "$cwd" ] || cwd=$REPO
   log_event "$LEAD" - CONSULT "n=$n $question"
   run_consult() {
@@ -912,31 +912,49 @@ plan_file() { # [F-<n>] -> the plan's path
   if [ -n "${1:-}" ]; then echo "$TEAM_DIR/plan/$1.md"; else echo "$TEAM_DIR/PLAN.md"; fi
 }
 plan_critique_file() { if [ -n "${1:-}" ]; then echo "$TEAM_DIR/plan/critique-$1.md"; else echo "$TEAM_DIR/plan/critique.md"; fi; }
-plan_approved() { grep -qE '^Status: approved by V!' "$1" 2>/dev/null; }
 
-plan_check() { # <plan file> <critique file> -> the problems, one a line; empty when the plan is complete
-  local plan=$1 crit=$2 platform
-  [ -f "$plan" ] || { echo "no plan: $plan"; return 0; }
-  platform=$(awk '/^## Platform and versions/ { on = 1; next } /^## / { on = 0 } on' "$plan" | tr '[:upper:]' '[:lower:]')
-  awk -v proofs="$TEAM_DIR/plan/proofs" -v term="$(printf '%s' "$platform" | grep -qE 'terminal|tui|herdr|tmux|console|cli' && echo 1 || echo 0)" '
+plan_rows() { # <plan> -> "id<TAB>claim<TAB>source<TAB>proof<TAB>result" per row of its Feasibility table
+  awk '
     /^## Feasibility/ { on = 1; next } /^## / { on = 0 }
     on && /^\|/ {
-      n = split($0, c, "|"); for (k = 2; k < n; k++) { gsub(/^ +| +$/, "", c[k]) }
-      id = c[2]; claim = c[3]; src = c[4]; proof = c[5]; res = tolower(c[6])
-      if (id == "#" || id ~ /^-+$/ || id == "") next
-      rows++
-      if (src !~ /https?:\/\//) print id ": no official source URL"
-      gsub(/`/, "", proof)
-      if (proof == "" || proof == "-") print id ": no proof file"
-      else { f = proof; if (f !~ /^\//) f = proofs "/" f; if ((getline line < f) < 0) print id ": proof file missing: " proof; close(f) }
-      if (res ~ /unproven/ || res == "") print id ": not proven (" (res == "" ? "no result" : res) ")"
-      if (term == 1 && tolower(claim) ~ /mockup|mock-up|screen|look/ && tolower(proof) ~ /\.html?$/) print id ": a mockup for a terminal must be a capture of a real program, not an HTML page"
-    }
-    END { if (rows == 0) print "the feasibility table has no claim" }' "$plan"
+      line = $0; gsub(/\\\|/, "\001", line)   # an escaped pipe inside a cell is text
+      n = split(line, c, "|"); sep = 1
+      for (k = 2; k < n; k++) { gsub(/^[ \t]+|[ \t]+$/, "", c[k]); gsub(/\001/, "|", c[k]); if (c[k] !~ /^:?-+:?$/) sep = 0 }
+      if (sep || c[2] == "#" || c[2] == "") next
+      printf "%s\t%s\t%s\t%s\t%s\n", c[2], c[3], c[4], c[5], c[6]
+    }' "$1"
+}
+
+plan_check() { # <plan file> <critique file> -> the problems, one a line; empty when the plan is complete
+  local plan=$1 crit=$2 term=0 id src proof res f rows=0 lres
+  [ -f "$plan" ] || { echo "no plan: $plan"; return 0; }
+  # a terminal platform: its mockups are captures of a real program, never HTML
+  awk '/^## Platform and versions/ { on = 1; next } /^## / { on = 0 } on' "$plan" | grep -qiwE 'terminal|tui|herdr|tmux|cli' && term=1
+  while IFS=$'\t' read -r id _ src proof res; do
+    [ -n "$id" ] || continue
+    rows=$((rows + 1))
+    case "$src" in *http://*|*https://*) ;; *) echo "$id: no official source URL" ;; esac
+    proof=${proof//\`/}
+    if [ -z "$proof" ] || [ "$proof" = "-" ]; then echo "$id: no proof file"
+    else
+      case "$proof" in /*|*..*) echo "$id: the proof must be a file in .team/plan/proofs/ (no absolute path, no ..): $proof" ;;
+        *) f="$TEAM_DIR/plan/proofs/$proof"
+           { [ -f "$f" ] && [ -s "$f" ]; } || echo "$id: proof file missing or empty: $proof" ;; esac
+      [ "$term" = 0 ] || case "$proof" in *.html|*.htm|*.HTML|*.HTM) echo "$id: a mockup for a terminal must be a capture of a real program, not an HTML page" ;; esac
+    fi
+    lres=$(printf '%s' "$res" | tr '[:upper:]' '[:lower:]')
+    case "$lres" in proven*) ;; *) echo "$id: not proven (${res:-no result})" ;; esac
+  done <<<"$(plan_rows "$plan")"
+  [ "$rows" -gt 0 ] || echo "the feasibility table has no claim"
   if [ ! -f "$crit" ]; then echo "no critique yet: run squad plan --critique"
-  else grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160; fi
+  else grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160 || true; fi
   return 0
 }
+
+# V!'s approval: the plan's sha256, kept outside the team folder (agents write there); any later edit voids it
+plan_seal() { echo "${HEAVY_DIR%/heavy}/approvals/$SESSION_NAME-$(basename "$1").sha256"; }
+plan_hash() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
+plan_approved() { local s; s=$(plan_seal "$1"); [ -f "$1" ] && [ -f "$s" ] && [ "$(cat "$s")" = "$(plan_hash "$1")" ]; }
 
 cmd_start_seat() { # <seat>: start one seat in the running team (a seat added to team.conf later); the planner gets its plan tab
   find_repo; load_conf
@@ -980,20 +998,33 @@ cmd_plan() {
     critique)
       plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
       [ -f "$plan" ] || die "no plan: $plan"
-      local out
-      out=$(cmd_consult --wait "Critique this plan. For every claim, check its official source and its proof file in $TEAM_DIR/plan/proofs/. List each claim you cannot verify, each source that is not official, and each proof that does not show what the claim says. Write one line per item, in this form: '- [ ] <claim id>: <what is wrong>'. Write nothing else." "$plan" "$TEAM_DIR/plan/proofs") || die "the critique failed; see $TEAM_DIR/consult/"
+      local out items
+      out=$(CONSULT_TEMPLATE=critique-prompt.md cmd_consult --wait "Critique this plan: list every claim you cannot verify, each source that is not official, each proof that does not show its claim." "$plan" "$TEAM_DIR/plan/proofs") || die "the critique failed; see $TEAM_DIR/consult/"
       out=$(printf '%s\n' "$out" | tail -1)
+      [ -f "$out" ] || die "the critique gave no answer file: $out"
+      items=$(grep -E '^ITEMS: *[0-9]+ *$' "$out" | tail -1 | grep -oE '[0-9]+' || true)
+      [ -n "$items" ] || die "the critique did not end with 'ITEMS: <n>': it is not trusted; run squad plan --critique again ($out)"
+      [ "$(grep -cE '^[[:space:]]*- \[ \]' "$out" || true)" = "$items" ] || die "the critique counts $items items but lists another number: not trusted ($out)"
       { printf '# Critique of %s (GPT, %s)\n\nThe planner answers each item: change "- [ ]" to "- [x]" and write what changed or why the claim holds, with a source.\n\n' "${plan##*/}" "$(date '+%Y-%m-%d %H:%M')"
-        grep -E '^[[:space:]]*- \[ \]' "$out" || echo "- [x] no item: GPT verified every claim"; } >"$crit"
-      log_event "$(first_role planner)" "${feature:--}" PLAN_CRITIQUE "items=$(grep -c '^- \[ \]' "$crit" || true)"
+        if [ "$items" = 0 ]; then echo "- [x] no item: GPT verified every claim (ITEMS: 0)"; else grep -E '^[[:space:]]*- \[ \]' "$out"; fi; } >"$crit"
+      log_event "$(first_role planner)" "${feature:--}" PLAN_CRITIQUE "items=$items"
       say "critique written: ${crit#"$REPO"/}" ;;
     approve)
       [ -z "${TEAM_ROLE:-}" ] || die "only V! approves a plan (an agent's pane cannot)."
       plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
       problems=$(plan_check "$plan" "$crit")
       [ -z "$problems" ] || { printf '%s\n' "$problems" | sed 's/^/  ✖ /' >&2; die "not approved: the plan does not pass the check."; }
-      local tmp="$plan.tmp.$$"
-      awk -v s="Status: approved by V! $(date '+%Y-%m-%d %H:%M')" '!d && /^Status:/ { print s; d = 1; next } { print }' "$plan" >"$tmp" && mv "$tmp" "$plan"
+      # a person at a terminal types the confirmation; an agent's tool has no terminal to type in
+      local ans="" seal st
+      [ -t 0 ] || die "approve from your own terminal: it asks you to type APPROVE."
+      printf 'Approve %s? It starts the work. Type APPROVE: ' "${plan#"$REPO"/}" >&2
+      IFS= read -r ans || true; ans=${ans%$'\r'}
+      [ "$ans" = APPROVE ] || die "not approved."
+      local tmp="$plan.tmp.$$"; st="Status: approved by V! $(date '+%Y-%m-%d %H:%M')"
+      if grep -q '^Status:' "$plan"; then awk -v s="$st" '!d && /^Status:/ { print s; d = 1; next } { print }' "$plan" >"$tmp"
+      else awk -v s="$st" 'NR == 1 { print; print ""; print s; next } { print }' "$plan" >"$tmp"; fi
+      mv "$tmp" "$plan"
+      seal=$(plan_seal "$plan"); mkdir -p "$(dirname "$seal")"; plan_hash "$plan" >"$seal"
       log_event "$LEAD" "${feature:--}" PLAN_APPROVED "${plan##*/}"
       say "approved: ${plan#"$REPO"/}" ;;
     start)
@@ -1005,7 +1036,9 @@ cmd_plan() {
         feature="F-$n"
       fi
       plan=$(plan_file "$feature")
-      if [ -f "$plan" ]; then say "the plan exists: ${plan#"$REPO"/} (the planner goes on with it)"
+      if [ -f "$plan" ] && grep -q '(the goal: squad plan' "$plan" && grep -qx 'Status: draft' "$plan"; then
+        SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="$goal" subst "$TEMPLATES/PLAN.md" >"$plan"   # the draft from init gets its goal
+      elif [ -f "$plan" ]; then say "the plan exists: ${plan#"$REPO"/} (the planner goes on with it; an edit voids an approval)"
       else SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="$goal" subst "$TEMPLATES/PLAN.md" >"$plan"; fi
       log_event "$planner" "${feature:--}" PLAN_START "$goal"
       herdr_team agent prompt "$planner" "[squad] Plan this: $goal. Write $plan by your role file ($(role_file planner)): official sources, proofs in $TEAM_DIR/plan/proofs/, then 'squad plan --critique${feature:+ $feature}' and 'squad plan --check${feature:+ $feature}'." >/dev/null 2>&1 \
@@ -1786,7 +1819,7 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
   copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
   # a new team starts with a draft plan: no task starts before the planner proves it and V! approves it
-  grep -qE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+planner([[:space:]]|$)' "$TEAM_DIR/team.conf" 2>/dev/null && [ ! -f "$TEAM_DIR/PLAN.md" ] \
+  [ "$new_conf" = 1 ] && grep -qE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+planner([[:space:]]|$)' "$TEAM_DIR/team.conf" 2>/dev/null && [ ! -f "$TEAM_DIR/PLAN.md" ] \
     && SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="(the goal: squad plan \"<goal>\")" subst "$TEMPLATES/PLAN.md" >"$TEAM_DIR/PLAN.md"
   copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
   mutex "$TEAM_DIR/.feedback.lock"   # the same lock as squad feedback: never copy over a saved entry

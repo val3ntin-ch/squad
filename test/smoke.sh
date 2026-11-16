@@ -258,6 +258,7 @@ cd proj4; reset_log
 check "init creates the goal, the decisions log and the task template" test -f .team/GOAL.md -a -f .team/DECISIONS.md -a -f .team/tasks/_TEMPLATE.md
 check "a new team starts with a draft plan (no task before V! approves it)" grep -qx 'Status: draft' .team/PLAN.md
 printf '# Plan: tests\n\nStatus: approved by V! 2026-11-16 10:00\n' >.team/PLAN.md   # the dispatch tests below start tasks
+mkdir -p "$tmp/approvals"; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$tmp/approvals/proj4-PLAN.md.sha256"   # V!'s seal
 check "up starts the shipped team" "$squad" up
 check "the lead runs the strongest model and may read the devs' worktrees" grep -qE "^herdr agent start lead --kind claude .* -- --model claude-fable-5-2 --add-dir $tmp/proj4/.team --add-dir [^ ]+ --add-dir $tmp/proj4-team " "$MOCK_LOG"
 check "devs run at medium effort" grep -qE '^herdr agent start dev-a --kind claude .* -- --model claude-opus-5-5 --effort medium ' "$MOCK_LOG"
@@ -424,35 +425,64 @@ check "the tabs come in order: review, changes, plan, observer, report" sh -c "g
 check "the planner has its own tab, plan" grep -q 'tab create --workspace .* --label plan' "$MOCK_LOG"
 # ---- 012: the plan -----------------------------------------------------------------
 cp .team/PLAN.md "$tmp/plan.keep"; rm -f .team/PLAN.md
+sha() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
+# V! types APPROVE at a terminal: the tests give the command a pseudo-terminal
+approve() { if script --version 2>/dev/null | grep -q util-linux; then (sleep 2; printf 'APPROVE\n'; sleep 2) | script -qec "$squad plan --approve $*" /dev/null; else (sleep 2; printf 'APPROVE\n'; sleep 2) | script -q /dev/null "$squad" plan --approve "$@"; fi; }
 check "a team without a PLAN.md (started before the planner) goes on: the gate asks only for feature plans" sh -c "! '$squad' dispatch dev-a T-779 2>&1 | grep -q 'approves the plan'"
+printf '# Plan: (the goal: squad plan "<goal>")\n\nStatus: draft\n' >.team/PLAN.md
+check "the draft plan from init gets the goal" sh -c "'$squad' plan 'a notes app' >/dev/null && grep -qx '# Plan: a notes app' .team/PLAN.md"
+rm -f .team/PLAN.md
 check "plan writes PLAN.md with every section and gives the planner the goal" sh -c "'$squad' plan 'a todo app' >/dev/null && for h in 'Goal' 'Platform and versions' 'Sources' 'Limits of the platform' 'Feasibility' 'Risks' 'Tasks' 'Open decisions for V!'; do grep -q \"^## \$h\" .team/PLAN.md || exit 1; done && grep -q 'agent prompt planner .*Plan this: a todo app' '$MOCK_LOG'"
 check "dispatch refuses a task before V! approves the plan" sh -c "out=\$('$squad' dispatch dev-a T-777 2>&1); test \$? != 0 && printf '%s' \"\$out\" | grep -q 'before V! approves the plan'"
 mkdir -p .team/plan/proofs; echo "ran: node --version -> v24" >.team/plan/proofs/F1-node.txt
 good='| F-1 | Node 24 runs the app | https://nodejs.org/docs/latest-v24.x/api/ | F1-node.txt | proven |'
-mkplan() { sed '/^| *#/,$d' .team/PLAN.md >.team/PLAN.tmp 2>/dev/null; { awk '/^## Feasibility/ { print; print "| # | Claim | Official source | Proof | Result |"; print "|---|---|---|---|---|"; while ((getline l < "/dev/stdin") > 0) print l; skip = 1; next } skip && /^\|/ { next } /^## / { skip = 0 } { print }' .team/PLAN.keep2; } >.team/PLAN.md; }
 cp .team/PLAN.md .team/PLAN.keep2
+mkplan() { awk '/^## Feasibility/ { print; print "| # | Claim | Official source | Proof | Result |"; print "|:--|:--|:--|:--|:--|"; while ((getline l < "/dev/stdin") > 0) print l; skip = 1; next } skip && /^\|/ { next } /^## / { skip = 0 } { print }' .team/PLAN.keep2 >.team/PLAN.md; }
 printf '# Critique\n- [x] F-1: holds, see the Node docs\n' >.team/plan/critique.md
-printf '%s\n' "$good" | mkplan
-check "plan --check passes a complete plan" "$squad" plan --check
+printf '%s\n' "$good" '| F-2 | runs `a \| b` in the shell | https://www.gnu.org/software/bash/manual/ | F1-node.txt | proven |' | mkplan
+check "plan --check passes a complete plan (aligned separator, a pipe inside a cell)" "$squad" plan --check
 printf '%s\n' '| F-1 | Node 24 runs the app | node docs | F1-node.txt | proven |' | mkplan
 check "plan --check fails a claim without an official URL, and names it" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: no official source URL'"
 printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | F9-missing.txt | proven |' | mkplan
 check "plan --check fails a missing proof file" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: proof file missing'"
+printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | . | proven |' | mkplan
+check "plan --check fails a folder given as a proof" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: proof file missing or empty'"
+printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | /etc/hosts | proven |' | mkplan
+check "plan --check fails a proof outside .team/plan/proofs" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: the proof must be a file in .team/plan/proofs/'"
 printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | F1-node.txt | unproven: no machine |' | mkplan
 check "plan --check fails an unproven claim" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: not proven'"
+printf '%s\n' '| F-1 | Node 24 runs the app | https://nodejs.org/ | F1-node.txt | pending |' | mkplan
+check "plan --check fails any result that is not proven" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-1: not proven (pending)'"
 sed -i.bak 's/^- (each part the goal touches.*/- herdr terminal, bash 3.2/' .team/PLAN.keep2; rm -f .team/PLAN.keep2.bak; echo '<html>' >.team/plan/proofs/F2-look.html
-printf '%s\n' "$good" '| F-2 | the board mockup shows hexagons | https://herdr.dev/docs | F2-look.html | proven |' | mkplan
-check "plan --check fails an HTML mockup for a terminal platform" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-2: a mockup for a terminal must be a capture of a real program'"
+printf '%s\n' "$good" '| F-2 | the sidebar colours | https://herdr.dev/docs | F2-look.html | proven |' | mkplan
+check "plan --check fails an HTML proof on a terminal platform" sh -c "'$squad' plan --check 2>&1 | grep -q 'F-2: a mockup for a terminal must be a capture of a real program'"
+sed -i.bak 's/^- herdr terminal, bash 3.2/- Next.js client 15, Supabase client/' .team/PLAN.keep2; rm -f .team/PLAN.keep2.bak
+printf '%s\n' "$good" '| F-2 | the page look | https://nextjs.org/docs | F2-look.html | proven |' | mkplan
+check "a web platform with a 'client' library may prove a look with HTML" "$squad" plan --check
 printf '%s\n' "$good" | mkplan; printf '# Critique\n- [ ] F-1: the version is not in the lock file\n' >.team/plan/critique.md
 check "plan --check fails while a critique item has no answer" sh -c "'$squad' plan --check 2>&1 | grep -q 'has no answer: F-1: the version'"
+cat >"$tmp/bin/codex" <<'CODEX'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do [ "$1" = -o ] && { cat "$CRITIQUE_ANSWER" >"$2"; }; shift; done
+CODEX
+chmod +x "$tmp/bin/codex"
+printf '### Options\n1. fine\n' >"$tmp/crit1"
+check "a critique without its ITEMS line is not trusted" sh -c "CRITIQUE_ANSWER='$tmp/crit1' '$squad' plan --critique 2>&1 | grep -q 'not trusted'"
+printf -- '- [ ] F-1: the URL is for v22\nITEMS: 1\n' >"$tmp/crit2"
+check "a critique lists its items for the planner to answer" sh -c "CRITIQUE_ANSWER='$tmp/crit2' '$squad' plan --critique >/dev/null && grep -q '^- \[ \] F-1: the URL is for v22' .team/plan/critique.md"
 check "an agent cannot approve a plan" sh -c "TEAM_ROLE=lead '$squad' plan --approve 2>&1 | grep -q 'only V! approves'"
-check "a plan that fails the check cannot be approved" refuses "$squad" plan --approve
 printf '# Critique\n- [x] F-1: added the lock file line\n' >.team/plan/critique.md
-check "V! approves a complete plan, with the date" sh -c "'$squad' plan --approve >/dev/null && grep -qE '^Status: approved by V! [0-9]{4}-' .team/PLAN.md"
+check "approve without a terminal is refused" sh -c "'$squad' plan --approve </dev/null 2>&1 | grep -q 'from your own terminal'"
+check "a 'Status: approved' line written into the plan does not open the gate" sh -c "sed -i.bak 's/^Status: draft/Status: approved by V! 2026-01-01 00:00/' .team/PLAN.md; rm -f .team/PLAN.md.bak; '$squad' dispatch dev-a T-777 2>&1 | grep -q 'before V! approves the plan'"
+sed -i.bak 's/^Status: approved by V! 2026-01-01 00:00/Status: draft/' .team/PLAN.md; rm -f .team/PLAN.md.bak
+approve >/dev/null 2>&1 || true
+check "V! approves a complete plan at a terminal, with the date" grep -qE '^Status: approved by V! [0-9]{4}-' .team/PLAN.md
 check "dispatch passes the plan gate once the plan is approved" sh -c "! '$squad' dispatch dev-a T-777 2>&1 | grep -q 'approves the plan'"
 printf '# T-778\n- Plan: F-1\n' >.team/tasks/T-778.md
 check "a task of a feature plan waits for that plan's approval" sh -c "'$squad' dispatch dev-a T-778 2>&1 | grep -q 'feature plan F-1, which V! has not approved'"
-rm -f .team/tasks/T-778.md .team/PLAN.keep2 .team/PLAN.tmp; rm -rf .team/plan; cp "$tmp/plan.keep" .team/PLAN.md
+echo "- one more task" >>.team/PLAN.md
+check "an edit after the approval voids it" sh -c "'$squad' dispatch dev-a T-777 2>&1 | grep -q 'before V! approves the plan'"
+rm -f .team/tasks/T-778.md .team/PLAN.keep2; rm -rf .team/plan .team/consult "$tmp/bin/codex"; printf '#!/bin/sh\n' >"$tmp/bin/codex"; chmod +x "$tmp/bin/codex"; cp "$tmp/plan.keep" .team/PLAN.md; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$tmp/approvals/proj4-PLAN.md.sha256"
 check "the observer is not a reviewer pane" refuses grep -qE 'pane split .* --cwd [^ ]+ .*observer' "$MOCK_LOG"
 check "the observer reads the devs' worktrees" grep -qE "^herdr agent start observer --kind claude .* --add-dir $tmp/proj4-team " "$MOCK_LOG"
 
