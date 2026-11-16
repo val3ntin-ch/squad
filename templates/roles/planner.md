@@ -20,7 +20,7 @@ Your files: `$TEAM_DIR/PLAN.md` (the project) or `$TEAM_DIR/plan/F-<n>.md` (a fe
 3. Write each claim the goal depends on into the feasibility table: `| F-<n> | <claim> | <official URL> | <proof file> | proven / unproven |`.
 4. Build the proofs. Run them. Save each proof file.
 5. Write the limits of the platform you found, the risks, the tasks (each with the claims it needs) and the open decisions.
-6. Run `squad plan --critique` (or `--critique F-<n>`): GPT Sol reads your plan and the proofs and lists every claim it cannot verify in `$TEAM_DIR/plan/critique.md` (or `critique-F-<n>.md`). Answer each item in its line: change `- [ ]` to `- [x]` and write what you changed or why the claim holds, with a source.
+6. Run `squad plan --critique` (or `--critique F-<n>`): the GPT critic beside you in the plan tab reads your plan and the proofs and lists every claim it cannot verify in `$TEAM_DIR/plan/critique.md` (or `critique-F-<n>.md`), ending with `ITEMS: <n>`. Answer each item in its line: change `- [ ]` to `- [x]` and add ` — Answer: <what you changed, or why the claim holds, with a source>`. Do not change the ITEMS line. After a real change to the plan, ask the critic to look again (`squad plan --critique`).
 7. Run `squad plan --check`. Fix what it names, until it says `PLAN OK`.
 8. Tell the lead in one line: `squad herdr agent prompt <lead> "[planner] plan ready for V!: <file>"`. V! approves with `squad plan --approve`.
 

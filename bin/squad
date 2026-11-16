@@ -763,7 +763,8 @@ cmd_dispatch() {
   i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
   role=${S_ROLE[$i]}; kind=${S_KIND[$i]}
   [ "$seat" != "$LEAD" ] || die "the lead does not dispatch to itself."
-  plan_gate "$task"
+  # the gate holds a task's first start; a task already under way (its test, review, a fix) goes on
+  awk -v t="$task" '{ id = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $4 : $3; e = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $5 : $4 } id == t && e == "DISPATCH" { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null || plan_gate "$task"
   round=$(review_round "$task")
   # the contract comes first: a dev starts only on a table the tester agreed
   # (only a task's first hand-out: a task already under way, for example from an older squad, goes on)
@@ -921,7 +922,8 @@ plan_rows() { # <plan> -> "id<TAB>claim<TAB>source<TAB>proof<TAB>result" per row
       line = $0; gsub(/\\\|/, "\001", line)   # an escaped pipe inside a cell is text
       n = split(line, c, "|"); sep = 1
       for (k = 2; k < n; k++) { gsub(/^[ \t]+|[ \t]+$/, "", c[k]); gsub(/\001/, "|", c[k]); if (c[k] !~ /^:?-+:?$/) sep = 0 }
-      if (sep || c[2] == "#" || c[2] == "") next
+      if (sep || c[2] == "#") next
+      if (c[2] == "") c[2] = "(a row without an id)"
       printf "%s\t%s\t%s\t%s\t%s\n", c[2], c[3], c[4], c[5], c[6]
     }' "$1"
 }
@@ -930,7 +932,7 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
   local plan=$1 crit=$2 term=0 id src proof res f rows=0 lres
   [ -f "$plan" ] || { echo "no plan: $plan"; return 0; }
   # a terminal platform: its mockups are captures of a real program, never HTML
-  awk '/^## Platform and versions/ { on = 1; next } /^## / { on = 0 } on' "$plan" | grep -qiwE 'terminal|tui|herdr|tmux|cli' && term=1
+  [ -z "$(awk '/^## Platform and versions/ { on = 1; next } /^## / { on = 0 } on' "$plan" | grep -iwE 'terminal|tui|herdr|tmux|cli' || true)" ] || term=1
   while IFS=$'\t' read -r id _ src proof res; do
     [ -n "$id" ] || continue
     rows=$((rows + 1))
@@ -944,7 +946,8 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
       [ "$term" = 0 ] || case "$proof" in *.html|*.htm|*.HTML|*.HTM) echo "$id: a mockup for a terminal must be a capture of a real program, not an HTML page" ;; esac
     fi
     lres=$(printf '%s' "$res" | tr '[:upper:]' '[:lower:]')
-    case "$lres" in proven*) ;; *) echo "$id: not proven (${res:-no result})" ;; esac
+    case "$lres" in proven|"proven "*|"proven:"*) ;; *) echo "$id: not proven (${res:-no result})" ;; esac
+    [ "$id" != "(a row without an id)" ] || echo "a feasibility row has no id: every claim needs one (F-<n>)"
   done <<<"$(plan_rows "$plan")"
   [ "$rows" -gt 0 ] || echo "the feasibility table has no claim"
   if [ ! -f "$crit" ]; then echo "no critique yet: run squad plan --critique"
@@ -953,12 +956,13 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
     cn=$(grep -cE '^[[:space:]]*- \[[ x]\]' "$crit" || true)
     if [ -z "$ci" ]; then echo "the critique has no 'ITEMS: <n>' line: it is not complete"
     elif [ "$ci" != "$cn" ]; then echo "the critique says ITEMS: $ci but has $cn item lines"; fi
+    grep -nE '^[[:space:]]*- \[x\]' "$crit" | grep -v 'no item: GPT verified' | grep -viE 'answer:' | sed 's/^\([0-9]*\):.*/critique line \1 is marked done but has no "Answer:"/' || true
     grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160 || true; fi
   return 0
 }
 
 # V!'s approval: the plan's sha256, kept outside the team folder (agents write there); any later edit voids it
-plan_seal() { echo "${HEAVY_DIR%/heavy}/approvals/$SESSION_NAME-$(basename "$1").sha256"; }
+plan_seal() { echo "${SQUAD_APPROVALS_DIR:-$HOME/.config/squad/approvals}/$SESSION_NAME-$(basename "$1").sha256"; }   # not under the team folder or the cache an agent may point elsewhere
 plan_hash() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 plan_approved() { local s; s=$(plan_seal "$1"); [ -f "$1" ] && [ -f "$s" ] && [ "$(cat "$s")" = "$(plan_hash "$1")" ]; }
 
@@ -978,7 +982,8 @@ cmd_start_seat() { # <seat>: start one seat in the running team (a seat added to
     observer) pane=$(observer_tab "$ws" "$i") ;;
     *) die "start-seat starts a planner (and its critic) or an observer; for other seats run 'squad up'." ;;
   esac
-  start_seat "$i" "$pane"
+  START_FAILED=0; start_seat "$i" "$pane"
+  [ "$START_FAILED" = 0 ] || die "$seat did not start: see its pane in the plan tab."
   say "$seat started in its tab."
   local c ci; c=$(first_role critic)
   if [ "${S_ROLE[$i]}" = planner ] && [ -n "$c" ] && [ -z "$(herdr_team agent list 2>/dev/null | jq -r --arg n "$c" '.result.agents[] | select(.name == $n) | .name' | head -1)" ]; then
@@ -1033,11 +1038,13 @@ cmd_plan() {
       problems=$(plan_check "$plan" "$crit")
       [ -z "$problems" ] || { printf '%s\n' "$problems" | sed 's/^/  ✖ /' >&2; die "not approved: the plan does not pass the check."; }
       # a person at a terminal types the confirmation; an agent's tool has no terminal to type in
-      local ans="" seal st
+      local ans="" seal st before
       [ -t 0 ] || die "approve from your own terminal: it asks you to type APPROVE."
+      before=$(plan_hash "$plan")
       printf 'Approve %s? It starts the work. Type APPROVE: ' "${plan#"$REPO"/}" >&2
       IFS= read -r ans || true; ans=${ans%$'\r'}
       [ "$ans" = APPROVE ] || die "not approved."
+      [ "$(plan_hash "$plan")" = "$before" ] || die "the plan changed while you were approving it: run squad plan --approve again."
       local tmp="$plan.tmp.$$"; st="Status: approved by V! $(date '+%Y-%m-%d %H:%M')"
       if grep -q '^Status:' "$plan"; then awk -v s="$st" '!d && /^Status:/ { print s; d = 1; next } { print }' "$plan" >"$tmp"
       else awk -v s="$st" 'NR == 1 { print; print ""; print s; next } { print }' "$plan" >"$tmp"; fi
