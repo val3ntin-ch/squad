@@ -992,8 +992,7 @@ cmd_plan() {
   for a in "$@"; do
     case "$a" in
       --check) mode=check ;; --approve) mode=approve ;; --critique) mode=critique ;; --feature) feature=new ;;
-      F-[0-9]*) feature=$a ;;
-      *) goal=${goal:+$goal }$a ;;
+      *) if [[ "$a" =~ ^F-[0-9]+$ ]]; then feature=$a; else goal=${goal:+$goal }$a; fi ;;
     esac
   done
   [ "$feature" = new ] && [ "$mode" != start ] && die "--feature goes with a new goal: squad plan \"<goal>\" --feature"
@@ -1837,9 +1836,6 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/TASKS.md" "$TEAM_DIR/TASKS.md"
   copy_if_missing "$TEMPLATES/GOAL.md" "$TEAM_DIR/GOAL.md"
   copy_if_missing "$TEMPLATES/DECISIONS.md" "$TEAM_DIR/DECISIONS.md"
-  # a new team starts with a draft plan: no task starts before the planner proves it and V! approves it
-  [ "$new_conf" = 1 ] && grep -qE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+planner([[:space:]]|$)' "$TEAM_DIR/team.conf" 2>/dev/null && [ ! -f "$TEAM_DIR/PLAN.md" ] \
-    && SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="(the goal: squad plan \"<goal>\")" subst "$TEMPLATES/PLAN.md" >"$TEAM_DIR/PLAN.md"
   copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
   mutex "$TEAM_DIR/.feedback.lock"   # the same lock as squad feedback: never copy over a saved entry
   copy_if_missing "$TEMPLATES/FEEDBACK.md" "$TEAM_DIR/FEEDBACK.md"
@@ -1854,6 +1850,9 @@ cmd_init() {
 
   update_conf
   load_conf
+  # a new team starts with a draft plan: no task starts before the planner proves it and V! approves it
+  [ "$new_conf" = 1 ] && grep -qE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+planner([[:space:]]|$)' "$TEAM_DIR/team.conf" 2>/dev/null && [ ! -f "$TEAM_DIR/PLAN.md" ] \
+    && SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="(the goal: squad plan \"<goal>\")" subst "$TEMPLATES/PLAN.md" >"$TEAM_DIR/PLAN.md"
   # Protocol and roles belong to the tool: refresh them so upgrades take effect.
   render_team_files
   say "  updated  .team/PROTOCOL.md, .team/roles/ and .team/tasks/_TEMPLATE.md"

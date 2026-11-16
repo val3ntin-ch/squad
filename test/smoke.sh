@@ -428,8 +428,10 @@ check "the plan tab has two agents: Claude plans, GPT Sol critiques with -a neve
 cp .team/PLAN.md "$tmp/plan.keep"; rm -f .team/PLAN.md
 sha() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 # V! types APPROVE at a terminal: the tests give the command a pseudo-terminal
-approve() { if script --version 2>/dev/null | grep -q util-linux; then (sleep 2; printf 'APPROVE\n'; sleep 2) | script -qec "$squad plan --approve $*" /dev/null; else (sleep 2; printf 'APPROVE\n'; sleep 2) | script -q /dev/null "$squad" plan --approve "$@"; fi; }
+approve() { if script --version 2>/dev/null | grep -q util-linux; then (sleep 2; printf 'APPROVE\n'; sleep 2) | script -qec "$squad plan --approve" /dev/null; else (sleep 2; printf 'APPROVE\n'; sleep 2) | script -q /dev/null "$squad" plan --approve; fi; }
 check "a team without a PLAN.md (started before the planner) goes on: the gate asks only for feature plans" sh -c "! '$squad' dispatch dev-a T-779 2>&1 | grep -q 'approves the plan'"
+check "a goal that starts with F- stays a goal" sh -c "rm -f .team/PLAN.md; '$squad' plan 'F-35 flight sim' >/dev/null && grep -qx '# Plan: F-35 flight sim' .team/PLAN.md"
+check "a feature id with more than F-<number> never becomes a path" sh -c "! '$squad' plan --check 'F-1/../x' 2>&1 | grep -q 'F-1/../x'"
 printf '# Plan: (the goal: squad plan "<goal>")\n\nStatus: draft\n' >.team/PLAN.md
 check "the draft plan from init gets the goal" sh -c "'$squad' plan 'a notes app' >/dev/null && grep -qx '# Plan: a notes app' .team/PLAN.md"
 rm -f .team/PLAN.md
