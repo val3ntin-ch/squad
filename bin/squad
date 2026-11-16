@@ -764,7 +764,9 @@ cmd_dispatch() {
   role=${S_ROLE[$i]}; kind=${S_KIND[$i]}
   [ "$seat" != "$LEAD" ] || die "the lead does not dispatch to itself."
   # the gate holds a task's first start; a task already under way (its test, review, a fix) goes on
-  awk -v t="$task" '{ id = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $4 : $3; e = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $5 : $4 } id == t && e == "DISPATCH" { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null || plan_gate "$task"
+  # (started = real work on it: a run, a report, a verdict; a dispatch that failed does not count)
+  awk -v t="$task" '{ id = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $4 : $3; e = ($1 ~ /^[0-9][0-9][0-9][0-9]-/) ? $5 : $4 }
+    id == t && e ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES|HEAVY_START|HEAVY_END|BLOCKED|CONTRACT|DONE-FOR-SWITCH)$/ { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null || plan_gate "$task"
   round=$(review_round "$task")
   # the contract comes first: a dev starts only on a table the tester agreed
   # (only a task's first hand-out: a task already under way, for example from an older squad, goes on)
@@ -956,13 +958,13 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
     cn=$(grep -cE '^[[:space:]]*- \[[ x]\]' "$crit" || true)
     if [ -z "$ci" ]; then echo "the critique has no 'ITEMS: <n>' line: it is not complete"
     elif [ "$ci" != "$cn" ]; then echo "the critique says ITEMS: $ci but has $cn item lines"; fi
-    grep -nE '^[[:space:]]*- \[x\]' "$crit" | grep -v 'no item: GPT verified' | grep -viE 'answer:' | sed 's/^\([0-9]*\):.*/critique line \1 is marked done but has no "Answer:"/' || true
+    grep -nE '^[[:space:]]*- \[x\]' "$crit" | grep -v 'no item: GPT verified' | grep -viE 'answer: *[^ ]' | sed 's/^\([0-9]*\):.*/critique line \1 is marked done but has no "Answer:"/' || true
     grep -nE '^[[:space:]]*- \[ \]' "$crit" | sed 's/^\([0-9]*\):[[:space:]]*- \[ \] */critique line \1 has no answer: /' | cut -c1-160 || true; fi
   return 0
 }
 
 # V!'s approval: the plan's sha256, kept outside the team folder (agents write there); any later edit voids it
-plan_seal() { echo "${SQUAD_APPROVALS_DIR:-$HOME/.config/squad/approvals}/$SESSION_NAME-$(basename "$1").sha256"; }   # not under the team folder or the cache an agent may point elsewhere
+plan_seal() { echo "$HOME/.config/squad/approvals/$SESSION_NAME-$(basename "$1").sha256"; }   # fixed: not under the team folder, not chosen by a variable
 plan_hash() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 plan_approved() { local s; s=$(plan_seal "$1"); [ -f "$1" ] && [ -f "$s" ] && [ "$(cat "$s")" = "$(plan_hash "$1")" ]; }
 
@@ -1035,21 +1037,22 @@ cmd_plan() {
     approve)
       [ -z "${TEAM_ROLE:-}" ] || die "only V! approves a plan (an agent's pane cannot)."
       plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
-      problems=$(plan_check "$plan" "$crit")
-      [ -z "$problems" ] || { printf '%s\n' "$problems" | sed 's/^/  ✖ /' >&2; die "not approved: the plan does not pass the check."; }
-      # a person at a terminal types the confirmation; an agent's tool has no terminal to type in
-      local ans="" seal st before
+      # V! approves one snapshot: the one checked, shown and sealed; any other content gets no seal
+      local snap snapc ans="" seal st new
       [ -t 0 ] || die "approve from your own terminal: it asks you to type APPROVE."
-      before=$(plan_hash "$plan")
+      snap=$(mktemp); snapc=$(mktemp); cp "$plan" "$snap"; [ -f "$crit" ] && cp "$crit" "$snapc"
+      problems=$(plan_check "$snap" "$snapc"); rm -f "$snapc"
+      [ -z "$problems" ] || { rm -f "$snap"; printf '%s\n' "$problems" | sed 's/^/  ✖ /' >&2; die "not approved: the plan does not pass the check."; }
       printf 'Approve %s? It starts the work. Type APPROVE: ' "${plan#"$REPO"/}" >&2
       IFS= read -r ans || true; ans=${ans%$'\r'}
-      [ "$ans" = APPROVE ] || die "not approved."
-      [ "$(plan_hash "$plan")" = "$before" ] || die "the plan changed while you were approving it: run squad plan --approve again."
-      local tmp="$plan.tmp.$$"; st="Status: approved by V! $(date '+%Y-%m-%d %H:%M')"
-      if grep -q '^Status:' "$plan"; then awk -v s="$st" '!d && /^Status:/ { print s; d = 1; next } { print }' "$plan" >"$tmp"
-      else awk -v s="$st" 'NR == 1 { print; print ""; print s; next } { print }' "$plan" >"$tmp"; fi
-      mv "$tmp" "$plan"
-      seal=$(plan_seal "$plan"); mkdir -p "$(dirname "$seal")"; plan_hash "$plan" >"$seal"
+      [ "$ans" = APPROVE ] || { rm -f "$snap"; die "not approved."; }
+      [ "$(plan_hash "$plan")" = "$(plan_hash "$snap")" ] || { rm -f "$snap"; die "the plan changed while you were approving it: run squad plan --approve again."; }
+      st="Status: approved by V! $(date '+%Y-%m-%d %H:%M')"; new=$(mktemp)
+      if grep -q '^Status:' "$snap"; then awk -v s="$st" '!d && /^Status:/ { print s; d = 1; next } { print }' "$snap" >"$new"
+      else awk -v s="$st" 'NR == 1 { print; print ""; print s; next } { print }' "$snap" >"$new"; fi
+      cp "$new" "$plan"; rm -f "$snap"
+      [ "$(plan_hash "$plan")" = "$(plan_hash "$new")" ] || { rm -f "$new"; die "the plan changed while it was written: not approved."; }
+      seal=$(plan_seal "$plan"); mkdir -p "$(dirname "$seal")"; plan_hash "$new" >"$seal"; rm -f "$new"
       log_event "$LEAD" "${feature:--}" PLAN_APPROVED "${plan##*/}"
       say "approved: ${plan#"$REPO"/}" ;;
     start)
