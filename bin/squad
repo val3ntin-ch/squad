@@ -775,11 +775,11 @@ cmd_dispatch() {
   if [ "$role" = dev ] && has_role tester && [ ! -f "$TEAM_DIR/reports/$task-contract.md" ] \
      && ! awk -v t="$task" -v devs=" $(dev_seats) " '
           { if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; id = $4; e = $5 } else { s = $2; id = $3; e = $4 } }
-          (id "") == (t "") && index(devs, " " s " ") && e != "DISPATCH_FAILED" { f = 1 }
+          (id "") == (t "") && index(devs, " " s " ") && e !~ /^(DISPATCH_FAILED|DISPATCH_QUEUED|DISPATCH_DROPPED|DISPATCH_NOT_STARTED|CONTRACT_DEFERRED)$/ { f = 1 }
           END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null; then
     # the tester busy in a run (a candidate takes 45 min): the dev starts on the brief, the contract follows (observer S-47)
     local tst; tst=$(first_role tester)
-    if [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$tst")" = working ]; then
+    if [ "${SQUAD_CONTRACT_DEFERRED:-0}" = 1 ] || [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$tst")" = working ]; then
       deferred=1
     else
       die "no contract for $task yet: send the tester 'squad dispatch <tester> $task --contract' first ($TEAM_DIR/reports/$task-contract.md)."
@@ -793,8 +793,8 @@ cmd_dispatch() {
   fi
   [ "$deferred" = 0 ] || text="$text The contract is not written yet: the tester is in a run. Start on the brief; the tester's contract notes come to you as a RULE line."
   # a busy seat: the task waits for it and is sent when it is free (observer S-39); the call returns at once
-  if [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] && [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ]; then
-    dispatch_queue "$seat" "$task" "${orig[@]}"
+  if [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] && { [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ] || queue_lock_held "$seat"; }; then
+    SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
     return 0
   fi
   clear=$(clear_cmd "$kind")
@@ -818,7 +818,7 @@ cmd_dispatch() {
   # the seat must be at its own prompt, with no menu open (Gas Town: WaitForRuntimeReady)
   if ! wait_ready "$seat" "$kind" "$DISPATCH_WAIT" && [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] \
      && [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ]; then
-    dispatch_queue "$seat" "$task" "${orig[@]}"; return 0
+    SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"; return 0
   fi
   wait_ready "$seat" "$kind" 5 || { log_event "$seat" "$task" DISPATCH_FAILED "not at its prompt"; die "$seat is not at its prompt (a menu, a dialog or its start screen). Read its pane: squad herdr agent read $seat --source visible"; }
   # logged before the task is sent: a fast seat's report can never come before its dispatch
@@ -833,26 +833,54 @@ cmd_dispatch() {
   say "$seat started on $task (round $round${model:+, $model})."
   if [ "$deferred" = 1 ]; then   # the contract follows: queued for the tester, sent when its run ends
     log_event "$seat" "$task" CONTRACT_DEFERRED "the tester was in a run"
-    ( SQUAD_DISPATCH_QUEUED=0 "$0" dispatch "$(first_role tester)" "$task" --contract ) >/dev/null 2>&1 || true
+    local tq; tq=$(first_role tester)
+    # a contract request already waiting (or the contract written): no second one
+    if [ -f "$TEAM_DIR/reports/$task-contract.md" ] || awk -v s="$tq" -v t="$task" '$3 == s && $4 == t { if ($5 == "DISPATCH_QUEUED") q = 1; else if ($5 == "DISPATCH" || $5 == "DISPATCH_DROPPED" || $5 == "DISPATCH_FAILED") q = 0 } END { exit !q }' "$TEAM_DIR/events.log" 2>/dev/null; then :
+    elif ! ( SQUAD_DISPATCH_QUEUED=0 SQUAD_CONTRACT_DEFERRED=0 "$SQUAD_HOME/bin/squad" dispatch "$(first_role tester)" "$task" --contract ) >/dev/null 2>&1; then
+      say "squad dispatch: the contract for $task could not be sent to $(first_role tester); send it: squad dispatch $(first_role tester) $task --contract"
+      herdr_team agent prompt "$LEAD" "[squad] the contract for $task was not sent to $(first_role tester): send it again (squad dispatch $(first_role tester) $task --contract)." >/dev/null 2>&1 || true
+    fi
   fi
 }
 
 DISPATCH_QUEUE_WAIT=${SQUAD_DISPATCH_QUEUE_WAIT:-7200}
+queue_lock_held() { # <seat>: a queued dispatch to it is going on now (its owner is alive)
+  local d="$TEAM_DIR/seats/$1.dispatching" p
+  [ -d "$d" ] || return 1
+  p=$(cat "$d/pid" 2>/dev/null || true)
+  if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then return 0; fi
+  rm -rf "$d"; return 1   # left over from a killed queue: cleared
+}
 dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the background until the seat is idle, then dispatch
   local seat=$1 task=$2; shift 2
-  local log="$TEAM_DIR/seats/$seat.queue.log"
+  local log="$TEAM_DIR/seats/$seat.queue.log" since contract=0 a
+  for a in "$@"; do [ "$a" = --contract ] && contract=1; done
   mkdir -p "$TEAM_DIR/seats"
   log_event "$seat" "$task" DISPATCH_QUEUED "waits for $seat to be free"
+  since=$(wc -l <"$TEAM_DIR/events.log" | tr -d ' ')
   (
-    local end=$(( $(date +%s) + DISPATCH_QUEUE_WAIT )) lockd="$TEAM_DIR/seats/$seat.dispatching" st
+    set +e
+    end=$(( $(date +%s) + DISPATCH_QUEUE_WAIT )); lockd="$TEAM_DIR/seats/$seat.dispatching"
     while [ "$(date +%s)" -lt "$end" ]; do
-      st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")
-      if [ "$st" != working ] && mkdir "$lockd" 2>/dev/null; then   # one queued dispatch at a time per seat, first come first served
-        if SQUAD_DISPATCH_QUEUED=1 "$0" dispatch "$@"; then rmdir "$lockd"; exit 0; fi
-        rmdir "$lockd"
-        herdr_team agent prompt "$LEAD" "[squad] the queued dispatch of $task to $seat failed: $log" >/dev/null 2>&1 || true
-        exit 1
+      # done meanwhile (sent by hand, or the contract written): nothing to send
+      if tail -n +"$((since + 1))" "$TEAM_DIR/events.log" 2>/dev/null | grep -qE "^[0-9-]+ [0-9:]+ $seat $task DISPATCH " \
+         || { [ "$contract" = 1 ] && [ -f "$TEAM_DIR/reports/$task-contract.md" ]; }; then
+        log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0
       fi
+      st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
+      case "$st" in
+        idle|done)   # free: one queued dispatch at a time per seat, first come first served
+          if ! queue_lock_held "$seat" && mkdir "$lockd" 2>/dev/null; then
+            sh -c 'echo $PPID' >"$lockd/pid"
+            trap 'rm -rf "$lockd"' EXIT
+            # under the lock, look again: another queued task may have just started on this seat
+            st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
+            case "$st" in idle|done) ;; *) rm -rf "$lockd"; trap - EXIT; sleep "${SQUAD_QUEUE_POLL:-15}"; continue ;; esac
+            if SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@"; then exit 0; fi
+            herdr_team agent prompt "$LEAD" "[squad] the queued dispatch of $task to $seat failed: $log" >/dev/null 2>&1 || true
+            exit 1
+          fi ;;
+      esac   # working, blocked (a prompt or a question), off: wait
       sleep "${SQUAD_QUEUE_POLL:-15}"
     done
     log_event "$seat" "$task" DISPATCH_FAILED "still busy after $((DISPATCH_QUEUE_WAIT / 60)) min in the queue"

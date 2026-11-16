@@ -353,6 +353,17 @@ check "dispatch to a busy seat queues it and returns at once" sh -c "MOCK_DYNAMI
 echo idle >"$tmp/state"
 check "the queued task is sent when the seat is free" sh -c "for k in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do grep -q ' dev-a T-131 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
 sleep 3; rm -f "$tmp/state"
+printf 'x\n' >.team/reports/T-132-contract.md; printf 'x\n' >.team/reports/T-133-contract.md; printf 'x\n' >.team/reports/T-134-contract.md
+echo working >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" dispatch dev-a T-132 >/dev/null 2>&1; echo blocked >"$tmp/state"; sleep 4
+check "a queued task never goes to a seat that waits on a prompt or a question" refuses grep -q ' dev-a T-132 DISPATCH round' .team/events.log
+echo idle >"$tmp/state"
+check "it goes once the seat is idle" sh -c "for k in \$(seq 1 15); do grep -q ' dev-a T-132 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
+sleep 3; echo working >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" dispatch dev-a T-133 >/dev/null 2>&1
+printf '%s dev-a T-133 DISPATCH round=1 (sent by hand)\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log; echo idle >"$tmp/state"
+check "a queued task already sent by hand is dropped, not sent twice" sh -c "for k in \$(seq 1 15); do grep -q ' dev-a T-133 DISPATCH_DROPPED' .team/events.log && exit 0; sleep 1; done; exit 1"
+sleep 2; rm -f "$tmp/state"; mkdir -p .team/seats/dev-a.dispatching; echo 999999 >.team/seats/dev-a.dispatching/pid
+check "a lock left by a killed queue is cleared, so the seat is not blocked" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 '$squad' dispatch dev-a T-134 2>&1 | grep -qv 'is busy' && test ! -d .team/seats/dev-a.dispatching"
+rm -f "$tmp/state"
 agents_tb='{"result":{"agents":[{"name":"tester","agent_status":"working","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
 check "a dev starts without a contract while the tester is in a run (the contract follows)" sh -c "out=\$(MOCK_AGENTS='$agents_tb' SQUAD_DISPATCH_WAIT=1 '$squad' dispatch dev-a T-102 2>&1); ! printf '%s' \"\$out\" | grep -q 'no contract for T-102'"
 agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
