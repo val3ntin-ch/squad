@@ -620,6 +620,8 @@ check "it adds the GPT reviewer for the team's own devs, and the observer" sh -c
 check "it keeps what was there" sh -c "grep -qx 'rounds 4' .team/team.conf && grep -qx 'setup npm ci' .team/team.conf && test \$(grep -c '^rounds' .team/team.conf) = 1"
 check "the updated file is valid" "$squad" status
 check "a second run adds nothing" sh -c "'$squad' update-conf | grep -q 'nothing to add'"
+printf 'name lead Atlas mauve\nnotify on\nstep 2\n' >>.team/team.conf
+check "a team.conf with the Squad Deck lines (name, notify, step) still loads" "$squad" status
 printf 'seat lead claude lead -\nseat dev-a claude dev -\nupgrade off\n' >.team/team.conf
 "$squad" update-conf >/dev/null
 check "upgrade off leaves team.conf alone" test "$(wc -l <.team/team.conf | tr -d ' ')" = 3

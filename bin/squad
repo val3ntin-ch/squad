@@ -123,6 +123,7 @@ load_conf() {
               rest=$((10#$rest))
               case "$kw" in heavy_timeout) HEAVY_TIMEOUT=$rest ;; heavy_timeout_dev) HEAVY_TIMEOUT_DEV=$rest ;; stall_minutes) STALL_MINUTES=$rest ;; *) OBSERVE_MINUTES=$rest ;; esac ;;
       verify_hook) case "$rest" in on|off) VERIFY_HOOK=$rest ;; *) die "team.conf line $line_no: 'verify_hook' is on or off." ;; esac ;;
+      name|notify|step) ;;   # Squad Deck lines (reverted 16 Nov 2026): a team.conf that has them still loads
       # read by update_conf from the file itself; here it is only checked
       upgrade) case "$rest" in on|off) ;; *) die "team.conf line $line_no: 'upgrade' is on or off." ;; esac ;;
       owner) case "$rest" in visual|all) OWNER_MODE=$rest ;; *) die "team.conf line $line_no: 'owner' is visual or all." ;; esac ;;
