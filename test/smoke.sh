@@ -983,6 +983,11 @@ seats_b='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4"
 reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
 check "016: an older event without a date still gives the seat its task and phase" grep -q 'w2:p4 .*--token ticket=T-874 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
 check "016: the owner's own blocked agent does not count as a seat that needs them" grep -q 'workspace report-metadata w2 .*--token needs=nobody waits' "$MOCK_LOG"
+printf '%s dev-b T-875 DISPATCH round=1\n%s dev-b T-875 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" >>.team/events.log
+seats_c='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4","agent_status":"blocked"}]}}'
+reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_c "$squad" watch --once >/dev/null 2>&1
+check "016: a dispatch that did not start shows NOT STARTED, not CODING" grep -q 'w2:p4 .*--token phase=NOT STARTED' "$MOCK_LOG"
+check "016: a blocked squad seat counts as one that needs the owner" grep -q 'workspace report-metadata w2 .*--token needs=1 need you' "$MOCK_LOG"
 # the tab bar line: only squad's seats count; a team that is gone leaves the list
 rm -f "$HOME/.config/squad/teams"/*
 echo "$PWD/.team" >"$HOME/.config/squad/teams/a"; echo "$tmp/gone/.team" >"$HOME/.config/squad/teams/b"; echo /x/sock >.team/herdr.sock

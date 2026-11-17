@@ -1695,7 +1695,7 @@ task_title() { awk -F'|' -v id="$1" '{ t = $2; gsub(/^ +| +$/, "", t) } t == id 
 
 seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the phase in plain words
   awk -v s="$1" -v r="$2" '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { a = $3; k = $4; v = $5; ww = $1 " " $2 } else { a = $2; k = $3; v = $4; ww = "" } }   # an older log has no date
-    a == s && k != "-" && v ~ /^(DISPATCH|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = k; e = v; d = $0; w = ww; at = NR }
+    a == s && k != "-" && v ~ /^(DISPATCH|DISPATCH_FAILED|DISPATCH_NOT_STARTED|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = k; e = v; d = $0; w = ww; at = NR }
     END { if (t == "") { print "|||"; exit }
       if (e == "DISPATCH") {
         if (r == "dev") p = "CODING"
@@ -1703,6 +1703,7 @@ seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the 
         else if (r == "reviewer") p = "REVIEWING"
         else if (r == "planner") p = "PLANNING"
         else p = "WORKING" }
+      else if (e == "DISPATCH_FAILED" || e == "DISPATCH_NOT_STARTED") p = "NOT STARTED"
       else if (e == "HEAVY_START") p = "RUNNING CHECKS"
       else if (e == "HEAVY_END") p = (index(d, "rc=0 ") ? "CHECKS PASSED" : "CHECKS FAILED")
       else if (e == "DONE") p = (r == "dev" ? "WAITS FOR TEST" : "DONE")
@@ -1729,7 +1730,7 @@ ui_sync() { # tell herdr what each seat does; quiet, best effort, only what chan
   local agents i name role pane kind tp task phase when title sig dir="$TEAM_DIR/observer/.ui" merged total ws rnd needs lock own at
   mkdir -p "$dir"
   agents=$(herdr_team agent list 2>/dev/null) || return 0
-  needs=$(jq --arg s " ${S_NAME[*]} " '[.result.agents[] | select(.agent_status == "blocked" and ($s | contains(" " + .name + " ")))] | length' <<<"$agents" 2>/dev/null || echo 0)   # squad's seats only
+  needs=$(jq --arg s " ${S_NAME[*]} " '[.result.agents[] | select(.agent_status == "blocked" and (.name as $n | $s | contains(" " + $n + " ")))] | length' <<<"$agents" 2>/dev/null || echo 0)   # squad's seats only
   for ((i = 0; i < $(seat_count); i++)); do
     name=${S_NAME[$i]}; role=${S_ROLE[$i]}
     pane=$(jq -r --arg n "$name" '[.result.agents[] | select(.name == $n) | .pane_id][0] // empty' <<<"$agents" 2>/dev/null)
