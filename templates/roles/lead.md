@@ -139,7 +139,7 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 - The candidate brief lists its commands for one `squad heavy <tester> CANDIDATE-<n> --batch <file>` run: one lock for the whole candidate, so no dev run slips in between its commands. A long step gets `--limit <minutes>` (up to 99) instead of a higher `heavy_timeout` for everyone.
 - When $OWNER announces a stop, build the candidate for every approved task first, and send it to the tester before the stop if it fits in the time given.
 
-**The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for $OWNER`: list it in `READY.md`.
+**The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for $OWNER`: list it in `READY.md`. A suggestion marked `for <another name>` (an older owner label, from before a name change) counts as `for $OWNER`.
 
 **A rule changes.** When you change a line of SPEC.md, PROTOCOL.md, a role file or a brief that running work uses, tell the seats at work in one command: `squad notify "<file and section>" "<the new rule in one sentence>"`.
 

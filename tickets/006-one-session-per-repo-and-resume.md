@@ -14,7 +14,7 @@ restart (of herdr, of the Mac) every seat comes back with its own conversation, 
 - Out: moving a running team between machines; herdr's own session storage.
 
 ## Done when
-- [x] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: the owner's running team already uses the session `project A`; `session <name>` in team.conf overrides it) and starts
+- [x] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: the owner's running team already uses the session `project-a`; `session <name>` in team.conf overrides it) and starts
       the team in it; run inside herdr in another repository's session, it stops and prints
       the one command to switch (`squad up` never mixes two repositories in one session).
 - Exception (kept on purpose): a team that already runs in another session keeps it while `.team/herdr.sock` names that session (`check_session`), so teams started before v2 (project A, project B) are not forced to move. Isolation is then by workspace, not by session.
