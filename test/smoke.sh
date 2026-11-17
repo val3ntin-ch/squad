@@ -1061,7 +1061,8 @@ err=$(printf q | COLUMNS=30 MOCK_AGENTS=$seats "$squad" report --live 2>&1 >/dev
 check "017: a narrow pane prints no error" test -z "$err"
 printf '10:00:00 dev-a T-881 DONE\n' >>.team/events.log
 check "017: an event without a date is still in the events" sh -c "printf q | MOCK_AGENTS='$seats' '$squad' report --live 2>/dev/null | grep -q 'dev-a .*T-881 .*DONE'"
-check "017: herdr's error answer does not stop the report" sh -c "MOCK_AGENTS='{\"error\":{\"message\":\"offline\"}}' printf q | '$squad' report --live 2>/dev/null | grep -q 'EVENTS'"
+off=$(printf q | MOCK_AGENTS='{"error":{"message":"offline"}}' "$squad" report --live 2>/dev/null || true)
+check "017: herdr's error answer does not stop the report; the seats show off" sh -c "printf '%s' \"\$1\" | grep -q EVENTS && printf '%s' \"\$1\" | grep -qE 'dev-a +dev +off'" _ "$off"
 mkdir -p "$tmp/fresh017" && cd "$tmp/fresh017" && git init -q && git commit -q --allow-empty -m init && "$squad" init >/dev/null 2>&1
 check "017: a new team without events.log shows the whole report" sh -c "printf q | '$squad' report --live 2>/dev/null | grep -q EVENTS"
 check "017: a new team does not show 'your feedback open: 0'" sh -c "! printf q | '$squad' report --live 2>/dev/null | grep -q 'feedback open: 0'"
