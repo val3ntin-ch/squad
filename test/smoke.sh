@@ -634,7 +634,7 @@ check "the page shows each decision with its status and the GPT consult" sh -c "
 check "the page shows the observer's now and suggestions" sh -c "grep -q 'T-500 waited 5 min for the tester' '$html' && grep -q 'Batch the tester queue' '$html'"
 check "the timeline has the task's minutes: total 90, dev 30, test 25, review 8" grep -qE '<tr><td>T-500</td><td>merged</td><td class=n>90</td><td class=n>30</td><td class=n>25</td><td class=n>8</td>' "$html"
 check "the cost tab sums the seat minutes and the Claude and Codex usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td><td class=n>3</td></tr>' "$html"
-check "the live report shows the cost too" sh -c "printf q | '$squad' report --live | grep -qE 'T-500 +merged .*\| 6 · 3'"
+check "the live report shows the cost too" sh -c "printf q | '$squad' report --live | grep -qE 'T-500 +merged .*│ 6 · 3\$'"
 check "an event records Codex usage when Codex has data" sh -c "CODEX_HOME='$cx' '$squad' done dev-a T-303 BLOCKED >/dev/null; grep -E ' dev-a T-303 BLOCKED .* c=42/7' .team/events.log"
 check "the QA tab counts the tester's FAIL" grep -qE '<tr><td>T-500</td><td>[a-z]+</td><td class=n>[0-9]+</td><td class=n>0</td><td class=n>1</td>' "$html"
 check "the page escapes HTML in the files" sh -c "printf '<script>x</script>\n' >>.team/observer/NOW.md; '$squad' report >/dev/null; ! grep -q '<script>x' '$html'"
@@ -644,7 +644,7 @@ printf '\n## D-9<b>x</b> · t\n- Status: final\n' >>.team/DECISIONS.md
 check "a quote in a link cannot add an attribute" refuses grep -q '" *onmouseover=' "$html"
 check "a decision id with markup is escaped" refuses grep -q 'D-9<b>' "$html"
 printf '## S-1 · Batch\n- Status: adopted\n' >.team/observer/SUGGESTIONS.md
-check "the live report runs with no open suggestion" sh -c "printf q | '$squad' report --live | grep -q 'OPEN SUGGESTIONS' "
+check "the live report runs with no open suggestion" sh -c "printf q | '$squad' report --live | grep -q 'OBSERVER' "
 check "init copies the lessons file" test -f .team/LESSONS.md
 printf '10:00:00 dev-a T-9 DONE\n10:30:00 tester T-9 PASS\n' >.team/events.log
 check "the report reads an older events.log (time only)" sh -c "'$squad' report >/dev/null && grep -q '<td>T-9</td>' '$html'"
@@ -852,7 +852,7 @@ check "a decision to test with its See line passes the check" "$squad" decisions
 check "the ledger names it to-test" grep -q ' - DECISION D-010 to-test' .team/events.log
 html=$("$squad" report)
 check "the To test tab lists the visual decision with where to look, not the final one" sh -c "sed -n '/id=To-test/,/<\\/section>/p' '$html' | grep -q 'overlays-tooltip--states' && ! sed -n '/id=To-test/,/<\\/section>/p' '$html' | grep -q 'D-011'"
-check "the live view lists what to test" sh -c "printf q | '$squad' report --live | grep -q 'D-010 Tooltip gap — look: overlays-tooltip--states'"
+check "the live view lists what to test" sh -c "printf q | '$squad' report --live | grep -A1 'D-010  Tooltip gap' | grep -q 'look: overlays-tooltip--states'"
 printf '\n## D-012 · No place\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: to test by the owner\n' >>.team/DECISIONS.md
 check "a decision to test without a See line is refused" refuses "$squad" decisions --check
 check "with owner visual nothing in the lead role says to decide provisionally" refuses grep -q 'decide provisionally' .team/roles/lead.md
@@ -1047,6 +1047,17 @@ check "016: down clears the Agents list" grep -q 'socket agent.view.clear' "$MOC
 echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"; reset_log; "$squad" down >/dev/null 2>&1
 check "016: down cleans up also when the workspace was closed in herdr" sh -c "test ! -e '$HOME/.config/squad/teams/proj4' && grep -q 'socket agent.view.clear' '$MOCK_LOG'"
 kill "$skpid" 2>/dev/null || true; rm -f "$sk" .team/herdr.sock
+
+# ---- 017 · the report tab: each seat's work first, in colour ---------------------------
+printf '| T-880 | Report seat line title | merged |\n' >>.team/TASKS.md
+printf '%s dev-a T-880 DISPATCH round=1\n%s dev-a T-880 DONE\n%s lead T-880 MERGE abc1234\n%s observer - OBSERVE pass=9 20 min\n' "$(now)" "$(now)" "$(now)" "$(now)" >>.team/events.log
+mkdir -p .team/observer; printf '# Now — pass 3, 10:40\nLargest loss: none. Same state.\n\n# Pass 2, 10:20\nLargest loss: none. Same state.\n\n# Pass 1, 10:00\nLargest loss: none. Same state.\n' >.team/observer/NOW.md
+rep=$(MOCK_AGENTS=$seats perl -e 'alarm 3; exec @ARGV' "$squad" report --live 2>/dev/null || true)
+check "017: the report starts with each seat's line: name, role, phase, ticket, title" grep -qE '^  . dev-a +dev +MERGED +T-880 +Report seat line title' <<<"$rep"
+check "017: repeated observer passes fold into one line" sh -c "printf '%s' \"\$1\" | grep -q 'the same for 3 passes' && test \$(printf '%s' \"\$1\" | grep -c 'Largest loss') = 1" _ "$rep"
+check "017: the observer's routine passes are not in the events" refuses grep -q 'OBSERVE pass=9' <<<"$rep"
+check "017: without a terminal the report has no colour codes" refuses grep -q $'\033' <<<"$rep"
+check "017: NO_COLOR also turns the colour off" sh -c "! NO_COLOR=1 perl -e 'alarm 3; exec @ARGV' script -q /dev/null '$squad' report --live 2>/dev/null | grep -q $'\033\\[38;2'"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

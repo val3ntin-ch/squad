@@ -1452,26 +1452,83 @@ FOOT
   echo "$out"
 }
 
-report_text() { # the live view: what matters now, in a terminal
-  local w=${COLUMNS:-100}
-  printf '\033[H\033[2J'
-  printf ' squad report · %s · %s   (o: open the HTML page · q: quit)\n\n' "$(basename "$REPO")" "$(date +%H:%M)"
-  printf ' NOW (observer)\n'
-  if [ -s "$TEAM_DIR/observer/NOW.md" ]; then sed -n '1,14p' "$TEAM_DIR/observer/NOW.md" | cut -c1-"$w" | sed 's/^/   /'; else echo "   no pass yet"; fi
-  printf '\n OPEN SUGGESTIONS\n'
-  local open_s
-  open_s=$(awk '/^## / { t = $0 } tolower($0) ~ /^- status: *open/ && t != "" { sub(/^#+ */, "", t); print "   " t; t = "" }' "$TEAM_DIR/observer/SUGGESTIONS.md" 2>/dev/null | head -6 | cut -c1-"$w" || true)
-  printf '%s\n' "${open_s:-   none}"
-  printf '\n TO TEST BY %s (then: squad feedback "...")\n' "$(printf '%s' "$OWNER_NAME" | tr '[:lower:]' '[:upper:]')"
-  local tt
-  tt=$(decisions_tsv | awk -F'\t' '{ s = ""; see = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^See=/) see = substr($i, 5) } if (s !~ /^final/) printf "   %s %s — look: %s\n", $1, $2, (see == "" ? "?" : see) }' | head -8 | cut -c1-"$w" || true)
-  printf '%s\n' "${tt:-   nothing to test}"
-  local fb; fb=$(grep -c '^- Status: open' "$TEAM_DIR/FEEDBACK.md" 2>/dev/null || true)
-  [ "${fb:-0}" = 0 ] || printf '   your feedback still open: %s\n' "$fb"
-  printf '\n TASKS (minutes: total · dev · test · review · wait | changes · FAIL | cost: Claude · Codex 5h points)\n'
-  task_stats | tail -12 | awk -F'\t' '{ printf "   %-8s %-7s %4d · %4d · %4d · %4d · %4d | %d · %d | %d · %d\n", $1, $2, $3, $4, $5, $6, $7, $8, $9, $12, $13 }'
-  printf '\n LAST EVENTS\n'
-  { tail -6 "$TEAM_DIR/events.log" 2>/dev/null || true; } | cut -c1-"$w" | sed 's/^/   /'
+report_text() { # the live view: what each seat does now, what waits for the owner, then the history
+  local w=${COLUMNS:-100} e=$'\033' agents i name role st tp task phase when title icon ic pc rc line n
+  rgb() { printf '%s[38;2;%d;%d;%dm' "$e" "$((16#${1:1:2}))" "$((16#${1:3:2}))" "$((16#${1:5:2}))"; }
+  local R="${e}[0m" B="${e}[1m" D="${e}[2m" GRN RED YEL BLU MAU PNK PCH TXT SUB SURF
+  if [ -n "${NO_COLOR:-}" ] || [ ! -t 1 ]; then rgb() { :; }; R=""; B=""; D=""; fi   # no colour: the same lines, plain
+  GRN=$(rgb '#a6e3a1'); RED=$(rgb '#f38ba8'); YEL=$(rgb '#f9e2af'); BLU=$(rgb '#89b4fa'); MAU=$(rgb '#cba6f7')
+  PNK=$(rgb '#f5c2e7'); PCH=$(rgb '#fab387'); TXT=$(rgb '#cdd6f4'); SUB=$(rgb '#7f849c'); SURF=""; [ -z "$R" ] || SURF="${e}[48;2;49;50;68m"
+  role_c() { case "$1" in lead) printf '%s' "$MAU" ;; dev) printf '%s' "$BLU" ;; tester) printf '%s' "$GRN" ;; reviewer) printf '%s' "$YEL" ;;
+    observer) printf '%s' "$PNK" ;; planner) rgb '#b4befe' ;; critic) printf '%s' "$PCH" ;; *) printf '%s' "$TXT" ;; esac; }
+  phase_c() { case "$1" in *PASSED|MERGED|APPROVED|"PLAN APPROVED") printf '%s' "$GRN" ;; *FAILED|"CHANGES ASKED"|BLOCKED|"NEEDS YOU") printf '%s' "$RED" ;;
+    WAITS*|"CONTRACT WRITTEN"|"IN CRITIQUE") printf '%s' "$YEL" ;; idle|WATCHING|DONE) printf '%s' "$SUB" ;; *) printf '%s' "$BLU" ;; esac; }
+  fit() { clip "$1" "$2"; [ "${#2}" -le "$1" ] || printf '…'; }   # <n> <text>
+  head_() { printf '\n %s▍%s%s%s %s%s%s\n' "$2" "$R$B" "$1" "$R" "$D" "${3:-}" "$R"; }
+  # the header band: the team in one line
+  local merged total own lock needs=0
+  merged=$(grep -cE '^\| *T-[^|]*\|[^|]*\|[^|]*\| *\**merged' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
+  total=$(grep -cE '^\| *T-[0-9]' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
+  own=$(heavy_owner | cut -d: -f1,3); lock="lock free"; [ -z "$own" ] || lock="lock: ${own%%@*} $(( ($(date +%s) - ${own##*:}) / 60 ))m"
+  agents=$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')
+  needs=$(jq '[.result.agents[] | select(.agent_status == "blocked")] | length' <<<"$agents" 2>/dev/null || echo 0)
+  [ -z "$R" ] || printf '%s[H%s[2J' "$e" "$e"
+  line=" squad · $(basename "$REPO")   ${merged:-0}/${total:-0} merged   $lock   $([ "${needs:-0}" -gt 0 ] && echo "$needs need you" || echo "nobody waits")"
+  printf '%s%s%s%s' "$SURF" "$B$TXT" "$line" "$R$SURF"
+  printf '%*s' $(( w - ${#line} - 26 > 0 ? w - ${#line} - 26 : 1 )) ''
+  printf '%s%s o: HTML page · q: quit  %s\n' "$D" "$SUB" "$R"
+  # 1. each seat: what it does now
+  head_ "NOW" "$BLU" "$(date +%H:%M)"
+  for ((i = 0; i < $(seat_count); i++)); do
+    name=${S_NAME[$i]}; role=${S_ROLE[$i]}
+    st=$(jq -r --arg n "$name" '[.result.agents[] | select(.name == $n) | .agent_status][0] // "off"' <<<"$agents" 2>/dev/null)
+    tp=$(seat_phase "$name" "$role"); task=${tp%%|*}; tp=${tp#*|}; phase=${tp%%|*}; tp=${tp#*|}; when=$(ago_min "${tp%%|*}")
+    phase=$(seat_follow "$task" "$phase" "$role" "${tp#*|}")
+    title=""; case "$task" in T-*) title=$(task_title "$task") ;; esac
+    case "$st" in working) icon="●"; ic=$GRN ;; blocked) icon="◆"; ic=$RED; phase="NEEDS YOU" ;; idle|done) icon="○"; ic=$SUB ;; *) icon="·"; ic=$SUB; phase=off ;; esac
+    [ "$role" != observer ] || { phase=WATCHING; task=""; title=""; when=""; }
+    [ -n "$phase" ] || phase=idle
+    rc=$(role_c "$role"); pc=$(phase_c "$phase")
+    printf '  %s%s%s %s%-9s%s %s%-8s%s %s%-15s%s %s%-14s%s %s%s%s %s%s%s\n' "$ic" "$icon" "$R" "$B$rc" "$name" "$R" "$rc$D" "$role" "$R" "$pc$B" "$phase" "$R" \
+      "$TXT" "${task:-}" "$R" "$TXT" "$(fit $(( w > 90 ? w - 76 : 14 )) "$title")" "$R" "$SUB" "$when" "$R"
+  done
+  # 2. what waits for the owner
+  local tt fb; fb=$(grep -c '^- Status: open' "$TEAM_DIR/FEEDBACK.md" 2>/dev/null || true)
+  tt=$(decisions_tsv | awk -F'\t' '{ s = ""; see = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^See=/) see = substr($i, 5) } if (s !~ /^final/) print $1 "\t" $2 "\t" see }' | head -8 || true)
+  n=$(printf '%s' "$tt" | grep -c . || true)
+  head_ "WAITS FOR $(printf '%s' "$OWNER_NAME" | tr '[:lower:]' '[:upper:]')" "$YEL" "$n to test · then: squad feedback \"…\"${fb:+ · your feedback open: $fb}"
+  if [ -z "$tt" ]; then printf '  %snothing to test%s\n' "$SUB" "$R"; else
+    while IFS=$'\t' read -r id what see; do
+      printf '  %s%s%s  %s%s%s\n' "$YEL$B" "$id" "$R" "$TXT" "$(fit $((w - 10)) "$what")" "$R"
+      printf '         %slook:%s %s%s%s\n' "$SUB" "$R" "$D" "$(fit $((w - 16)) "${see:-?}")" "$R"
+    done <<<"$tt"
+  fi
+  # 3. the observer: the newest pass; repeated passes fold into one line
+  head_ "OBSERVER" "$PNK" "every 20 min"
+  if [ -s "$TEAM_DIR/observer/NOW.md" ]; then
+    awk -v w="$w" -v sub_="$SUB" -v t="$TXT" -v r="$R" '
+      /^# / { h[++np] = $0; next } /^Largest loss:/ && np { l[np] = $0 }
+      END { if (!np) exit; same = 1; while (same < np && l[same + 1] == l[1]) same++
+        x = h[1]; sub(/^# */, "", x); print "  " sub_ x r
+        y = l[1]; sub(/^Largest loss: */, "", y); print "  " t "Largest loss: " y r
+        if (same > 1) { z = h[same]; sub(/^# */, "", z); print "  " sub_ "the same for " same " passes (since " z ")" r } }' "$TEAM_DIR/observer/NOW.md"
+  else printf '  %sno pass yet%s\n' "$SUB" "$R"; fi
+  local open_s; open_s=$(awk '/^## / { t = $0 } tolower($0) ~ /^- status: *open/ && t != "" { sub(/^#+ */, "", t); print t; t = "" }' "$TEAM_DIR/observer/SUGGESTIONS.md" 2>/dev/null | head -4 || true)
+  [ -z "$open_s" ] || printf '%s\n' "$open_s" | while IFS= read -r s; do printf '  %s→%s %s\n' "$PNK" "$R" "$(fit $((w - 6)) "$s")"; done
+  # 4. tasks: the status in colour; a long wait for the lead stands out
+  head_ "TASKS" "$GRN" "minutes: total · dev · test · review · wait │ changes · fails │ cost: Claude · Codex 5h points"
+  task_stats_raw | tail -12 | while IFS=$'\t' read -r id stt tot dv te rv wt ch fl _ _ cc cx _; do
+    case "$stt" in merged) pc=$GRN ;; open) pc=$BLU ;; *) pc=$SUB ;; esac
+    local wc=$TXT fc=$TXT; [ "${wt:-0}" -ge 60 ] && wc=$PCH; [ "${fl:-0}" -gt 0 ] && fc=$RED
+    printf '  %s%-15s%s %s%-7s%s %s%5s · %4s · %4s · %4s · %s%5s%s │ %s · %s%s%s │ %s%s · %s%s\n' "$B$TXT" "$id" "$R" "$pc" "$stt" "$R" "$TXT" "$tot" "$dv" "$te" "$rv" "$wc" "$wt" "$TXT" "$ch" "$fc" "$fl" "$R" "$SUB" "${cc:-0}" "${cx:-0}" "$R"
+  done
+  # 5. the newest events, without the observer's routine passes
+  head_ "EVENTS" "$MAU" "newest last"
+  awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 != "OBSERVE"' "$TEAM_DIR/events.log" 2>/dev/null | tail -6 | while read -r _ tm seat tk ev rest; do
+    pc=$(phase_c "$(case "$ev" in PASS) echo "TEST PASSED" ;; FAIL) echo "TEST FAILED" ;; MERGE) echo MERGED ;; APPROVE) echo APPROVED ;; CHANGES) echo "CHANGES ASKED" ;; BLOCKED) echo BLOCKED ;; *) echo x ;; esac)")
+    rc=$TXT; for ((i = 0; i < $(seat_count); i++)); do [ "${S_NAME[$i]}" != "$seat" ] || rc=$(role_c "${S_ROLE[$i]}"); done
+    printf '  %s%s%s  %s%-10s%s %-15s %s%s%s %s%s%s\n' "$SUB" "${tm%:*}" "$R" "$rc" "$seat" "$R" "$tk" "$pc$B" "$ev" "$R" "$D" "$(fit $((w - 50)) "$rest")" "$R"
+  done
 }
 
 open_url() { if command -v open >/dev/null 2>&1; then open "$1"; elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"; fi; }
@@ -1718,6 +1775,13 @@ seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the 
       print t "|" p "|" w "|" at }' "$TEAM_DIR/events.log" 2>/dev/null
 }
 
+seat_follow() { # <task> <phase> <role> <line of the seat's step>: a finished seat follows what happened to its task later
+  local later; case "$2" in WAITS*|DONE|TEST*|APPROVED|CHANGES*|CHECKS*|CONTRACT*) ;; *) printf '%s' "$2"; return 0 ;; esac
+  later=$(awk -v t="$1" -v at="${4:-0}" 'NR > at { if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { k = $4; v = $5 } else { k = $3; v = $4 } } NR > at && k == t && v ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES|DISPATCH)$/ { e = v } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
+  case "$later" in MERGE) printf MERGED ;; PASS) [ "$3" = tester ] && printf '%s' "$2" || printf 'TEST PASSED' ;; FAIL) [ "$3" = tester ] && printf '%s' "$2" || printf 'TEST FAILED' ;;
+    APPROVE) [ "$3" = reviewer ] && printf '%s' "$2" || printf APPROVED ;; CHANGES) [ "$3" = reviewer ] && printf '%s' "$2" || printf 'CHANGES ASKED' ;; *) printf '%s' "$2" ;; esac
+}
+
 clip() { local LC_ALL=en_US.UTF-8 x=$2; printf '%s' "${x:0:$1}"; }   # <n> <text>: its first n characters (never half a letter)
 
 ago_min() { # <"YYYY-MM-DD HH:MM:SS"> -> minutes since, as "12m" or "3h05"
@@ -1739,12 +1803,7 @@ ui_sync() { # tell herdr what each seat does; quiet, best effort, only what chan
     [ -n "$pane" ] && [ -n "$kind" ] || continue
     tp=$(seat_phase "$name" "$role"); task=${tp%%|*}; tp=${tp#*|}; phase=${tp%%|*}; tp=${tp#*|}; when=$(ago_min "${tp%%|*}"); at=${tp#*|}
     title=""; rnd=""
-    # a finished seat follows its task: what happened to it after this seat's last step
-    case "$phase" in WAITS*|DONE|TEST*|APPROVED|CHANGES*|CHECKS*|CONTRACT*)
-      local later; later=$(awk -v t="$task" -v at="${at:-0}" 'NR > at { if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { k = $4; v = $5 } else { k = $3; v = $4 } } NR > at && k == t && v ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES|DISPATCH)$/ { e = v } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
-      case "$later" in MERGE) phase=MERGED ;; PASS) [ "$role" = tester ] || phase="TEST PASSED" ;; FAIL) [ "$role" = tester ] || phase="TEST FAILED" ;;
-        APPROVE) [ "$role" = reviewer ] || phase=APPROVED ;; CHANGES) [ "$role" = reviewer ] || phase="CHANGES ASKED" ;; esac ;;
-    esac
+    phase=$(seat_follow "$task" "$phase" "$role" "$at")
     case "$task" in
       CANDIDATE-*) title="tests $(grep -m1 -- '- Branch:' "$TEAM_DIR/tasks/$task.md" 2>/dev/null | grep -oE 'task/T-[0-9A-Za-z._-]*[0-9A-Za-z]' | cut -d/ -f2 | tr '\n' ' ' || true)" ;;
       T-*) title=$(clip 60 "$(task_title "$task")")
