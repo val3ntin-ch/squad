@@ -978,6 +978,11 @@ check "016: a new strip (squad up, a herdr restart) sends every seat again" grep
 reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: the team's progress goes to its workspace entry" grep -q 'workspace report-metadata w2 --source squad:team --token team=[0-9]*/[0-9]* merged --token lock=lock free --token needs=nobody waits' "$MOCK_LOG"
 check "016: the team is in the list for the tab bar line" grep -qx "$PWD/.team" "$HOME/.config/squad/teams/proj4"
+printf '10:00:00 dev-b T-874 DISPATCH round=1\n10:05:00 dev-b T-874 DONE\n' >>.team/events.log
+seats_b='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4","agent_status":"idle"},{"name":"mine","agent":"claude","pane_id":"w2:p9","agent_status":"blocked"}]}}'
+reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
+check "016: an older event without a date still gives the seat its task and phase" grep -q 'w2:p4 .*--token ticket=T-874 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
+check "016: the owner's own blocked agent does not count as a seat that needs them" grep -q 'workspace report-metadata w2 .*--token needs=nobody waits' "$MOCK_LOG"
 # the tab bar line: only squad's seats count; a team that is gone leaves the list
 rm -f "$HOME/.config/squad/teams"/*
 echo "$PWD/.team" >"$HOME/.config/squad/teams/a"; echo "$tmp/gone/.team" >"$HOME/.config/squad/teams/b"; echo /x/sock >.team/herdr.sock
@@ -1005,6 +1010,9 @@ for why in disabled rate_limited; do
   printf '2026-01-01 10:00:00 rev-x T-873 CHANGES review=3\n' >>.team/events.log
   MOCK_NOTIFY="{\"result\":{\"reason\":\"$why\"}}" "$squad" watch --once >/dev/null 2>&1
   check "016: a '$why' answer from herdr is in events.log" grep -q " NOTIFY_NOT_SHOWN $why: squad: proj4 stalled" .team/events.log
+  sed -i.bak "s/^[0-9-]* [0-9:]* \(lead - NOTIFY_NOT_SHOWN\)/2026-01-01 10:40:00 \1/" .team/events.log; rm -f .team/events.log.bak   # the record, one stall interval later
+  MOCK_NOTIFY="{\"result\":{\"reason\":\"$why\"}}" "$squad" watch --once >/dev/null 2>&1
+  check "016: that record does not count as a new stall ('$why')" sh -c "test \$(grep -c ' lead - STALLED .*T-873' .team/events.log) = 1"
   cp "$tmp/events.keep" .team/events.log
 done
 printf '[ui.toast]\ndelivery = "herdr"\n' >"$cfg"
@@ -1028,6 +1036,8 @@ echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"
 MOCK_WS='{"result":{"workspaces":[{"workspace_id":"w2","label":"proj4 team"}]}}' "$squad" down >/dev/null 2>&1
 check "016: down takes the team out of the tab bar line" test ! -e "$HOME/.config/squad/teams/proj4"
 check "016: down clears the Agents list" grep -q 'socket agent.view.clear' "$MOCK_LOG"
+echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"; reset_log; "$squad" down >/dev/null 2>&1
+check "016: down cleans up also when the workspace was closed in herdr" sh -c "test ! -e '$HOME/.config/squad/teams/proj4' && grep -q 'socket agent.view.clear' '$MOCK_LOG'"
 kill "$skpid" 2>/dev/null || true; rm -f "$sk" .team/herdr.sock
 echo
 echo "$pass passed, $fail failed"

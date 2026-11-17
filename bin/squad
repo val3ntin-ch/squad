@@ -1694,7 +1694,8 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
 task_title() { awk -F'|' -v id="$1" '{ t = $2; gsub(/^ +| +$/, "", t) } t == id { x = $3; gsub(/^ +| +$/, "", x); gsub(/`/, "", x); sub(/ \[.*/, "", x); print x; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true; }   # <ID> -> its title in TASKS.md
 
 seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the phase in plain words
-  awk -v s="$1" -v r="$2" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 != "-" && $5 ~ /^(DISPATCH|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = $4; e = $5; d = $0; w = $1 " " $2; at = NR }
+  awk -v s="$1" -v r="$2" '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { a = $3; k = $4; v = $5; ww = $1 " " $2 } else { a = $2; k = $3; v = $4; ww = "" } }   # an older log has no date
+    a == s && k != "-" && v ~ /^(DISPATCH|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = k; e = v; d = $0; w = ww; at = NR }
     END { if (t == "") { print "|||"; exit }
       if (e == "DISPATCH") {
         if (r == "dev") p = "CODING"
@@ -1728,7 +1729,7 @@ ui_sync() { # tell herdr what each seat does; quiet, best effort, only what chan
   local agents i name role pane kind tp task phase when title sig dir="$TEAM_DIR/observer/.ui" merged total ws rnd needs lock own at
   mkdir -p "$dir"
   agents=$(herdr_team agent list 2>/dev/null) || return 0
-  needs=$(jq '[.result.agents[] | select(.agent_status == "blocked")] | length' <<<"$agents" 2>/dev/null || echo 0)
+  needs=$(jq --arg s " ${S_NAME[*]} " '[.result.agents[] | select(.agent_status == "blocked" and ($s | contains(" " + .name + " ")))] | length' <<<"$agents" 2>/dev/null || echo 0)   # squad's seats only
   for ((i = 0; i < $(seat_count); i++)); do
     name=${S_NAME[$i]}; role=${S_ROLE[$i]}
     pane=$(jq -r --arg n "$name" '[.result.agents[] | select(.name == $n) | .pane_id][0] // empty' <<<"$agents" 2>/dev/null)
@@ -1738,7 +1739,7 @@ ui_sync() { # tell herdr what each seat does; quiet, best effort, only what chan
     title=""; rnd=""
     # a finished seat follows its task: what happened to it after this seat's last step
     case "$phase" in WAITS*|DONE|TEST*|APPROVED|CHANGES*|CHECKS*|CONTRACT*)
-      local later; later=$(awk -v t="$task" -v at="${at:-0}" 'NR > at && $1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES|DISPATCH)$/ { e = $5 } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
+      local later; later=$(awk -v t="$task" -v at="${at:-0}" 'NR > at { if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { k = $4; v = $5 } else { k = $3; v = $4 } } NR > at && k == t && v ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES|DISPATCH)$/ { e = v } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
       case "$later" in MERGE) phase=MERGED ;; PASS) [ "$role" = tester ] || phase="TEST PASSED" ;; FAIL) [ "$role" = tester ] || phase="TEST FAILED" ;;
         APPROVE) [ "$role" = reviewer ] || phase=APPROVED ;; CHANGES) [ "$role" = reviewer ] || phase="CHANGES ASKED" ;; esac ;;
     esac
@@ -1812,13 +1813,14 @@ PY
 
 # herdr's top-right status line: every running squad team on this machine in one short line
 cmd_herdr_line() {
-  local f td sock agents nb nw out="" n end=$(( $(date +%s) + 2 ))
+  local f td sock agents nb nw out="" n left end; end=$(( $(perl -MTime::HiRes=time -e 'printf "%d", time * 1000') + 2000 ))
   for f in "$HOME/.config/squad/teams"/*; do
     [ -f "$f" ] || continue
-    [ "$(date +%s)" -lt "$end" ] || break   # herdr stops the command after 3 s: print what we have
+    left=$(( end - $(perl -MTime::HiRes=time -e 'printf "%d", time * 1000') )); [ "$left" -gt 50 ] || break   # herdr stops the command after 3 s: print what we have
+    [ "$left" -le 1000 ] || left=1000
     td=$(cat "$f"); [ -d "$td" ] || { rm -f "$f"; continue; }   # a team that is gone leaves the list
     sock=$(cat "$td/herdr.sock" 2>/dev/null || true); [ -n "$sock" ] || continue
-    agents=$(HERDR_SOCKET_PATH=$sock perl -e 'alarm 1; exec @ARGV' herdr agent list 2>/dev/null) || continue
+    agents=$(HERDR_SOCKET_PATH=$sock perl -MTime::HiRes=ualarm -e 'ualarm(shift(@ARGV) * 1000); exec @ARGV' "$left" herdr agent list 2>/dev/null) || continue
     n=$(basename "$(dirname "$td")")
     # squad's seats only (they carry the role token), not the owner's own agents in the same session
     nb=$(jq '[.result.agents[] | select(.tokens.role != null and .agent_status == "blocked")] | length' <<<"$agents" 2>/dev/null || echo 0)
@@ -1888,7 +1890,7 @@ watchdog_tick() {
   local now last lastev wait key mk="$TEAM_DIR/observer/.watchdog" agents i name st text p7
   mkdir -p "$mk"; now=$(date +%s)
   # 1. a stall: no team event for stall_alert_minutes, and a verdict, a DONE or a test result is the newest event of a task
-  lastev=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 != "observer" && $5 != "IDLE" && $5 != "OBSERVE" && $5 != "STALLED" { l = $1 " " $2 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null)
+  lastev=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 != "observer" && $5 != "IDLE" && $5 != "OBSERVE" && $5 != "STALLED" && $5 != "NOTIFY_NOT_SHOWN" { l = $1 " " $2 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null)
   if [ -n "$lastev" ]; then
     last=$(date -j -f '%Y-%m-%d %H:%M:%S' "$lastev" +%s 2>/dev/null || date -d "$lastev" +%s 2>/dev/null || echo "$now")
     agents=$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')
@@ -3080,10 +3082,10 @@ cmd_down() {
   require_herdr; find_repo
   local ws
   ws=$(herdr workspace list | jq -r --arg l "$(basename "$REPO") team" '.result.workspaces[] | select(.label == $l) | .workspace_id' | head -1)
-  [ -n "$ws" ] || { say "No team workspace is open."; return 0; }
   herdr_socket_call agent.view.clear '{"source":"squad:view"}' >/dev/null 2>&1 || true; ui_reset
   local f; for f in "$HOME/.config/squad/teams"/*; do   # the tab bar line stops counting this team
     [ -f "$f" ] && [ "$(cat "$f")" = "$TEAM_DIR" ] && rm -f "$f"; done
+  [ -n "$ws" ] || { say "No team workspace is open."; return 0; }
   herdr workspace close "$ws" >/dev/null || die "herdr could not close workspace $ws."
   rm -f "$TEAM_DIR"/.briefed/*
   say "Team stopped (workspace $ws closed). Worktrees and branches are kept; 'squad clean' removes the worktrees."
