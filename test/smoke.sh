@@ -33,6 +33,8 @@ case "$1 $2" in
                   if [ "$st" = working ]; then printf '✻ Working… (esc to interrupt)\n❯ \n'; else printf 'Claude Code\n❯ \n'; fi
                 fi ;;
   "agent send-keys") echo '{}' ;;
+  "config check") if [ "${MOCK_BAD_CONFIG:-}" = 1 ]; then echo '{"error":"bad config"}'; exit 1; fi; echo '{}' ;;
+  "notification show") if [ -n "${MOCK_NOTIFY:-}" ]; then echo "$MOCK_NOTIFY"; else echo '{}'; fi ;;
   "session list") echo "${MOCK_SESSIONS:-{\}}" ;;
   "workspace list") if [ -n "${MOCK_WS:-}" ]; then echo "$MOCK_WS"; else echo '{"result":{"workspaces":[]}}'; fi ;;
   "pane list") if [ -n "${MOCK_PANES:-}" ]; then echo "$MOCK_PANES"; else echo '{"result":{"panes":[]}}'; fi ;;
@@ -374,6 +376,7 @@ rm -f "$tmp/state"
 cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-160 CHANGES review=3\n' >>.team/events.log; reset_log
 "$squad" watch --once >/dev/null 2>&1
 check "the watchdog tells the owner and the lead when the team stalls while a verdict waits" sh -c "grep -q ' lead - STALLED .*T-160 CHANGES' .team/events.log && grep -q 'notification show squad: proj4 stalled' '$MOCK_LOG' && grep -q 'agent prompt lead .*T-160 CHANGES' '$MOCK_LOG'"
+check "a notification herdr did not show is in events.log, on one line" grep -q ' lead - NOTIFY_NOT_SHOWN no answer: squad: proj4 stalled$' .team/events.log
 reset_log; "$squad" watch --once >/dev/null 2>&1
 check "it tells them once per stall" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
 cp "$tmp/events.keep" .team/events.log
@@ -954,6 +957,96 @@ printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nsea
 "$squad" update-conf >/dev/null
 check "a seat line with a comment gets its flag before the comment" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never  # the GPT reviewer' .team/team.conf && '$squad' status | grep -q 'rev-x .*-a never'"
 cd "$tmp/proj4"
+
+# ---- 016 · herdr's own sidebar shows the squad ------------------------------------------
+now() { date '+%Y-%m-%d %H:%M:%S'; }
+seats='{"result":{"agents":[{"name":"dev-a","agent":"claude","pane_id":"w2:p3","agent_status":"idle"},{"name":"tester","agent":"claude","pane_id":"w2:p6","agent_status":"working"}]}}'
+printf '| T-870 | Sidebar ünïcödé title that is much longer than sixty characters, so squad cuts it | open |\n' >>.team/TASKS.md
+printf '%s dev-a T-870 DISPATCH round=2\n%s dev-a T-870 DONE\n%s tester T-870 PASS\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
+rm -rf .team/observer/.ui; reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: a seat's sidebar entry has its name, role, ticket and round" grep -q 'pane report-metadata w2:p3 --source squad:seat --agent claude --display-agent dev-a --title T-870 · Sidebar .*--token role=dev --token ticket=T-870 .*--token when=r2 · 0m' "$MOCK_LOG"
+check "016: a dev that is done follows its task's newer test result" grep -q 'w2:p3 .*--token phase=TEST PASSED' "$MOCK_LOG"
+check "016: a blocked seat reads NEEDS YOU" grep -q 'w2:p3 .*--state-label blocked=NEEDS YOU' "$MOCK_LOG"
+check "016: a long title is cut at 60 characters, never inside a letter" sh -c "t=\$(grep -o 'T-870 · Sidebar[^-]*' '$MOCK_LOG' | head -1 | sed 's/^T-870 · //; s/ *\$//'); printf '%s' \"\$t\" | iconv -f UTF-8 -t UTF-8 >/dev/null && [ \"\$(printf '%s' \"\$t\" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')\" -le 60 ]"
+printf '%s tester T-871 PASS\n%s dev-a T-871 DISPATCH round=2\n%s dev-a T-871 DONE\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
+reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: an older test result does not count for a newer round" grep -q 'w2:p3 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
+printf '%s dev-a T-872 DISPATCH round=1\n%s dev-a T-872 DONE\n%s rev-x T-872 CHANGES review=1\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
+reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: a dev that is done follows the reviewer's verdict" grep -q 'w2:p3 .*--token ticket=T-872 .*--token phase=CHANGES ASKED' "$MOCK_LOG"
+check "016: a new strip (squad up, a herdr restart) sends every seat again" grep -q 'report-metadata w2:p6 --source squad:seat' "$MOCK_LOG"
+reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: the team's progress goes to its workspace entry" grep -q 'workspace report-metadata w2 --source squad:team --token team=[0-9]*/[0-9]* merged --token lock=lock free --token needs=nobody waits' "$MOCK_LOG"
+check "016: the team is in the list for the tab bar line" grep -qx "$PWD/.team" "$HOME/.config/squad/teams/proj4"
+printf '10:00:00 dev-b T-874 DISPATCH round=1\n10:05:00 dev-b T-874 DONE\n' >>.team/events.log
+seats_b='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4","agent_status":"idle"},{"name":"mine","agent":"claude","pane_id":"w2:p9","agent_status":"blocked"}]}}'
+reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
+check "016: an older event without a date still gives the seat its task and phase" grep -q 'w2:p4 .*--token ticket=T-874 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
+check "016: the owner's own blocked agent does not count as a seat that needs them" grep -q 'workspace report-metadata w2 .*--token needs=nobody waits' "$MOCK_LOG"
+printf '%s dev-b T-875 DISPATCH round=1\n%s dev-b T-875 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" >>.team/events.log
+seats_c='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4","agent_status":"blocked"}]}}'
+reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_c "$squad" watch --once >/dev/null 2>&1
+check "016: a dispatch that did not start shows NOT STARTED, not CODING" grep -q 'w2:p4 .*--token phase=NOT STARTED' "$MOCK_LOG"
+check "016: a blocked squad seat counts as one that needs the owner" grep -q 'workspace report-metadata w2 .*--token needs=1 need you' "$MOCK_LOG"
+printf '%s dev-b T-876 DISPATCH round=1\n%s dev-b T-877 DISPATCH_FAILED queue timeout\n' "$(now)" "$(now)" >>.team/events.log
+reset_log; MOCK_AGENTS=$seats_c "$squad" watch --once >/dev/null 2>&1
+check "016: a queued task that times out does not hide the task the seat runs" grep -q 'w2:p4 .*--token ticket=T-876 .*--token phase=CODING' "$MOCK_LOG"
+# the tab bar line: only squad's seats count; a team that is gone leaves the list
+rm -f "$HOME/.config/squad/teams"/*
+echo "$PWD/.team" >"$HOME/.config/squad/teams/a"; echo "$tmp/gone/.team" >"$HOME/.config/squad/teams/b"; echo /x/sock >.team/herdr.sock
+line=$(MOCK_AGENTS='{"result":{"agents":[{"name":"dev-a","agent_status":"blocked","tokens":{"role":"dev"}},{"name":"tester","agent_status":"working","tokens":{"role":"tester"}},{"name":"mine","agent_status":"blocked"}]}}' "$squad" herdr-line)
+check "016: the tab bar line counts squad's seats only" test "$line" = "proj4: 1 need you · 1 working"
+check "016: a team whose folder is gone leaves the list" test ! -e "$HOME/.config/squad/teams/b"
+check "016: a team at rest stays out of the line" test "$(MOCK_AGENTS='{"result":{"agents":[]}}' "$squad" herdr-line)" = "squad: nobody needs you"
+rm -f .team/herdr.sock "$HOME/.config/squad/teams/a"
+check "016: a team without its own herdr socket is not counted" test "$(MOCK_AGENTS='{"result":{"agents":[{"name":"x","agent_status":"blocked","tokens":{"role":"dev"}}]}}' "$squad" herdr-line)" = "squad: nobody needs you"
+# ui-setup writes squad's block into herdr's config once, with a backup from before squad
+cfg="$XDG_CONFIG_HOME/herdr/config.toml"; mkdir -p "$(dirname "$cfg")"; printf '[ui.toast]\ndelivery = "herdr"\n' >"$cfg"
+reset_log; "$squad" ui-setup >/dev/null 2>&1; "$squad" ui-setup >/dev/null 2>&1
+check "016: ui-setup writes the sidebar block once" test "$(grep -c '^# squad sidebar (ticket 016)' "$cfg")" = 1
+check "016: ui-setup keeps the owner's settings" grep -q '^delivery = "herdr"' "$cfg"
+check "016: the first backup is the config from before squad" sh -c "! grep -q 'squad sidebar' '$cfg.before-squad' && grep -q delivery '$cfg.before-squad'"
+check "016: ui-setup checks the config with herdr" grep -q "herdr config check" "$MOCK_LOG"
+printf '[ui]\nstatus_indicators = "dots"\n' >"$cfg"
+check "016: ui-setup refuses a config with the owner's own [ui] table" refuses "$squad" ui-setup
+check "016: and leaves that config as it was" test "$(cat "$cfg")" = "$(printf '[ui]\nstatus_indicators = "dots"')"
+printf '  [ ui ] # mine\nx = 1\n' >"$cfg"
+check "016: a [ui] header with spaces is the owner's table too" refuses "$squad" ui-setup
+# v_notify writes herdr's answer to events.log when the owner did not see the notification
+for why in disabled rate_limited; do
+  cp .team/events.log "$tmp/events.keep"; rm -rf .team/observer/.watchdog .team/observer/.alerted; rm -f "$HV/lock"
+  printf '2026-01-01 10:00:00 rev-x T-873 CHANGES review=3\n' >>.team/events.log
+  MOCK_NOTIFY="{\"result\":{\"reason\":\"$why\"}}" "$squad" watch --once >/dev/null 2>&1
+  check "016: a '$why' answer from herdr is in events.log" grep -q " NOTIFY_NOT_SHOWN $why: squad: proj4 stalled" .team/events.log
+  sed -i.bak "s/^[0-9-]* [0-9:]* \(lead - NOTIFY_NOT_SHOWN\)/2026-01-01 10:40:00 \1/" .team/events.log; rm -f .team/events.log.bak   # the record, one stall interval later
+  MOCK_NOTIFY="{\"result\":{\"reason\":\"$why\"}}" "$squad" watch --once >/dev/null 2>&1
+  check "016: that record does not count as a new stall ('$why')" sh -c "test \$(grep -c ' lead - STALLED .*T-873' .team/events.log) = 1"
+  cp "$tmp/events.keep" .team/events.log
+done
+printf '[ui.toast]\ndelivery = "herdr"\n' >"$cfg"
+check "016: ui-setup refuses a config herdr does not accept" refuses env MOCK_BAD_CONFIG=1 "$squad" ui-setup
+check "016: and puts the owner's config back" test "$(cat "$cfg")" = "$(printf '[ui.toast]\ndelivery = "herdr"')"
+# the sorted Agents list goes over herdr's socket: a small stand-in socket logs each call
+sk=$(mktemp -u /tmp/sqXXXXXX); python3 - "$sk" "$MOCK_LOG" <<'PY2' &
+import json, os, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sys.argv[1]); s.listen(5); s.settimeout(60)
+while True:
+    try: c, _ = s.accept()
+    except OSError: break
+    q = json.loads(c.makefile().readline())
+    open(sys.argv[2], "a").write("socket %s %s\n" % (q["method"], json.dumps(q["params"])))
+    c.sendall((json.dumps({"id": q["id"], "result": {}}) + "\n").encode()); c.close()
+PY2
+skpid=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$sk" ] && break; sleep 0.3; done
+echo "$sk" >.team/herdr.sock; reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: a new strip sets the Agents list: squad's seats, who needs the owner first" grep -q 'socket agent.view.set .*"exists".*"role".*"attention"' "$MOCK_LOG"
+echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"
+MOCK_WS='{"result":{"workspaces":[{"workspace_id":"w2","label":"proj4 team"}]}}' "$squad" down >/dev/null 2>&1
+check "016: down takes the team out of the tab bar line" test ! -e "$HOME/.config/squad/teams/proj4"
+check "016: down clears the Agents list" grep -q 'socket agent.view.clear' "$MOCK_LOG"
+echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"; reset_log; "$squad" down >/dev/null 2>&1
+check "016: down cleans up also when the workspace was closed in herdr" sh -c "test ! -e '$HOME/.config/squad/teams/proj4' && grep -q 'socket agent.view.clear' '$MOCK_LOG'"
+kill "$skpid" 2>/dev/null || true; rm -f "$sk" .team/herdr.sock
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
