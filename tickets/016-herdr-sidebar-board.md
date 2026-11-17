@@ -44,9 +44,8 @@ herdr 0.9.3 (report: reports/Herdr agent UI for squad.md); squad's alerts are ch
 - bin/squad: `seat_meta <seat>` from the existing state points (dispatch, done gate, merge, resume);
   `team_meta` for the workspace token; `herdr_view set|clear` through a `python3` socket helper;
   `v_notify` parses the reply and coalesces.
-- templates/herdr-sidebar.toml: rows for the Agents and Spaces sections (only the tokens and colours the
-  live render proved).
-- squad doctor: checks the rows are in herdr's config.
+- `cmd_ui_setup`: writes the rows for the Agents and Spaces sections (only the tokens and colours the
+  live render proved) and the tab bar line between squad's marks; `cmd_herdr_line` prints the line.
 - Preview: a script that builds a scratch herdr session, attaches a second client, runs the calls and
   captures the sidebar as text; then shows it to the owner.
 
@@ -56,6 +55,7 @@ herdr 0.9.3 (report: reports/Herdr agent UI for squad.md); squad's alerts are ch
 - Live preview in a scratch session (the owner looks before hive gets it).
 
 ## Assumptions & open questions
+- Done 1: the owner saw the live preview in a scratch herdr session on 17 Nov 2026 and said "looks great".
 - Decided (the owner, 17 Nov 2026): squad writes the rows into herdr's config, with a backup; the tab bar line
   is in this ticket.
 - Fact: python3 sends the one socket call with no CLI (`agent.view.set`); without python3 everything works

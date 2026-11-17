@@ -970,6 +970,10 @@ check "016: a long title is cut at 60 characters, never inside a letter" sh -c "
 printf '%s tester T-871 PASS\n%s dev-a T-871 DISPATCH round=2\n%s dev-a T-871 DONE\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
 reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: an older test result does not count for a newer round" grep -q 'w2:p3 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
+printf '%s dev-a T-872 DISPATCH round=1\n%s dev-a T-872 DONE\n%s rev-x T-872 CHANGES review=1\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
+reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: a dev that is done follows the reviewer's verdict" grep -q 'w2:p3 .*--token ticket=T-872 .*--token phase=CHANGES ASKED' "$MOCK_LOG"
+check "016: a new strip (squad up, a herdr restart) sends every seat again" grep -q 'report-metadata w2:p6 --source squad:seat' "$MOCK_LOG"
 reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: the team's progress goes to its workspace entry" grep -q 'workspace report-metadata w2 --source squad:team --token team=[0-9]*/[0-9]* merged --token lock=lock free --token needs=nobody waits' "$MOCK_LOG"
 check "016: the team is in the list for the tab bar line" grep -qx "$PWD/.team" "$HOME/.config/squad/teams/proj4"
@@ -994,6 +998,14 @@ check "016: ui-setup refuses a config with the owner's own [ui] table" refuses "
 check "016: and leaves that config as it was" test "$(cat "$cfg")" = "$(printf '[ui]\nstatus_indicators = "dots"')"
 printf '  [ ui ] # mine\nx = 1\n' >"$cfg"
 check "016: a [ui] header with spaces is the owner's table too" refuses "$squad" ui-setup
+# v_notify writes herdr's answer to events.log when the owner did not see the notification
+for why in disabled rate_limited; do
+  cp .team/events.log "$tmp/events.keep"; rm -rf .team/observer/.watchdog .team/observer/.alerted; rm -f "$HV/lock"
+  printf '2026-01-01 10:00:00 rev-x T-873 CHANGES review=3\n' >>.team/events.log
+  MOCK_NOTIFY="{\"result\":{\"reason\":\"$why\"}}" "$squad" watch --once >/dev/null 2>&1
+  check "016: a '$why' answer from herdr is in events.log" grep -q " NOTIFY_NOT_SHOWN $why: squad: proj4 stalled" .team/events.log
+  cp "$tmp/events.keep" .team/events.log
+done
 echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"
 MOCK_WS='{"result":{"workspaces":[{"workspace_id":"w2","label":"proj4 team"}]}}' "$squad" down >/dev/null 2>&1
 check "016: down takes the team out of the tab bar line" test ! -e "$HOME/.config/squad/teams/proj4"
