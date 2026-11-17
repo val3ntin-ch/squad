@@ -1057,6 +1057,15 @@ check "017: the report starts with each seat's line: name, role, phase, ticket, 
 check "017: repeated observer passes fold into one line" sh -c "printf '%s' \"\$1\" | grep -q 'the same for 3 passes' && test \$(printf '%s' \"\$1\" | grep -c 'Largest loss') = 1" _ "$rep"
 check "017: the observer's routine passes are not in the events" refuses grep -q 'OBSERVE pass=9' <<<"$rep"
 check "017: without a terminal the report has no colour codes" refuses grep -q $'\033' <<<"$rep"
+err=$(COLUMNS=30 MOCK_AGENTS=$seats perl -e 'alarm 3; exec @ARGV' "$squad" report --live 2>&1 >/dev/null || true)
+check "017: a narrow pane prints no error" test -z "$err"
+printf '10:00:00 dev-a T-881 DONE\n' >>.team/events.log
+check "017: an event without a date is still in the events" sh -c "MOCK_AGENTS='$seats' perl -e 'alarm 3; exec @ARGV' '$squad' report --live 2>/dev/null | grep -q 'dev-a .*T-881 .*DONE'"
+check "017: herdr's error answer does not stop the report" sh -c "MOCK_AGENTS='{\"error\":{\"message\":\"offline\"}}' perl -e 'alarm 3; exec @ARGV' '$squad' report --live 2>/dev/null | grep -q 'EVENTS'"
+mkdir -p "$tmp/fresh017" && cd "$tmp/fresh017" && git init -q && git commit -q --allow-empty -m init && "$squad" init >/dev/null 2>&1
+check "017: a new team without events.log shows the whole report" sh -c "perl -e 'alarm 3; exec @ARGV' '$squad' report --live 2>/dev/null | grep -q EVENTS"
+check "017: a new team does not show 'your feedback open: 0'" sh -c "! perl -e 'alarm 3; exec @ARGV' '$squad' report --live 2>/dev/null | grep -q 'feedback open: 0'"
+cd "$tmp/proj4"
 check "017: NO_COLOR also turns the colour off" sh -c "! NO_COLOR=1 perl -e 'alarm 3; exec @ARGV' script -q /dev/null '$squad' report --live 2>/dev/null | grep -q $'\033\\[38;2'"
 echo
 echo "$pass passed, $fail failed"
