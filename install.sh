@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: FSL-1.1-MIT
 # Install squad for the current user: links bin/squad into ~/.local/bin.
 # Run from a clone of the repository. Re-run after 'git pull' is not needed;
 # the link points at the clone.

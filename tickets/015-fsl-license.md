@@ -1,5 +1,5 @@
 # 015 · squad's future versions under the Functional Source License (FSL)
-Status: Draft — waiting for approval
+Status: Approved (the owner, 17 Nov 2026; licensor name: val3ntin-ch)
 Size: S (≤ 2 h)
 
 ## Goal
@@ -15,12 +15,11 @@ its owner. Each version becomes MIT two years after its release. The owner chose
   the git history.
 
 ## Done when
-- [ ] `LICENSE` is the FSL-1.1-MIT template, byte for byte, with only the Notice line filled:
-      `Copyright 2026 <licensor name>`.
-- [ ] `README.md` has a "License" section: free for any use except a competing product or service;
-      each version becomes MIT two years after its release; versions released before <date of this
-      change> stay MIT.
-- [ ] `bin/squad` and `install.sh` carry `# SPDX-License-Identifier: FSL-1.1-MIT`.
+- [x] `LICENSE` is the FSL-1.1-MIT template, byte for byte, with only the Notice line filled:
+      `Copyright 2026 val3ntin-ch`.
+- [x] `README.md` has a "License" section: free for any use except a competing product or service;
+      each version becomes MIT two years after its release; versions released before 17 Nov 2026 stay MIT.
+- [x] `bin/squad` and `install.sh` carry `# SPDX-License-Identifier: FSL-1.1-MIT`.
 - [ ] CI passes (shellcheck and the smoke tests).
 
 ## Plan
