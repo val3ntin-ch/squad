@@ -33,6 +33,7 @@ case "$1 $2" in
                   if [ "$st" = working ]; then printf '✻ Working… (esc to interrupt)\n❯ \n'; else printf 'Claude Code\n❯ \n'; fi
                 fi ;;
   "agent send-keys") echo '{}' ;;
+  "notification show") if [ -n "${MOCK_NOTIFY:-}" ]; then echo "$MOCK_NOTIFY"; else echo '{}'; fi ;;
   "session list") echo "${MOCK_SESSIONS:-{\}}" ;;
   "workspace list") if [ -n "${MOCK_WS:-}" ]; then echo "$MOCK_WS"; else echo '{"result":{"workspaces":[]}}'; fi ;;
   "pane list") if [ -n "${MOCK_PANES:-}" ]; then echo "$MOCK_PANES"; else echo '{"result":{"panes":[]}}'; fi ;;
@@ -374,6 +375,7 @@ rm -f "$tmp/state"
 cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-160 CHANGES review=3\n' >>.team/events.log; reset_log
 "$squad" watch --once >/dev/null 2>&1
 check "the watchdog tells the owner and the lead when the team stalls while a verdict waits" sh -c "grep -q ' lead - STALLED .*T-160 CHANGES' .team/events.log && grep -q 'notification show squad: proj4 stalled' '$MOCK_LOG' && grep -q 'agent prompt lead .*T-160 CHANGES' '$MOCK_LOG'"
+check "a notification herdr did not show is in events.log, on one line" grep -q ' lead - NOTIFY_NOT_SHOWN no answer: squad: proj4 stalled$' .team/events.log
 reset_log; "$squad" watch --once >/dev/null 2>&1
 check "it tells them once per stall" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
 cp "$tmp/events.keep" .team/events.log
@@ -954,6 +956,47 @@ printf '# preset: default\nseat lead claude lead -\nseat dev-a claude dev -\nsea
 "$squad" update-conf >/dev/null
 check "a seat line with a comment gets its flag before the comment" sh -c "grep -qx 'seat rev-x codex reviewer dev-a -m gpt-6.1-sol -a never  # the GPT reviewer' .team/team.conf && '$squad' status | grep -q 'rev-x .*-a never'"
 cd "$tmp/proj4"
+
+# ---- 016 · herdr's own sidebar shows the squad ------------------------------------------
+now() { date '+%Y-%m-%d %H:%M:%S'; }
+seats='{"result":{"agents":[{"name":"dev-a","agent":"claude","pane_id":"w2:p3","agent_status":"idle"},{"name":"tester","agent":"claude","pane_id":"w2:p6","agent_status":"working"}]}}'
+printf '| T-870 | Sidebar ünïcödé title that is much longer than sixty characters, so squad cuts it | open |\n' >>.team/TASKS.md
+printf '%s dev-a T-870 DISPATCH round=2\n%s dev-a T-870 DONE\n%s tester T-870 PASS\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
+rm -rf .team/observer/.ui; reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: a seat's sidebar entry has its name, role, ticket and round" grep -q 'pane report-metadata w2:p3 --source squad:seat --agent claude --display-agent dev-a --title T-870 · Sidebar .*--token role=dev --token ticket=T-870 .*--token when=r2 · 0m' "$MOCK_LOG"
+check "016: a dev that is done follows its task's newer test result" grep -q 'w2:p3 .*--token phase=TEST PASSED' "$MOCK_LOG"
+check "016: a blocked seat reads NEEDS YOU" grep -q 'w2:p3 .*--state-label blocked=NEEDS YOU' "$MOCK_LOG"
+check "016: a long title is cut at 60 characters, never inside a letter" sh -c "t=\$(grep -o 'T-870 · Sidebar[^-]*' '$MOCK_LOG' | head -1 | sed 's/^T-870 · //; s/ *\$//'); printf '%s' \"\$t\" | iconv -f UTF-8 -t UTF-8 >/dev/null && [ \"\$(printf '%s' \"\$t\" | LC_ALL=en_US.UTF-8 wc -m | tr -d ' ')\" -le 60 ]"
+printf '%s tester T-871 PASS\n%s dev-a T-871 DISPATCH round=2\n%s dev-a T-871 DONE\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
+reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: an older test result does not count for a newer round" grep -q 'w2:p3 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
+reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: the team's progress goes to its workspace entry" grep -q 'workspace report-metadata w2 --source squad:team --token team=[0-9]*/[0-9]* merged --token lock=lock free --token needs=nobody waits' "$MOCK_LOG"
+check "016: the team is in the list for the tab bar line" grep -qx "$PWD/.team" "$HOME/.config/squad/teams/proj4"
+# the tab bar line: only squad's seats count; a team that is gone leaves the list
+rm -f "$HOME/.config/squad/teams"/*
+echo "$PWD/.team" >"$HOME/.config/squad/teams/a"; echo "$tmp/gone/.team" >"$HOME/.config/squad/teams/b"; echo /x/sock >.team/herdr.sock
+line=$(MOCK_AGENTS='{"result":{"agents":[{"name":"dev-a","agent_status":"blocked","tokens":{"role":"dev"}},{"name":"tester","agent_status":"working","tokens":{"role":"tester"}},{"name":"mine","agent_status":"blocked"}]}}' "$squad" herdr-line)
+check "016: the tab bar line counts squad's seats only" test "$line" = "proj4: 1 need you · 1 working"
+check "016: a team whose folder is gone leaves the list" test ! -e "$HOME/.config/squad/teams/b"
+check "016: a team at rest stays out of the line" test "$(MOCK_AGENTS='{"result":{"agents":[]}}' "$squad" herdr-line)" = "squad: nobody needs you"
+rm -f .team/herdr.sock "$HOME/.config/squad/teams/a"
+check "016: a team without its own herdr socket is not counted" test "$(MOCK_AGENTS='{"result":{"agents":[{"name":"x","agent_status":"blocked","tokens":{"role":"dev"}}]}}' "$squad" herdr-line)" = "squad: nobody needs you"
+# ui-setup writes squad's block into herdr's config once, with a backup from before squad
+cfg="$XDG_CONFIG_HOME/herdr/config.toml"; mkdir -p "$(dirname "$cfg")"; printf '[ui.toast]\ndelivery = "herdr"\n' >"$cfg"
+reset_log; "$squad" ui-setup >/dev/null 2>&1; "$squad" ui-setup >/dev/null 2>&1
+check "016: ui-setup writes the sidebar block once" test "$(grep -c '^# squad sidebar (ticket 016)' "$cfg")" = 1
+check "016: ui-setup keeps the owner's settings" grep -q '^delivery = "herdr"' "$cfg"
+check "016: the first backup is the config from before squad" sh -c "! grep -q 'squad sidebar' '$cfg.before-squad' && grep -q delivery '$cfg.before-squad'"
+check "016: ui-setup checks the config with herdr" grep -q "herdr config check" "$MOCK_LOG"
+printf '[ui]\nstatus_indicators = "dots"\n' >"$cfg"
+check "016: ui-setup refuses a config with the owner's own [ui] table" refuses "$squad" ui-setup
+check "016: and leaves that config as it was" test "$(cat "$cfg")" = "$(printf '[ui]\nstatus_indicators = "dots"')"
+printf '  [ ui ] # mine\nx = 1\n' >"$cfg"
+check "016: a [ui] header with spaces is the owner's table too" refuses "$squad" ui-setup
+echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"
+MOCK_WS='{"result":{"workspaces":[{"workspace_id":"w2","label":"proj4 team"}]}}' "$squad" down >/dev/null 2>&1
+check "016: down takes the team out of the tab bar line" test ! -e "$HOME/.config/squad/teams/proj4"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

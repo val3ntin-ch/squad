@@ -1694,8 +1694,8 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
 task_title() { awk -F'|' -v id="$1" '{ t = $2; gsub(/^ +| +$/, "", t) } t == id { x = $3; gsub(/^ +| +$/, "", x); gsub(/`/, "", x); sub(/ \[.*/, "", x); print x; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true; }   # <ID> -> its title in TASKS.md
 
 seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the phase in plain words
-  awk -v s="$1" -v r="$2" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 != "-" && $5 ~ /^(DISPATCH|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = $4; e = $5; d = $0; w = $1 " " $2 }
-    END { if (t == "") { print "||"; exit }
+  awk -v s="$1" -v r="$2" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 != "-" && $5 ~ /^(DISPATCH|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = $4; e = $5; d = $0; w = $1 " " $2; at = NR }
+    END { if (t == "") { print "|||"; exit }
       if (e == "DISPATCH") {
         if (r == "dev") p = "CODING"
         else if (r == "tester") p = (index(d, "contract=1") ? "WRITING CONTRACT" : (t ~ /^CANDIDATE-/ ? "TESTING CANDIDATE" : "TESTING"))
@@ -1712,8 +1712,10 @@ seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the 
       else if (e == "MERGE") p = "MERGED"
       else if (e == "CONTRACT") p = "CONTRACT WRITTEN"
       else if (e == "BLOCKED") p = "BLOCKED"
-      print t "|" p "|" w }' "$TEAM_DIR/events.log" 2>/dev/null
+      print t "|" p "|" w "|" at }' "$TEAM_DIR/events.log" 2>/dev/null
 }
+
+clip() { local LC_ALL=en_US.UTF-8 x=$2; printf '%s' "${x:0:$1}"; }   # <n> <text>: its first n characters (never half a letter)
 
 ago_min() { # <"YYYY-MM-DD HH:MM:SS"> -> minutes since, as "12m" or "3h05"
   local t m; [ -n "$1" ] || return 0
@@ -1723,7 +1725,7 @@ ago_min() { # <"YYYY-MM-DD HH:MM:SS"> -> minutes since, as "12m" or "3h05"
 }
 
 ui_sync() { # tell herdr what each seat does; quiet, best effort, only what changed
-  local agents i name role pane kind tp task phase when title sig dir="$TEAM_DIR/observer/.ui" merged total ws rnd needs lock own
+  local agents i name role pane kind tp task phase when title sig dir="$TEAM_DIR/observer/.ui" merged total ws rnd needs lock own at
   mkdir -p "$dir"
   agents=$(herdr_team agent list 2>/dev/null) || return 0
   needs=$(jq '[.result.agents[] | select(.agent_status == "blocked")] | length' <<<"$agents" 2>/dev/null || echo 0)
@@ -1732,25 +1734,29 @@ ui_sync() { # tell herdr what each seat does; quiet, best effort, only what chan
     pane=$(jq -r --arg n "$name" '[.result.agents[] | select(.name == $n) | .pane_id][0] // empty' <<<"$agents" 2>/dev/null)
     kind=$(jq -r --arg n "$name" '[.result.agents[] | select(.name == $n) | .agent][0] // empty' <<<"$agents" 2>/dev/null)
     [ -n "$pane" ] && [ -n "$kind" ] || continue
-    tp=$(seat_phase "$name" "$role"); task=${tp%%|*}; tp=${tp#*|}; phase=${tp%%|*}; when=$(ago_min "${tp#*|}")
+    tp=$(seat_phase "$name" "$role"); task=${tp%%|*}; tp=${tp#*|}; phase=${tp%%|*}; tp=${tp#*|}; when=$(ago_min "${tp%%|*}"); at=${tp#*|}
     title=""; rnd=""
     # a finished seat follows its task: what happened to it after this seat's last step
     case "$phase" in WAITS*|DONE|TEST*|APPROVED|CHANGES*|CHECKS*|CONTRACT*)
-      local later; later=$(awk -v t="$task" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES)$/ { e = $5 } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
+      local later; later=$(awk -v t="$task" -v at="${at:-0}" 'NR > at && $1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES|DISPATCH)$/ { e = $5 } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
       case "$later" in MERGE) phase=MERGED ;; PASS) [ "$role" = tester ] || phase="TEST PASSED" ;; FAIL) [ "$role" = tester ] || phase="TEST FAILED" ;;
         APPROVE) [ "$role" = reviewer ] || phase=APPROVED ;; CHANGES) [ "$role" = reviewer ] || phase="CHANGES ASKED" ;; esac ;;
     esac
     case "$task" in
       CANDIDATE-*) title="tests $(grep -m1 -- '- Branch:' "$TEAM_DIR/tasks/$task.md" 2>/dev/null | grep -oE 'task/T-[0-9A-Za-z._-]*[0-9A-Za-z]' | cut -d/ -f2 | tr '\n' ' ' || true)" ;;
-      T-*) title=$(task_title "$task" | cut -c1-60)
+      T-*) title=$(clip 60 "$(task_title "$task")")
            rnd=$(awk -v t="$task" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 == "DISPATCH" && $0 ~ /round=/ { n = $0; sub(/.*round=/, "", n); sub(/ .*/, "", n) } END { print n }' "$TEAM_DIR/events.log" 2>/dev/null) ;;
       F-*|"") ;;
     esac
     case "$role" in
       observer) phase=WATCHING; task="loss"; when=""
-                title=$(grep -m1 '^Largest loss:' "$TEAM_DIR/observer/NOW.md" 2>/dev/null | sed 's/^Largest loss: *//' | cut -c1-60 || true) ;;
-      planner) local pl; pl=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 == "PLAN_START" { p = $4; g = $0; sub(/^([^ ]+ ){5}/, "", g) } END { print p "|" g }' "$TEAM_DIR/events.log" 2>/dev/null)
-               [ "${pl%%|*}" = "" ] || { task=${pl%%|*}; [ "$task" = - ] && task=PLAN; title=$(printf '%s' "${pl#*|}" | cut -c1-60); } ;;
+                title=$(clip 60 "$(grep -m1 '^Largest loss:' "$TEAM_DIR/observer/NOW.md" 2>/dev/null | sed 's/^Largest loss: *//' || true)") ;;
+      planner) local pl; pl=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 ~ /^PLAN_/ { if ($5 == "PLAN_START") { p = $4; g = $0; sub(/^([^ ]+ ){5}/, "", g) } last = $5 } END { print p "|" last "|" g }' "$TEAM_DIR/events.log" 2>/dev/null)
+               if [ "${pl%%|*}" != "" ]; then
+                 task=${pl%%|*}; [ "$task" = - ] && task=PLAN; pl=${pl#*|}
+                 case "${pl%%|*}" in PLAN_APPROVED) phase="PLAN APPROVED" ;; PLAN_CRITIQUE) phase="IN CRITIQUE" ;; *) phase=PLANNING ;; esac
+                 title=$(clip 60 "${pl#*|}")
+               fi ;;
     esac
     [ -n "$phase" ] || phase=idle
     local meta="${rnd:+r$rnd · }${when}"
@@ -1784,32 +1790,41 @@ herdr_socket_call() { # <method> <params json>: one raw call on herdr's socket (
   local sock; sock=$(cat "$TEAM_DIR/herdr.sock" 2>/dev/null || true); [ -n "$sock" ] || sock=${HERDR_SOCKET_PATH:-$HOME/.config/herdr/herdr.sock}
   command -v python3 >/dev/null 2>&1 || return 1
   python3 - "$sock" "$1" "$2" <<'PY'
-import json, socket, sys
+import json, socket, sys, time
+end = time.time() + 5
 s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.settimeout(5); s.connect(sys.argv[1])
 s.sendall((json.dumps({"id": "squad", "method": sys.argv[2], "params": json.loads(sys.argv[3])}) + "\n").encode())
 buf = b""
-while not buf.endswith(b"\n"):
+while b"\n" not in buf:
+    left = end - time.time()
+    if left <= 0: sys.exit(1)
+    s.settimeout(left)
     c = s.recv(65536)
     if not c: break
     buf += c
-print(buf.decode().strip())
-r = json.loads(buf or b"{}")
-sys.exit(1 if "error" in r else 0)
+line = buf.split(b"\n", 1)[0].strip()
+if not line: sys.exit(1)
+print(line.decode())
+r = json.loads(line)
+sys.exit(0 if r.get("id") == "squad" and "result" in r and "error" not in r else 1)
 PY
 }
 
 # herdr's top-right status line: every running squad team on this machine in one short line
 cmd_herdr_line() {
-  local f td sock agents nb nw out="" n
+  local f td sock agents nb nw out="" n end=$(( $(date +%s) + 2 ))
   for f in "$HOME/.config/squad/teams"/*; do
     [ -f "$f" ] || continue
-    td=$(cat "$f"); sock=$(cat "$td/herdr.sock" 2>/dev/null || true)
-    agents=$( { if [ -n "$sock" ]; then HERDR_SOCKET_PATH=$sock herdr agent list; else herdr agent list; fi; } 2>/dev/null) || continue
+    [ "$(date +%s)" -lt "$end" ] || break   # herdr stops the command after 3 s: print what we have
+    td=$(cat "$f"); [ -d "$td" ] || { rm -f "$f"; continue; }   # a team that is gone leaves the list
+    sock=$(cat "$td/herdr.sock" 2>/dev/null || true); [ -n "$sock" ] || continue
+    agents=$(HERDR_SOCKET_PATH=$sock perl -e 'alarm 1; exec @ARGV' herdr agent list 2>/dev/null) || continue
     n=$(basename "$(dirname "$td")")
-    nb=$(jq --argjson x 0 '[.result.agents[] | select(.agent_status == "blocked")] | length' <<<"$agents" 2>/dev/null || echo 0)
-    nw=$(jq '[.result.agents[] | select(.agent_status == "working")] | length' <<<"$agents" 2>/dev/null || echo 0)
+    # squad's seats only (they carry the role token), not the owner's own agents in the same session
+    nb=$(jq '[.result.agents[] | select(.tokens.role != null and .agent_status == "blocked")] | length' <<<"$agents" 2>/dev/null || echo 0)
+    nw=$(jq '[.result.agents[] | select(.tokens.role != null and .agent_status == "working")] | length' <<<"$agents" 2>/dev/null || echo 0)
     [ "${nb:-0}${nw:-0}" != 00 ] || continue   # a team at rest stays out of the line
-    out="${out:+$out   }$n: $([ "${nb:-0}" -gt 0 ] && printf '%s need you · ' "$nb")$nw working"
+    if [ "${nb:-0}" -gt 0 ]; then out="${out:+$out   }$n: $nb need you · $nw working"; else out="${out:+$out   }$n: $nw working"; fi
   done
   printf '%s\n' "${out:-squad: nobody needs you}"
 }
@@ -1818,17 +1833,22 @@ cmd_herdr_line() {
 SIDEBAR_MARK="# squad sidebar (ticket 016)"
 SIDEBAR_END="# end of squad sidebar"
 cmd_ui_setup() {
-  local cfg="${HERDR_CONFIG_PATH:-$HOME/.config/herdr/config.toml}" bak tmp
+  local cfg="${HERDR_CONFIG_PATH:-${XDG_CONFIG_HOME:-$HOME/.config}/herdr/config.toml}" bak tmp
   [ -f "$cfg" ] || { mkdir -p "$(dirname "$cfg")"; : >"$cfg"; }
-  bak="$cfg.before-squad"; cp "$cfg" "$bak"
+  bak="$cfg.before-squad"; [ -e "$bak" ] || cp "$cfg" "$bak"   # the first backup is the one from before squad
+  cp "$cfg" "$cfg.squad-last"
   # take out squad's earlier block (from its mark to its end mark, or to the next table that is not squad's)
   tmp=$(mktemp)
+  # squad's earlier block: everything to its end mark; an older block without one: only its own lines
   awk -v m="$SIDEBAR_MARK" -v e="$SIDEBAR_END" '
-    index($0, m) == 1 { skip = 1; next }
+    index($0, m) == 1 { skip = 1; old = 1; next }
     skip && index($0, e) == 1 { skip = 0; next }
-    skip && /^\[/ && $0 !~ /^\[ui\.sidebar\.(agents|spaces)\]/ && $0 !~ /^\[ui\]$/ { skip = 0 }
+    skip && index($0, "[ui]") == 1 { old = 0 }
+    skip && old && $0 ~ /^[[:space:]]*(\[ui\.sidebar\.(agents|spaces)\]|rows[[:space:]]*=|row_gap[[:space:]]*=|#|$)/ { next }
+    skip && old && $0 ~ /^[[:space:]]*\[/ { skip = 0 }
+    skip && !old { next }
     !skip { print }' "$cfg" >"$tmp"
-  if grep -qE '^\[ui\.sidebar\.(agents|spaces)\]|^\[ui\]$' "$tmp"; then rm -f "$tmp"; die "your herdr config already has its own [ui] or sidebar settings: squad leaves them alone ($cfg)."; fi
+  if grep -qE '^[[:space:]]*\[[[:space:]]*ui[[:space:]]*\][[:space:]]*(#.*)?$|^[[:space:]]*\[[[:space:]]*ui\.sidebar\.(agents|spaces)[[:space:]]*\]|^[[:space:]]*ui[[:space:]]*\.' "$tmp"; then rm -f "$tmp"; die "your herdr config already has its own [ui] or sidebar settings: squad leaves them alone ($cfg)."; fi
   cat "$tmp" >"$cfg"; rm -f "$tmp"
   cat >>"$cfg" <<TOML
 $SIDEBAR_MARK: who does what, who needs you; written by 'squad ui-setup' (backup: $(basename "$bak"))
@@ -1852,13 +1872,14 @@ rows = [
 ]
 $SIDEBAR_END
 TOML
-  if ! herdr config check >/dev/null 2>&1; then cp "$bak" "$cfg"; herdr config check 2>&1 | tail -3 >&2; die "herdr did not accept the settings; your config is back as it was."; fi
+  if ! HERDR_CONFIG_PATH="$cfg" herdr config check >/dev/null 2>&1; then cp "$cfg.squad-last" "$cfg"; die "herdr did not accept the settings; your config is back as it was."; fi
   herdr server reload-config >/dev/null 2>&1 || true
   say "herdr's sidebar and status line now show squad (backup: $bak)."
 }
 
 v_notify() { # <title> <body>: a herdr notification to the owner; an answer other than "shown" goes to events.log
-  local r; r=$(herdr notification show "$1" --body "$2" --sound request 2>/dev/null | jq -r '.result.reason // .error.code // "no answer"' 2>/dev/null || echo "no answer")
+  local r; r=$(herdr notification show "$1" --body "$2" --sound request 2>/dev/null | jq -r '.result.reason // .error.code // empty' 2>/dev/null | head -1) || true
+  [ -n "$r" ] || r="no answer"
   [ "$r" = shown ] || log_event "$LEAD" - NOTIFY_NOT_SHOWN "$r: $1"
   sleep 1   # herdr drops a second notification within about a second
   return 0
@@ -3061,6 +3082,8 @@ cmd_down() {
   ws=$(herdr workspace list | jq -r --arg l "$(basename "$REPO") team" '.result.workspaces[] | select(.label == $l) | .workspace_id' | head -1)
   [ -n "$ws" ] || { say "No team workspace is open."; return 0; }
   herdr_socket_call agent.view.clear '{"source":"squad:view"}' >/dev/null 2>&1 || true; ui_reset
+  local f; for f in "$HOME/.config/squad/teams"/*; do   # the tab bar line stops counting this team
+    [ -f "$f" ] && [ "$(cat "$f")" = "$TEAM_DIR" ] && rm -f "$f"; done
   herdr workspace close "$ws" >/dev/null || die "herdr could not close workspace $ws."
   rm -f "$TEAM_DIR"/.briefed/*
   say "Team stopped (workspace $ws closed). Worktrees and branches are kept; 'squad clean' removes the worktrees."
