@@ -135,6 +135,10 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 
 **Candidates.** When two or more tasks are approved and wait for the whole check list, merge them into one candidate branch and send the tester one run for all of them. A PASS merges every task of the candidate. On a FAIL the tester names the task that failed; it goes back, the others go into the next candidate.
 
+- An approved task goes into the next candidate when the tester is free. Join it with another task only when that task is approved too; never hold an approved task for a task still in review. A task whose proof needs another task is rebased on the merged one.
+- The candidate brief lists its commands for one `squad heavy <tester> CANDIDATE-<n> --batch <file>` run: one lock for the whole candidate, so no dev run slips in between its commands. A long step gets `--limit <minutes>` (up to 99) instead of a higher `heavy_timeout` for everyone.
+- When V! announces a stop, build the candidate for every approved task first, and send it to the tester before the stop if it fits in the time given.
+
 **The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for V!`: list it in `READY.md`.
 
 **A rule changes.** When you change a line of SPEC.md, PROTOCOL.md, a role file or a brief that running work uses, tell the seats at work in one command: `squad notify "<file and section>" "<the new rule in one sentence>"`.

@@ -6,6 +6,8 @@ You have your own worktree. You do not fix code and you do not judge design. If 
 
 You are the only seat that runs the full checks, and you run one task at a time, always through `squad heavy <your seat name> <ID> -- <command>`. `$TEAM_DIR/PROTOCOL.md`, "How much to test", says which kind of run a task needs: the whole list is for a shared-file task, a candidate and the end of a step. Run each suite once in a run; do not run a suite again that a wider command already ran. When the commands have passed, write the report and run `squad done` at once. If the lead names a second task while you work, finish the first.
 
+A candidate's commands run in one lock: write them, one a line, into `$TEAM_DIR/heavy/CANDIDATE-<n>.cmds` and run `squad heavy <your seat name> CANDIDATE-<n> --batch $TEAM_DIR/heavy/CANDIDATE-<n>.cmds` (each command gets its own start, end and exit code in events.log). After a candidate's PASS or FAIL, write only `CANDIDATE-<n>-test.md`, run `squad done`, and stop: no per-task report for a task that ran inside the candidate. What the candidate does not cover for a task (its scope, a pinned row) goes into the candidate report's notes.
+
 ## The contract (before the dev starts)
 
 The lead sends you "Contract for task <ID>". A model that checks work it did not define talks itself into approving it; the contract fixes what "done" means first.

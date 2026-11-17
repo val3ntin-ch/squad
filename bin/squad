@@ -50,12 +50,14 @@ Usage:
   squad statusline                  Claude Code status line: shows and records Claude's usage
   squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
   squad git <args>                  git writes for agents (switch/add/commit/merge...; no push/force/delete)
-  squad heavy <seat> [task] -- cmd  run a heavy command: one at a time, first come first served (agents)
+  squad heavy <seat> [task] [--limit min] [--batch file] -- cmd   run a heavy command: one at a time,
+                                    first come first served (agents); --batch: a candidate's commands under one lock
   squad dispatch <seat> <task>      clear a seat, give it the task, confirm it started (the lead)
   squad merge <task>                merge an approved task into the integration branch (the lead)
   squad notify "<where>" "<rule>"   tell the seats at work that a rule changed (the lead)
   squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
   squad plan "<goal>" [--feature]   the planner researches and proves the plan before any work
+  squad timed <seconds> -- <cmd>    run a command and stop it after the seconds (a viewer or screenshot script)
   squad plan --check|--critique|--approve [F-n]   check it, let GPT critique it, approve it (V! only)
   squad decisions [--check]         list the decisions; --check: every field filled
   squad feedback "<text>"           your feedback after testing what can be seen: saved, logged, sent to the lead
@@ -99,6 +101,8 @@ STALL_MINUTES=15        # a seat with an open task and no work for this long is 
 OBSERVE_MINUTES=20      # the longest gap between two observer passes
 ESCALATE_MODEL=""       # model for a fix round from round 4 on (claude seats)
 OBSERVER_DEEP_MODEL=""  # model for an observer pass that found a large loss
+LIMIT_FALLBACK=""       # team.conf "limit_fallback <model>": a Claude seat at its usage limit switches to it (V!'s choice)
+STALL_ALERT_MINUTES=30  # team.conf "stall_alert_minutes": no event this long while work waits for the lead: tell V!
 CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
 SESSION_NAME=""         # herdr session of this team (default: the repository's name)
 
@@ -133,6 +137,8 @@ load_conf() {
                       SAMPLE_PERCENT=$rest ;;
       escalate_model) ESCALATE_MODEL=$rest ;;
       observer_deep_model) OBSERVER_DEEP_MODEL=$rest ;;
+      limit_fallback) LIMIT_FALLBACK=$rest ;;
+      stall_alert_minutes) [[ "$rest" =~ ^[1-9][0-9]{0,2}$ ]] || die "team.conf line $line_no: 'stall_alert_minutes' needs minutes (1 to 999)."; STALL_ALERT_MINUTES=$((10#$rest)) ;;
       consult) [ -n "$rest" ] || die "team.conf line $line_no: 'consult' needs a command, e.g. consult codex --search exec -m gpt-6.1-sol"
                CONSULT_CMD=$rest ;;
       session) [[ "$rest" =~ ^[A-Za-z0-9._-]+$ ]] || die "team.conf line $line_no: 'session' is a herdr session name (letters, digits, . _ -)."
@@ -458,19 +464,31 @@ heavy_ticket() { # -> the next arrival number (a counter under a mutex: callers 
 cmd_heavy() {
   find_repo; load_conf
   [ "${1:-}" = --status ] && { heavy_status; return 0; }
-  local usage="usage: squad heavy <seat> [<task>] [--sample] -- <command...>"
-  local seat=${1:-} task=- sample=0; [ $# -gt 0 ] && shift
+  local usage="usage: squad heavy <seat> [<task>] [--sample] [--limit <minutes>] [--batch <file>] -- <command...>"
+  local seat=${1:-} task=- sample=0 limit_opt="" batch=""; [ $# -gt 0 ] && shift
   [ -n "$seat" ] && [ "$seat" != -- ] || die "$usage"
   while [ $# -gt 0 ] && [ "$1" != -- ]; do
     case "$1" in
       --sample) sample=1 ;;
+      --limit) shift; [[ "${1:-}" =~ ^[1-9][0-9]?$ ]] || die "--limit takes minutes (1 to 99)."; limit_opt=$1 ;;
+      --batch) shift; [ -f "${1:-}" ] || die "--batch takes a file of commands, one a line."; batch=$(cd "$(dirname "$1")" && pwd -P)/$(basename "$1") ;;
       -*) die "$usage" ;;
       *) [ "$task" = - ] || die "$usage"; valid_task "$1"; task=$1 ;;
     esac
     shift
   done
-  [ "${1:-}" = -- ] || die "$usage"
-  shift; [ $# -gt 0 ] || die "squad heavy: no command after --"
+  # a batch: the commands of one candidate under one lock, one after the other (observer S-44)
+  local -a batchv=()
+  if [ -n "$batch" ]; then
+    local bl; while IFS= read -r bl || [ -n "$bl" ]; do case "$bl" in ""|"#"*) ;; *) batchv+=("$bl") ;; esac; done <"$batch"
+    [ "${#batchv[@]}" -gt 0 ] || die "--batch: $batch has no command."
+    [ "$sample" = 0 ] || die "--sample and --batch do not go together: a candidate runs everything."
+    [ "${1:-}" != -- ] || die "--batch takes its commands from the file, not after --."
+    set -- bash -c "${batchv[0]}"
+  else
+    [ "${1:-}" = -- ] || die "$usage"
+    shift; [ $# -gt 0 ] || die "squad heavy: no command after --"
+  fi
   local si wt sha dirty minutes run_dir shard="" a
   local -a cmdv=()
   si=$(seat_index "$seat") || die "no seat named '$seat' in this team."
@@ -478,6 +496,7 @@ cmd_heavy() {
   wt=$(seat_cwd "$si")
   if [ "${S_ROLE[$si]}" = dev ]; then
     [ -z "$HEAVY_TIMEOUT_DEV" ] || minutes=$HEAVY_TIMEOUT_DEV
+    [ -z "$limit_opt" ] || die "--limit is for the tester's candidate runs; a dev's run keeps heavy_timeout_dev."
     # a run proves a commit: nothing uncommitted (a killed run must not leave an edit behind)
     git -C "$wt" rev-parse --verify -q HEAD >/dev/null 2>&1 || die "$seat's worktree ($wt) is missing or has no commit: run 'squad up' first."
     dirty=$(git -C "$wt" status --porcelain | grep -v ' \.agents-verify-off$' || true)
@@ -505,8 +524,10 @@ cmd_heavy() {
     die "--sample needs {shard} where the test runner takes its shard, e.g. -- npx vitest run --shard={shard} (vitest, jest and playwright take --shard=k/n)."
   fi
 
+  [ -z "$limit_opt" ] || minutes=$limit_opt   # a longer step of a candidate (observer S-31)
   run_dir=$(pwd -P)
   local snap_name="" limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
+  local nsteps=1; [ -z "$batch" ] || nsteps=${#batchv[@]}
 
   local q="$HEAVY_DIR/queue" waited=0 start rc
   mkdir -p "$q" "$TEAM_DIR/heavy"
@@ -516,7 +537,7 @@ cmd_heavy() {
   : >"$HV_ME"
   trap 'heavy_release' EXIT
   trap 'heavy_release; exit 130' INT TERM HUP
-  HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$limit"
+  HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$((limit * nsteps))"
   while :; do
     heavy_clear_stale
     # a waiter whose queue entry is gone would wait forever (hive observer, pass 64): stop and say so
@@ -524,7 +545,7 @@ cmd_heavy() {
     if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && ln -s "$HV_VAL" "$HV_LOCK" 2>/dev/null; then break; fi
     [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; }
     sleep "$HEAVY_POLL"
-    HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$limit"
+    HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$((limit * nsteps))"
   done
   rm -f "$HV_ME"; HV_ME=""
   # a dev's run happens in a snapshot of the commit, so the dev can keep working while it runs;
@@ -540,32 +561,41 @@ cmd_heavy() {
     [ -d "$run_dir" ] || run_dir=$snap
     snap_name=${snap#"$WT_ROOT"/}
   fi
-  printf '@%s (%s min): %s\n' "$sha" "$minutes" "${cmdv[*]}" >"$HEAVY_DIR/lock.cmd"
-  start=$(date +%s)
-  log_event "$seat" "$task" HEAVY_START "sha=$sha limit=${minutes}m${shard:+ sample=$shard}${snap_name:+ in=$snap_name} ${cmdv[*]}"
-  rm -f "$HEAVY_DIR/stopped.$$"
-  HV_LOG="$HEAVY_DIR/run.$$.log"; : >"$HV_LOG"
-  ( export SQUAD_SHARD="$shard"; run_in_group "$run_dir" "${cmdv[@]}" ) >"$HV_LOG" 2>&1 & HV_CPID=$!
-  HV_PGID=$HV_CPID
-  printf '%s %s\n' "$HV_CPID" "$(proc_start "$HV_CPID")" >"$HEAVY_DIR/lock.pgid"
-  ( sleep "$limit"; : >"$HEAVY_DIR/stopped.$$"
-    echo "squad heavy: stopped after $minutes min (heavy_timeout${HEAVY_TIMEOUT_DEV:+ / heavy_timeout_dev} in team.conf)" >&2
-    stop_tree "$HV_CPID" ) &
-  HV_WPID=$!
-  disown "$HV_WPID" 2>/dev/null || true   # no "Killed" job notice in the caller's output when it is stopped
-  heavy_watch "$seat" "$task" "$HV_LOG"
-  rc=0; wait "$HV_CPID" || rc=$?
-  HV_CPID=""
-  # the leader ended; anything left in its group (a child that ignored TERM, a stray background job)
-  # ends too, and only then the last output is read, so nothing it writes on the way out is lost
-  if group_alive "$HV_PGID"; then stop_group "$HV_PGID"; fi
-  heavy_stream "$HV_LOG" || true; rm -f "$HV_LOG"
-  # a run that was stopped never counts as passed, whatever its exit code
-  if [ -f "$HEAVY_DIR/stopped.$$" ] || [ $(( $(date +%s) - start )) -ge "$limit" ]; then rc=124; fi
-  rm -f "$HEAVY_DIR/stopped.$$"
+  local step=0 worst=0
+  while :; do
+    printf '@%s (%s min): %s\n' "$sha" "$minutes" "${cmdv[*]}" >"$HEAVY_DIR/lock.cmd"
+    start=$(date +%s)
+    log_event "$seat" "$task" HEAVY_START "sha=$sha limit=${minutes}m${shard:+ sample=$shard}${snap_name:+ in=$snap_name}${batch:+ step=$((step + 1))/$nsteps} ${cmdv[*]}"
+    rm -f "$HEAVY_DIR/stopped.$$"
+    HV_LOG="$HEAVY_DIR/run.$$.log"; : >"$HV_LOG"; HV_POS=0
+    ( export SQUAD_SHARD="$shard"; run_in_group "$run_dir" "${cmdv[@]}" ) >"$HV_LOG" 2>&1 & HV_CPID=$!
+    HV_PGID=$HV_CPID
+    printf '%s %s\n' "$HV_CPID" "$(proc_start "$HV_CPID")" >"$HEAVY_DIR/lock.pgid"
+    ( sleep "$limit"; : >"$HEAVY_DIR/stopped.$$"
+      echo "squad heavy: stopped after $minutes min (heavy_timeout${HEAVY_TIMEOUT_DEV:+ / heavy_timeout_dev} in team.conf, or --limit)" >&2
+      stop_tree "$HV_CPID" ) &
+    HV_WPID=$!
+    disown "$HV_WPID" 2>/dev/null || true   # no "Killed" job notice in the caller's output when it is stopped
+    heavy_watch "$seat" "$task" "$HV_LOG"
+    rc=0; wait "$HV_CPID" || rc=$?
+    HV_CPID=""
+    kill_tree "$HV_WPID" KILL; HV_WPID=""   # this step's limit timer ends with it (its sleep too: it holds the output open)
+    # the leader ended; anything left in its group (a child that ignored TERM, a stray background job)
+    # ends too, and only then the last output is read, so nothing it writes on the way out is lost
+    if group_alive "$HV_PGID"; then stop_group "$HV_PGID"; fi
+    heavy_stream "$HV_LOG" || true; rm -f "$HV_LOG"
+    # a run that was stopped never counts as passed, whatever its exit code
+    if [ -f "$HEAVY_DIR/stopped.$$" ] || [ $(( $(date +%s) - start )) -ge "$limit" ]; then rc=124; fi
+    rm -f "$HEAVY_DIR/stopped.$$"
+    log_event "$seat" "$task" HEAVY_END "rc=$rc $(( ($(date +%s) - start + 30) / 60 ))m${batch:+ step=$((step + 1))/$nsteps}"
+    [ "$rc" = 0 ] || [ "$worst" != 0 ] || worst=$rc
+    step=$((step + 1))
+    [ -n "$batch" ] && [ "$step" -lt "$nsteps" ] || break
+    [ "$rc" != 124 ] || break   # a hung or timed-out step ends the batch: the lock goes to the next in line
+    cmdv=(bash -c "${batchv[$step]}")
+  done
   heavy_release
-  log_event "$seat" "$task" HEAVY_END "rc=$rc $(( ($(date +%s) - start + 30) / 60 ))m"
-  return "$rc"
+  return "$worst"
 }
 
 HV_ME="" HV_LOCK="" HV_VAL="" HV_CPID="" HV_WPID="" HV_PGID="" HV_LOG="" HV_POS=0
@@ -575,6 +605,16 @@ heavy_stream() { # <log>: print what the run wrote since the last call
   size=$(wc -c <"$1" 2>/dev/null | tr -d ' ') || return 0
   if [ "${size:-0}" -gt "$HV_POS" ]; then tail -c +$((HV_POS + 1)) "$1" | head -c $((size - HV_POS)); HV_POS=$size; return 0; fi
   return 1
+}
+
+tree_cpu() { # <pgid> <root pid> -> summed CPU seconds of the group and of every descendant of the root,
+  # also those that moved to their own process group (a runner's workers): a quiet suite that computes is not hung
+  local p
+  p=$( { pgrep -g "$1" 2>/dev/null || true
+         ps -A -o pid= -o ppid= 2>/dev/null | awk -v r="$2" '{ par[$1] = $2 } END { for (q in par) { x = q; d = 0; while (x in par && d < 64) { if (par[x] == r) { print q; break } x = par[x]; d++ } } }'
+       } | sort -u | tr '\n' ',' | sed 's/,$//')
+  [ -n "$p" ] || { echo 0; return 0; }
+  { ps -o time= -p "$p" 2>/dev/null || true; } | awk '{ n = split($1, t, /[:-]/); s = 0; for (i = 1; i <= n; i++) s = s * 60 + t[i]; sum += s } END { printf "%.2f\n", sum }'
 }
 
 group_cpu() { # <pgid> -> summed CPU seconds of the group's processes
@@ -597,7 +637,7 @@ heavy_watch() { # <seat> <task> <log>
     tick=$((tick + 1))
     if [ $((tick % 10)) = 1 ]; then
       date +%s >"$TEAM_DIR/seats/$seat.heartbeat"
-      cpu=$(group_cpu "$HV_PGID" || echo "?")
+      cpu=$(tree_cpu "$HV_PGID" "$HV_CPID" || echo "?")
       [ "$cpu" = "$prev" ] || { prev=$cpu; last=$(date +%s); }
     fi
     if [ "$silent" -gt 0 ] && [ $(( $(date +%s) - last )) -ge "$silent" ]; then
@@ -1640,6 +1680,92 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
   fi
 }
 
+# The watchdog (observer S-48), from the team tab's strip: it tells V! when the team stalls while
+# work waits for the lead, when a seat stops at its usage limit, and when Claude's week reaches 80 %.
+v_notify() { # <title> <body>: a herdr notification to V! (and a line in events.log)
+  herdr notification show "$1" --body "$2" --sound request >/dev/null 2>&1 || true
+}
+watchdog_tick() {
+  local now last lastev wait key mk="$TEAM_DIR/observer/.watchdog" agents i name st text p7
+  mkdir -p "$mk"; now=$(date +%s)
+  # 1. a stall: no team event for stall_alert_minutes, and a verdict, a DONE or a test result is the newest event of a task
+  lastev=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 != "observer" && $5 != "IDLE" && $5 != "OBSERVE" && $5 != "STALLED" { l = $1 " " $2 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null)
+  if [ -n "$lastev" ]; then
+    last=$(date -j -f '%Y-%m-%d %H:%M:%S' "$lastev" +%s 2>/dev/null || date -d "$lastev" +%s 2>/dev/null || echo "$now")
+    agents=$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')
+    if [ $(( (now - last) / 60 )) -ge "$STALL_ALERT_MINUTES" ] && [ -z "$(heavy_owner)" ] \
+       && ! jq -e '.result.agents[] | select(.agent_status == "working")' <<<"$agents" >/dev/null 2>&1; then
+      # waiting for the lead: a task whose newest event is a verdict, a DONE or a test result, with no
+      # queued dispatch after it, and (for an approved task) no candidate run started after it
+      wait=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ {
+          if ($4 ~ /^CANDIDATE-/ && $5 == "DISPATCH") { open[$4] = NR }
+          if ($4 ~ /^CANDIDATE-/ && ($5 == "PASS" || $5 == "FAIL")) { delete open[$4]; ended = NR }
+          if ($4 ~ /^T-/ && $5 ~ /^(DISPATCH|DISPATCH_QUEUED|DONE|PASS|FAIL|APPROVE|CHANGES|MERGE|BLOCKED)$/) { e[$4] = $5; at[$4] = NR } }
+        END { held = 0; for (c in open) if (open[c] > held) held = open[c]
+          for (t in e) if (e[t] ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES)$/ && !(e[t] == "APPROVE" && held > at[t])) printf "%s %s ", t, e[t] }' "$TEAM_DIR/events.log" 2>/dev/null)
+      key="$mk/stall-$last"
+      if [ -n "$wait" ] && [ ! -e "$key" ]; then
+        : >"$key"
+        log_event "$LEAD" - STALLED "no event for $(( (now - last) / 60 )) min while waiting: $wait"
+        v_notify "squad: $(basename "$REPO") stalled" "No event for $(( (now - last) / 60 )) min; waiting for the lead: $wait"
+        herdr_team agent prompt "$LEAD" "[squad] No event for $(( (now - last) / 60 )) min, and these wait for you: $wait. Read their newest report or review and act (dispatch the next round, merge, or put it in a candidate). (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+      fi
+    fi
+  fi
+  # 2. a seat at its usage limit: tell V! once; with limit_fallback, switch a Claude seat to that model
+  agents=$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')
+  for ((i = 0; i < $(seat_count); i++)); do
+    name=${S_NAME[$i]}; st=$(seat_state "$agents" "$name")
+    case "$st" in off|working) continue ;; esac   # a seat at work is not stopped (its screen may only show the words)
+    text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -15) || continue   # no read: decide nothing
+    case "$text" in *"hit your limit"*|*"hit your "*" limit"*|*"limit reached"*|*"Limit reached"*|*"reached your usage limit"*) ;; *) rm -f "$mk/limit-$name" "$mk/fallback-$name"; continue ;; esac
+    local resets; resets=$(printf '%s' "$text" | grep -oE 'resets [^·)]*' | head -1 || true)
+    if [ ! -e "$mk/limit-$name" ]; then
+      : >"$mk/limit-$name"; log_event "$name" - LIMIT "${resets:-usage limit}"
+      [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] || v_notify "squad: $name at its usage limit" "${resets:-usage limit}. It waits for you: answer its pane, or set limit_fallback <model> in team.conf."
+    fi
+    if [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] && [ ! -e "$mk/fallback-$name" ]; then
+      herdr_team agent send-keys "$name" Escape >/dev/null 2>&1 || true; sleep 2
+      if herdr_team agent prompt "$name" "/model $LIMIT_FALLBACK" >/dev/null 2>&1; then
+        : >"$mk/fallback-$name"
+        log_event "$name" - FALLBACK "model=$LIMIT_FALLBACK"
+        v_notify "squad: $name at its usage limit" "${resets:-usage limit}; switched to $LIMIT_FALLBACK (limit_fallback in team.conf). Set it back after the reset."
+      else
+        v_notify "squad: $name at its usage limit" "${resets:-usage limit}; the switch to $LIMIT_FALLBACK did not go through; squad tries again."
+      fi
+    fi
+  done
+  # 3. Claude's week at 80 %: once a day
+  p7=$(usage_claude | jq -r --argjson now "$now" 'if (.r7 // 0) > 0 and (.r7 // 0) < $now then empty else (.p7 // empty) end' 2>/dev/null | cut -d. -f1 || true)   # a window past its reset is 0 %
+  if [ -n "$p7" ] && [ "$p7" -ge 80 ] 2>/dev/null && [ ! -e "$mk/week-$(date +%Y%m%d)" ]; then
+    : >"$mk/week-$(date +%Y%m%d)"
+    v_notify "squad: Claude week at $p7 %" "The 7-day Claude usage is at $p7 %. Consider limit_fallback in team.conf before a seat stops."
+  fi
+  return 0
+}
+
+TM_P="" TM_W="" TM_FLAG=""
+cmd_timed() { # <seconds> -- <command...>: run it, stop it (its whole process group) after the seconds
+  local secs=${1:-} rc=0
+  [[ "$secs" =~ ^[1-9][0-9]{0,4}$ ]] || die "usage: squad timed <seconds> -- <command...>"
+  shift; [ "${1:-}" = -- ] && shift
+  [ $# -gt 0 ] || die "usage: squad timed <seconds> -- <command...>"
+  command -v perl >/dev/null 2>&1 || die "squad timed needs perl (it gives the command its own process group, so all of it can be stopped)."
+  TM_FLAG=$(mktemp); rm -f "$TM_FLAG"
+  # globals: the trap runs after this function's locals are gone
+  trap '[ -z "$TM_P" ] || ! group_alive "$TM_P" || stop_group "$TM_P"; [ -z "$TM_W" ] || kill_tree "$TM_W" KILL; [ -z "$TM_FLAG" ] || rm -f "$TM_FLAG"' EXIT
+  trap 'exit 130' INT TERM HUP
+  ( run_in_group "$(pwd -P)" "$@" ) & TM_P=$!
+  ( sleep "$secs"; : >"$TM_FLAG"; kill -TERM -- "-$TM_P" 2>/dev/null || kill -TERM "$TM_P" 2>/dev/null; sleep 5; kill -KILL -- "-$TM_P" 2>/dev/null || true ) & TM_W=$!
+  disown "$TM_W" 2>/dev/null || true   # no "Killed" notice when it is stopped
+  wait "$TM_P" || rc=$?
+  if group_alive "$TM_P"; then stop_group "$TM_P"; fi   # a child that ignored TERM ends too
+  kill_tree "$TM_W" KILL; TM_W=""
+  if [ -e "$TM_FLAG" ]; then say "squad timed: stopped after $secs s"; rc=124; fi
+  rm -f "$TM_FLAG"; TM_P=""
+  return "$rc"
+}
+
 watch_once() {
   local agents_json states="" i n state ev mark color=0 trouble task opens
   [ -t 1 ] && [ -z "${NO_COLOR:-}" ] && color=1
@@ -1730,7 +1856,13 @@ observe_tick() {
     rm -f "$dir/.deep"; sleep "${SQUAD_MODEL_WAIT:-2}"
   else
     loss=$(awk '/^Largest loss:/ { sub(/^Largest loss: */, ""); if (match($0, /^[0-9]+/)) print substr($0, 1, RLENGTH); exit }' "$dir/NOW.md" 2>/dev/null || true)
-    if [ -n "$OBSERVER_DEEP_MODEL" ] && [ -n "$(seat_model_arg "$i")" ] && [ "${loss:-0}" -gt 30 ] && [ "$(cat "$dir/.deep-for" 2>/dev/null)" != "$((pass - 1))" ]; then
+    # one deep pass per loss (observer S-49): the loss is known by the first time in its line (when it started)
+    local lkey lline; lline=$(grep -m1 '^Largest loss:' "$dir/NOW.md" 2>/dev/null || true)
+    lkey=$(printf '%s' "$lline" | grep -oE '[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?' | head -1 || true)
+    [ -n "$lkey" ] || lkey=$(printf '%s' "$lline" | sed 's/[0-9]//g' | cut -c1-60)   # no time: its cause, without the growing numbers
+    if [ -n "$OBSERVER_DEEP_MODEL" ] && [ -n "$(seat_model_arg "$i")" ] && [ "${loss:-0}" -gt 30 ] && [ "$(cat "$dir/.deep-for" 2>/dev/null)" != "$((pass - 1))" ] \
+       && { [ -z "$lkey" ] || ! grep -qxF -- "$lkey" "$dir/.deep-keys" 2>/dev/null; }; then
+      [ -z "$lkey" ] || echo "$lkey" >>"$dir/.deep-keys"
       herdr_team agent prompt "$name" "/model $OBSERVER_DEEP_MODEL" >/dev/null 2>&1 || true
       : >"$dir/.deep"; echo "$((pass - 1))" >"$dir/.deep-for"; sleep "${SQUAD_MODEL_WAIT:-2}"
       due="deep pass: pass $((pass - 1)) found a loss of $loss min; find its cause and the change that prevents it"
@@ -1752,6 +1884,7 @@ cmd_watch() {
   for a in "$@"; do case "$a" in --once) once=1 ;; --observe) observe=1 ;; esac; done
   while :; do
     watch_once
+    [ "$observe" = 1 ] || watchdog_tick || true
     [ "$observe" = 0 ] || observe_tick
     [ "$once" = 1 ] && return 0
     sleep 20
@@ -2801,6 +2934,7 @@ case "$cmd" in
   notify)  cmd_notify "$@" ;;
   consult) cmd_consult "$@" ;;
   plan)    cmd_plan "$@" ;;
+  timed)   cmd_timed "$@" ;;
   start-seat) cmd_start_seat "$@" ;;
   decisions) cmd_decisions "$@" ;;
   feedback) cmd_feedback "$@" ;;

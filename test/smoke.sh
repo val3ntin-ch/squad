@@ -306,6 +306,13 @@ ln -s "dev-c:999999:$(date +%s)" "$HV"/lock
 check "a lock whose owner process is gone is cleared" "$squad" heavy dev-a T-4 -- true
 check "the cleared lock is in the events" ev 'dev-c - HEAVY_STALE'
 check "a run over the time limit is stopped (exit 124) and frees the lock" sh -c "SQUAD_HEAVY_LIMIT_SECONDS=1 '$squad' heavy dev-a T-5 -- sleep 20; test \$? = 124 && test ! -L $HV/lock"
+printf 'echo one\nsh -c "exit 3"\n# a comment\necho three\n' >"$tmp/batch.cmds"
+brc=0; "$squad" heavy tester CANDIDATE-90 --batch "$tmp/batch.cmds" >/dev/null 2>&1 || brc=$?
+check "a batch runs every command of a candidate under one lock, each with its own start and end" sh -c "grep -c ' tester CANDIDATE-90 HEAVY_START .*step=[123]/3' .team/events.log | grep -qx 3 && grep -q ' tester CANDIDATE-90 HEAVY_END rc=3 .* step=2/3' .team/events.log && test $brc = 3"
+check "--limit gives a candidate step its own time limit" sh -c "'$squad' heavy tester CANDIDATE-91 --limit 30 -- true && grep -q ' tester CANDIDATE-91 HEAVY_START .*limit=30m' .team/events.log"
+check "--limit is refused for a dev" refuses "$squad" heavy dev-a T-6 --limit 30 -- true
+check "squad timed stops a command that hangs (exit 124)" sh -c "start=\$(date +%s); '$squad' timed 1 -- sleep 30 >/dev/null 2>&1; rc=\$?; test \$rc = 124 && test \$(( \$(date +%s) - start )) -lt 15"
+check "squad timed passes a command's own exit code" sh -c "'$squad' timed 10 -- sh -c 'exit 7'; test \$? = 7"
 # a stopped wrapper frees the lock only after its command is gone
 "$squad" heavy dev-a T-6 -- sh -c "sleep 31.4159" >/dev/null 2>&1 & hp=$!
 sleep 1.5; kill -TERM "$hp"; wait "$hp" 2>/dev/null || true
@@ -364,6 +371,33 @@ check "a queued task already sent by hand is dropped, not sent twice" sh -c "for
 sleep 2; rm -f "$tmp/state"; mkdir -p .team/seats; ln -sfn 999999 .team/seats/dev-a.dispatching
 check "a lock left by a killed queue is cleared, so the seat is not blocked" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 '$squad' dispatch dev-a T-134 2>&1 | grep -qv 'is busy' && test ! -L .team/seats/dev-a.dispatching"
 rm -f "$tmp/state"
+cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-160 CHANGES review=3\n' >>.team/events.log; reset_log
+"$squad" watch --once >/dev/null 2>&1
+check "the watchdog tells V! and the lead when the team stalls while a verdict waits" sh -c "grep -q ' lead - STALLED .*T-160 CHANGES' .team/events.log && grep -q 'notification show squad: proj4 stalled' '$MOCK_LOG' && grep -q 'agent prompt lead .*T-160 CHANGES' '$MOCK_LOG'"
+reset_log; "$squad" watch --once >/dev/null 2>&1
+check "it tells them once per stall" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
+cp "$tmp/events.keep" .team/events.log
+agents_on='{"result":{"agents":[{"name":"lead","agent_status":"blocked","pane_id":"w2:p1","agent":"claude"}]}}'
+reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your Fable limit · resets Nov 20 at 9am" "$squad" watch --once >/dev/null 2>&1
+check "a seat at its usage limit: V! gets a notification, events.log a LIMIT line" sh -c "grep -q ' lead - LIMIT resets Nov 20 at 9am' .team/events.log && grep -q 'notification show squad: lead at its usage limit' '$MOCK_LOG'"
+rm -f .team/observer/.watchdog/limit-lead; printf 'limit_fallback claude-opus-5-5\n' >>.team/team.conf
+reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your Fable limit · resets Nov 20 at 9am" "$squad" watch --once >/dev/null 2>&1
+check "with limit_fallback the seat switches to that model" sh -c "grep -q 'agent prompt lead /model claude-opus-5-5' '$MOCK_LOG' && grep -q ' lead - FALLBACK model=claude-opus-5-5' .team/events.log"
+sed -i.bak '/^limit_fallback /d' .team/team.conf; rm -f .team/team.conf.bak .team/observer/.watchdog/limit-lead
+agents_w='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1","agent":"claude"}]}}'
+reset_log; MOCK_AGENTS="$agents_w" MOCK_PANE_TEXT="reading a diff that says: You've hit your limit" "$squad" watch --once >/dev/null 2>&1
+check "a seat at work that only shows the words is left alone" refuses grep -q 'notification show squad: lead at its usage limit' "$MOCK_LOG"
+reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your limit · resets 3pm" "$squad" watch --once >/dev/null 2>&1
+check "the short wording 'hit your limit' is recognized" grep -q 'notification show squad: lead at its usage limit' "$MOCK_LOG"
+rm -f .team/observer/.watchdog/limit-lead
+cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-161 CHANGES review=3\n' >>.team/events.log; ln -s "tester@proj4:$$:$(date +%s):1200" "$HV/lock"
+reset_log; "$squad" watch --once >/dev/null 2>&1
+check "no stall alert while a heavy run holds the lock" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
+rm -f "$HV/lock"; cp "$tmp/events.keep" .team/events.log
+rm -rf .team/observer/.watchdog; printf '2026-01-01 09:00:00 lead T-170 APPROVE\n2026-01-01 09:05:00 tester CANDIDATE-70 DISPATCH round=1\n2026-01-01 09:40:00 tester CANDIDATE-70 FAIL\n' >>.team/events.log
+reset_log; "$squad" watch --once >/dev/null 2>&1
+check "an approved task whose candidate failed waits for the lead again (the stall alert names it)" grep -q ' lead - STALLED .*T-170 APPROVE' .team/events.log
+cp "$tmp/events.keep" .team/events.log
 rm -f "$tmp/state"
 check "a dev starts without a contract while the tester is in a run, and the contract is queued for the tester" sh -c "MOCK_DYNAMIC=1 MOCK_TESTER=working SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-102 >/dev/null 2>&1 && grep -q ' dev-a T-102 CONTRACT_DEFERRED' .team/events.log && grep -q ' tester T-102 DISPATCH_QUEUED contract=1' .team/events.log"
 agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
