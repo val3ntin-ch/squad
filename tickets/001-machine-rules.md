@@ -1,15 +1,15 @@
 # 001 · Machine rules in the script: lock, dispatch, ledger, Stop hook switch
-Status: Done — awaiting V!'s review (approved 13 Nov 2026)
+Status: Done — awaiting the owner's review (approved 13 Nov 2026)
 Size: M
 
 ## Goal
-Rules that the hive team had to improvise in SPEC (the lock, the dispatch, the dispatch
+Rules that the project A team had to improvise in SPEC (the lock, the dispatch, the dispatch
 log) move into `bin/squad`, so they always work the same way and cannot be skipped.
 
 ## Scope
 - In: `squad heavy`, `squad dispatch`, ledger lines in `events.log`, the Stop hook switch
   in team worktrees, the matching role and protocol text.
-- Out: the observer (003), QA changes (002), any change to V!'s global hook files.
+- Out: the observer (003), QA changes (002), any change to the owner's global hook files.
 
 ## Done when
 - [x] `squad heavy <seat> [<ID>] -- <cmd>` runs one heavy command at a time per team: first come, first
@@ -42,7 +42,7 @@ log) move into `bin/squad`, so they always work the same way and cannot be skipp
 - smoke: `.agents-verify-off` present and excluded with `verify_hook off`; absent without.
 
 ## Assumptions & open questions
-1. **Open decision for V!:** turn off your global Stop/verify hook inside team worktrees?
+1. **Open decision for the owner:** turn off your global Stop/verify hook inside team worktrees?
    Recommended: yes, as an opt-in line `verify_hook off` that `squad init` writes. Reason:
    OBSERVER #7 — hidden whole-repo runs outside the lock, cancelled at 300 s. The tester's
    full run stays the gate.

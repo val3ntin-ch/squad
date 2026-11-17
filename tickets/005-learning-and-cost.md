@@ -1,14 +1,14 @@
 # 005 · Learning and cost: compound step, converge, cost log, rule budget
-Status: Done — awaiting V!'s review (approved 13 Nov 2026)
+Status: Done — awaiting the owner's review (approved 13 Nov 2026)
 Size: S
 
 ## Goal
-Each run makes the next one better and cheaper, and V! can see what a run cost.
+Each run makes the next one better and cheaper, and the owner can see what a run cost.
 
 ## Scope
 - In: compound step and converge pass in the lead's finishing steps; per-task cost in the
   Cost tab; a rule that each new protocol rule names the loss it removes.
-- Out: automatic edits to squad itself (the lead proposes; V! approves).
+- Out: automatic edits to squad itself (the lead proposes; the owner approves).
 
 ## Done when
 - [x] Lead "Finishing": a converge pass (compare the integration branch with SPEC and every

@@ -1,5 +1,5 @@
 # 002 · QA and review: GPT reviewer, contract first, five result states, done gate
-Status: Done — awaiting V!'s review (approved 13 Nov 2026)
+Status: Done — awaiting the owner's review (approved 13 Nov 2026)
 Size: M
 
 ## Goal
@@ -26,7 +26,7 @@ refuses work that is not proven.
       of the brief's acceptance table, or when the brief's check command fails.
 - [x] Role text: a review writes one finding per class with all places; re-review reads only
       the fix diff; round 4+ goes to a fresh dev with a higher model (`escalate_model` in
-      team.conf); after the cap the task goes to READY.md as "Open decision for V!".
+      team.conf); after the cap the task goes to READY.md as "Open decision for the owner".
 - [x] `bash test/smoke.sh` and `shellcheck` pass.
 
 ## Plan
@@ -43,9 +43,9 @@ refuses work that is not proven.
 - smoke: default preset parses and has a codex reviewer.
 
 ## Assumptions & open questions
-1. **Open decision for V!:** the GPT model name. Fixtures say `gpt-6.1-sol`, not verified on
+1. **Open decision for the owner:** the GPT model name. Fixtures say `gpt-6.1-sol`, not verified on
    your Codex 0.161.0. I will read `codex` help and `~/.codex/config.toml` and propose it.
-2. **Open decision for V!:** does GPT replace the lead's review (today's reviewer seat) or
+2. **Open decision for the owner:** does GPT replace the lead's review (today's reviewer seat) or
    come before it (both)? Recommended: both — GPT first (cheap, independent), the lead
    adjudicates and does the visual check.
 3. Assumption: running the check command in `squad done` is a "light" run; a brief can mark
