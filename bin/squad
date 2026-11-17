@@ -1697,9 +1697,12 @@ watchdog_tick() {
        && ! jq -e '.result.agents[] | select(.agent_status == "working")' <<<"$agents" >/dev/null 2>&1; then
       # waiting for the lead: a task whose newest event is a verdict, a DONE or a test result, with no
       # queued dispatch after it, and (for an approved task) no candidate run started after it
-      wait=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ { if ($4 ~ /^CANDIDATE-/ && $5 == "DISPATCH") cand = NR
+      wait=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ {
+          if ($4 ~ /^CANDIDATE-/ && $5 == "DISPATCH") { open[$4] = NR }
+          if ($4 ~ /^CANDIDATE-/ && ($5 == "PASS" || $5 == "FAIL")) { delete open[$4]; ended = NR }
           if ($4 ~ /^T-/ && $5 ~ /^(DISPATCH|DISPATCH_QUEUED|DONE|PASS|FAIL|APPROVE|CHANGES|MERGE|BLOCKED)$/) { e[$4] = $5; at[$4] = NR } }
-        END { for (t in e) if (e[t] ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES)$/ && !(e[t] == "APPROVE" && cand > at[t])) printf "%s %s ", t, e[t] }' "$TEAM_DIR/events.log" 2>/dev/null)
+        END { held = 0; for (c in open) if (open[c] > held) held = open[c]
+          for (t in e) if (e[t] ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES)$/ && !(e[t] == "APPROVE" && held > at[t])) printf "%s %s ", t, e[t] }' "$TEAM_DIR/events.log" 2>/dev/null)
       key="$mk/stall-$last"
       if [ -n "$wait" ] && [ ! -e "$key" ]; then
         : >"$key"
@@ -1722,15 +1725,18 @@ watchdog_tick() {
       [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] || v_notify "squad: $name at its usage limit" "${resets:-usage limit}. It waits for you: answer its pane, or set limit_fallback <model> in team.conf."
     fi
     if [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] && [ ! -e "$mk/fallback-$name" ]; then
-      : >"$mk/fallback-$name"
       herdr_team agent send-keys "$name" Escape >/dev/null 2>&1 || true; sleep 2
-      herdr_team agent prompt "$name" "/model $LIMIT_FALLBACK" >/dev/null 2>&1 || true
-      log_event "$name" - FALLBACK "model=$LIMIT_FALLBACK"
-      v_notify "squad: $name at its usage limit" "${resets:-usage limit}; switched to $LIMIT_FALLBACK (limit_fallback in team.conf). Set it back after the reset."
+      if herdr_team agent prompt "$name" "/model $LIMIT_FALLBACK" >/dev/null 2>&1; then
+        : >"$mk/fallback-$name"
+        log_event "$name" - FALLBACK "model=$LIMIT_FALLBACK"
+        v_notify "squad: $name at its usage limit" "${resets:-usage limit}; switched to $LIMIT_FALLBACK (limit_fallback in team.conf). Set it back after the reset."
+      else
+        v_notify "squad: $name at its usage limit" "${resets:-usage limit}; the switch to $LIMIT_FALLBACK did not go through; squad tries again."
+      fi
     fi
   done
   # 3. Claude's week at 80 %: once a day
-  p7=$(usage_claude | jq -r '.p7 // empty' 2>/dev/null | cut -d. -f1 || true)
+  p7=$(usage_claude | jq -r --argjson now "$now" 'if (.r7 // 0) > 0 and (.r7 // 0) < $now then empty else (.p7 // empty) end' 2>/dev/null | cut -d. -f1 || true)   # a window past its reset is 0 %
   if [ -n "$p7" ] && [ "$p7" -ge 80 ] 2>/dev/null && [ ! -e "$mk/week-$(date +%Y%m%d)" ]; then
     : >"$mk/week-$(date +%Y%m%d)"
     v_notify "squad: Claude week at $p7 %" "The 7-day Claude usage is at $p7 %. Consider limit_fallback in team.conf before a seat stops."
@@ -1744,6 +1750,7 @@ cmd_timed() { # <seconds> -- <command...>: run it, stop it (its whole process gr
   [[ "$secs" =~ ^[1-9][0-9]{0,4}$ ]] || die "usage: squad timed <seconds> -- <command...>"
   shift; [ "${1:-}" = -- ] && shift
   [ $# -gt 0 ] || die "usage: squad timed <seconds> -- <command...>"
+  command -v perl >/dev/null 2>&1 || die "squad timed needs perl (it gives the command its own process group, so all of it can be stopped)."
   TM_FLAG=$(mktemp); rm -f "$TM_FLAG"
   # globals: the trap runs after this function's locals are gone
   trap '[ -z "$TM_P" ] || ! group_alive "$TM_P" || stop_group "$TM_P"; [ -z "$TM_W" ] || kill_tree "$TM_W" KILL; [ -z "$TM_FLAG" ] || rm -f "$TM_FLAG"' EXIT
@@ -1854,8 +1861,8 @@ observe_tick() {
     lkey=$(printf '%s' "$lline" | grep -oE '[0-9]{1,2}:[0-9]{2}(:[0-9]{2})?' | head -1 || true)
     [ -n "$lkey" ] || lkey=$(printf '%s' "$lline" | sed 's/[0-9]//g' | cut -c1-60)   # no time: its cause, without the growing numbers
     if [ -n "$OBSERVER_DEEP_MODEL" ] && [ -n "$(seat_model_arg "$i")" ] && [ "${loss:-0}" -gt 30 ] && [ "$(cat "$dir/.deep-for" 2>/dev/null)" != "$((pass - 1))" ] \
-       && { [ -z "$lkey" ] || [ "$(cat "$dir/.deep-key" 2>/dev/null)" != "$lkey" ]; }; then
-      [ -z "$lkey" ] || echo "$lkey" >"$dir/.deep-key"
+       && { [ -z "$lkey" ] || ! grep -qxF -- "$lkey" "$dir/.deep-keys" 2>/dev/null; }; then
+      [ -z "$lkey" ] || echo "$lkey" >>"$dir/.deep-keys"
       herdr_team agent prompt "$name" "/model $OBSERVER_DEEP_MODEL" >/dev/null 2>&1 || true
       : >"$dir/.deep"; echo "$((pass - 1))" >"$dir/.deep-for"; sleep "${SQUAD_MODEL_WAIT:-2}"
       due="deep pass: pass $((pass - 1)) found a loss of $loss min; find its cause and the change that prevents it"

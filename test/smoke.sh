@@ -394,6 +394,10 @@ cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-16
 reset_log; "$squad" watch --once >/dev/null 2>&1
 check "no stall alert while a heavy run holds the lock" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
 rm -f "$HV/lock"; cp "$tmp/events.keep" .team/events.log
+rm -rf .team/observer/.watchdog; printf '2026-01-01 09:00:00 lead T-170 APPROVE\n2026-01-01 09:05:00 tester CANDIDATE-70 DISPATCH round=1\n2026-01-01 09:40:00 tester CANDIDATE-70 FAIL\n' >>.team/events.log
+reset_log; "$squad" watch --once >/dev/null 2>&1
+check "an approved task whose candidate failed waits for the lead again (the stall alert names it)" grep -q ' lead - STALLED .*T-170 APPROVE' .team/events.log
+cp "$tmp/events.keep" .team/events.log
 rm -f "$tmp/state"
 check "a dev starts without a contract while the tester is in a run, and the contract is queued for the tester" sh -c "MOCK_DYNAMIC=1 MOCK_TESTER=working SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-102 >/dev/null 2>&1 && grep -q ' dev-a T-102 CONTRACT_DEFERRED' .team/events.log && grep -q ' tester T-102 DISPATCH_QUEUED contract=1' .team/events.log"
 agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
