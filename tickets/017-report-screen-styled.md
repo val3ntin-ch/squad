@@ -19,7 +19,7 @@ The owner, 17 Nov 2026: "should be more styled … to see easy what it's working
   - OBSERVER: only the newest pass; repeated identical passes fold into one line ("the same for 8 passes").
   - TASKS: the status in colour (merged green, open blue); a wait of 60 min or more in orange; a FAIL in red.
   - EVENTS: time, seat in its role colour, the event in a state colour; the observer's routine passes hidden.
-  - Lines are cut at the pane width with "…", never inside a letter.
+  - Free text (titles, events, observer lines) is cut at the pane width with "…", never inside a letter. The fixed columns need about 70 columns; a narrower pane wraps them.
 - Out: the HTML page (`o`), the sidebar, a new screen or tab of squad's own (the owner reverted those on
   16 Nov 2026), mouse or keyboard navigation.
 

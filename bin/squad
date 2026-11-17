@@ -1490,7 +1490,7 @@ report_text() { # the live view: what each seat does now, what waits for the own
     title=""; case "$task" in T-*) title=$(task_title "$task") ;; esac
     case "$st" in working) icon="●"; ic=$GRN ;; blocked) icon="◆"; ic=$RED; phase="NEEDS YOU" ;; idle|done) icon="○"; ic=$SUB ;; *) icon="·"; ic=$SUB; phase=off ;; esac
     if [ "$role" = observer ]; then task=""; title=""; when=""; case "$phase" in "NEEDS YOU"|off) ;; *) phase=WATCHING ;; esac; fi
-    if [ "$role" = planner ] && [ -n "$(plan_state)" ]; then local pl; pl=$(plan_state); task=${pl%%|*}; pl=${pl#*|}; case "$phase" in "NEEDS YOU"|off) ;; *) phase=${pl%%|*} ;; esac; title=${pl#*|}; fi
+    if [ "$role" = planner ] && [ -n "$(plan_state)" ]; then local pl; pl=$(plan_state); task=${pl%%|*}; pl=${pl#*|}; case "$phase" in "NEEDS YOU"|off) ;; *) phase=${pl%%|*} ;; esac; pl=${pl#*|}; when=${pl%%|*}; title=${pl#*|}; fi
     [ -n "$phase" ] || phase=idle
     rc=$(role_c "$role"); pc=$(phase_c "$phase")
     printf '  %s%s%s %s%-9s%s %s%-8s%s %s%-15s%s %s%-14s%s %s%s%s %s%s%s\n' "$ic" "$icon" "$R" "$B$rc" "$name" "$R" "$rc$D" "$role" "$R" "$pc$B" "$phase" "$R" \
@@ -1780,18 +1780,20 @@ seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the 
 }
 
 seat_follow() { # <task> <phase> <role> <line of the seat's step>: a finished seat follows what happened to its task later
-  local later; case "$2" in WAITS*|DONE|TEST*|APPROVED|CHANGES*|CHECKS*|CONTRACT*) ;; *) printf '%s' "$2"; return 0 ;; esac
+  local later; case "$2" in WAITS*|DONE|"TEST PASSED"|"TEST FAILED"|APPROVED|"CHANGES ASKED"|"CHECKS PASSED"|"CHECKS FAILED"|"CONTRACT WRITTEN") ;; *) printf '%s' "$2"; return 0 ;; esac   # an active step (TESTING…) stays
   later=$(awk -v t="$1" -v at="${4:-0}" 'NR > at { if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { k = $4; v = $5 } else { k = $3; v = $4 } } NR > at && k == t && v ~ /^(MERGE|PASS|FAIL|APPROVE|CHANGES|DISPATCH)$/ { e = v } END { print e }' "$TEAM_DIR/events.log" 2>/dev/null)
   case "$later" in MERGE) printf MERGED ;; PASS) [ "$3" = tester ] && printf '%s' "$2" || printf 'TEST PASSED' ;; FAIL) [ "$3" = tester ] && printf '%s' "$2" || printf 'TEST FAILED' ;;
     APPROVE) [ "$3" = reviewer ] && printf '%s' "$2" || printf APPROVED ;; CHANGES) [ "$3" = reviewer ] && printf '%s' "$2" || printf 'CHANGES ASKED' ;; *) printf '%s' "$2" ;; esac
 }
 
-plan_state() { # -> "TASK|PHASE|GOAL" of the newest plan, or nothing
-  local pl; pl=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 ~ /^PLAN_/ { if ($5 == "PLAN_START") { p = $4; g = $0; sub(/^([^ ]+ ){5}/, "", g) } last = $5 } END { print p "|" last "|" g }' "$TEAM_DIR/events.log" 2>/dev/null || true)
+plan_state() { # -> "TASK|PHASE|WHEN|GOAL" of the newest plan (its own steps only), or nothing
+  local pl; pl=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 == "PLAN_START" { p = $4; g = $0; sub(/^([^ ]+ ){5}/, "", g); last = $5; w = $1 " " $2; next }
+    $1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 ~ /^PLAN_/ && p != "" && $4 == p { last = $5; w = $1 " " $2 }
+    END { print p "|" last "|" w "|" g }' "$TEAM_DIR/events.log" 2>/dev/null || true)
   [ -n "${pl%%|*}" ] || return 0
   local t=${pl%%|*} ph; [ "$t" != - ] || t=PLAN; pl=${pl#*|}
   case "${pl%%|*}" in PLAN_APPROVED) ph="PLAN APPROVED" ;; PLAN_CRITIQUE) ph="IN CRITIQUE" ;; *) ph=PLANNING ;; esac
-  printf '%s|%s|%s' "$t" "$ph" "${pl#*|}"
+  pl=${pl#*|}; printf '%s|%s|%s|%s' "$t" "$ph" "$(ago_min "${pl%%|*}")" "${pl#*|}"
 }
 
 clip() { local LC_ALL=en_US.UTF-8 x=$2; printf '%s' "${x:0:$1}"; }   # <n> <text>: its first n characters (never half a letter)
@@ -1826,7 +1828,7 @@ ui_sync() { # tell herdr what each seat does; quiet, best effort, only what chan
       observer) phase=WATCHING; task="loss"; when=""
                 title=$(clip 60 "$(grep -m1 '^Largest loss:' "$TEAM_DIR/observer/NOW.md" 2>/dev/null | sed 's/^Largest loss: *//' || true)") ;;
       planner) local pl; pl=$(plan_state)
-               if [ -n "$pl" ]; then task=${pl%%|*}; pl=${pl#*|}; phase=${pl%%|*}; title=$(clip 60 "${pl#*|}"); fi ;;
+               if [ -n "$pl" ]; then task=${pl%%|*}; pl=${pl#*|}; phase=${pl%%|*}; pl=${pl#*|}; when=${pl%%|*}; title=$(clip 60 "${pl#*|}"); fi ;;
     esac
     [ -n "$phase" ] || phase=idle
     local meta="${rnd:+r$rnd · }${when}"
