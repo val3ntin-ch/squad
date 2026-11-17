@@ -33,6 +33,7 @@ case "$1 $2" in
                   if [ "$st" = working ]; then printf '✻ Working… (esc to interrupt)\n❯ \n'; else printf 'Claude Code\n❯ \n'; fi
                 fi ;;
   "agent send-keys") echo '{}' ;;
+  "config check") if [ "${MOCK_BAD_CONFIG:-}" = 1 ]; then echo '{"error":"bad config"}'; exit 1; fi; echo '{}' ;;
   "notification show") if [ -n "${MOCK_NOTIFY:-}" ]; then echo "$MOCK_NOTIFY"; else echo '{}'; fi ;;
   "session list") echo "${MOCK_SESSIONS:-{\}}" ;;
   "workspace list") if [ -n "${MOCK_WS:-}" ]; then echo "$MOCK_WS"; else echo '{"result":{"workspaces":[]}}'; fi ;;
@@ -1006,9 +1007,28 @@ for why in disabled rate_limited; do
   check "016: a '$why' answer from herdr is in events.log" grep -q " NOTIFY_NOT_SHOWN $why: squad: proj4 stalled" .team/events.log
   cp "$tmp/events.keep" .team/events.log
 done
+printf '[ui.toast]\ndelivery = "herdr"\n' >"$cfg"
+check "016: ui-setup refuses a config herdr does not accept" refuses env MOCK_BAD_CONFIG=1 "$squad" ui-setup
+check "016: and puts the owner's config back" test "$(cat "$cfg")" = "$(printf '[ui.toast]\ndelivery = "herdr"')"
+# the sorted Agents list goes over herdr's socket: a small stand-in socket logs each call
+sk=$(mktemp -u /tmp/sqXXXXXX); python3 - "$sk" "$MOCK_LOG" <<'PY2' &
+import json, os, socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); s.bind(sys.argv[1]); s.listen(5); s.settimeout(60)
+while True:
+    try: c, _ = s.accept()
+    except OSError: break
+    q = json.loads(c.makefile().readline())
+    open(sys.argv[2], "a").write("socket %s %s\n" % (q["method"], json.dumps(q["params"])))
+    c.sendall((json.dumps({"id": q["id"], "result": {}}) + "\n").encode()); c.close()
+PY2
+skpid=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do [ -S "$sk" ] && break; sleep 0.3; done
+echo "$sk" >.team/herdr.sock; reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
+check "016: a new strip sets the Agents list: squad's seats, who needs the owner first" grep -q 'socket agent.view.set .*"exists".*"role".*"attention"' "$MOCK_LOG"
 echo "$PWD/.team" >"$HOME/.config/squad/teams/proj4"
 MOCK_WS='{"result":{"workspaces":[{"workspace_id":"w2","label":"proj4 team"}]}}' "$squad" down >/dev/null 2>&1
 check "016: down takes the team out of the tab bar line" test ! -e "$HOME/.config/squad/teams/proj4"
+check "016: down clears the Agents list" grep -q 'socket agent.view.clear' "$MOCK_LOG"
+kill "$skpid" 2>/dev/null || true; rm -f "$sk" .team/herdr.sock
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -1,5 +1,5 @@
 # 016 · herdr's own Agents sidebar shows the squad: role, ticket, phase, and who needs the owner
-Status: Approved (the owner, 17 Nov 2026: "ok"; then "improve all that can be improved through herdr's API" and "go with now")
+Status: Done — awaiting PR review (approved by the owner on 17 Nov 2026)
 Size: M (≤ 1 day)
 
 ## Goal
@@ -63,3 +63,22 @@ herdr 0.9.3 (report: reports/Herdr agent UI for squad.md); squad's alerts are ch
 - Fact: one Agents view per herdr server; a second team in the same herdr session would replace it.
 - Not proven: herdr reloading new sidebar rows without a restart (`herdr server reload-config` applied the
   toast setting live; rows are tested in the preview).
+
+## Verification
+Independent verifier on 9421d20 (fresh agent, read-only): **READY**. The two test gaps it named are closed in the next commit (415 passed, 0 failed, `/bin/bash` 3.2; shellcheck clean).
+
+| Item | Result | Evidence |
+|---|---|---|
+| Seat metadata (name, title, phase, NEEDS YOU, tokens) | PASS | `ui_sync`; smoke "016: a seat's sidebar entry…", phase follows the task, older round, verdict |
+| No `report-agent` on real seats | PASS | not in bin/squad |
+| Team progress on the workspace entry | PASS | smoke "016: the team's progress…" |
+| `squad ui-setup` | PASS | smoke: written once, settings kept, first backup, `[ui]` refused, config restored when herdr refuses it |
+| `squad herdr-line` | PASS | smoke: squad's seats only, gone team leaves, team at rest left out, `down` removes it |
+| `agent.view.set` / `clear` over the socket | PASS | smoke with a stand-in socket: set at a new strip, cleared at `down` |
+| `v_notify` answers | PASS | smoke: `disabled`, `rate_limited`, no answer; one line each |
+| Out items | PASS | diff touches only bin/squad, test/smoke.sh and this ticket |
+| Done 1 (live preview) | PASS | the owner saw it on 17 Nov 2026 ("looks great") |
+| Done 2–6 | PASS | smoke 415/0, shellcheck clean, bash 3.2 |
+| Hard rules | PASS | no secrets, no personal data |
+
+Not proven on real herdr: new sidebar rows without a herdr restart (checked at hive roll-out).
