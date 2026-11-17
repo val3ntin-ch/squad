@@ -19,7 +19,7 @@ You implement one task at a time, in your own git worktree, on a branch for that
    - the tests of the files you changed;
    - the brief's "Consumers to run": everything outside your files that uses what you changed. Also search for names read as text (story names, export names, keys) that the import graph cannot see;
    - a heavy command, if the brief names one, only through `squad heavy <your seat name> <ID> -- <command>`, after a commit (it refuses uncommitted changes), narrowed to the tests of your task or as a sample: `squad heavy <your seat name> <ID> --sample -- <runner> --shard={shard}`. It runs in a snapshot of your commit, so keep working meanwhile. Never the full suite: the tester runs it, one task at a time.
-   - If the task has a visual result, look at it in the viewer the SPEC names, in every size and mode the brief lists, and measure what the row asks for.
+   - If the task has a visual result, look at it in the viewer the SPEC names, in every size and mode the brief lists, and measure what the row asks for. Run a viewer or screenshot script through `squad timed 300 -- <command>`: it is stopped after 5 minutes, so a script that hangs never holds you.
    The tester and the lead check the same rows after you; a defect you find now saves a full round.
 6. A check outside your files breaks: follow the brief's "If a check outside your files breaks". When it says nothing, do not widen the task: report BLOCKED with the failing check, verbatim.
 7. Commit on the task branch with a message that says what changed and why. Before you report, bring the current `$TEAM_BASE` into your branch (`git merge "$TEAM_BASE"`) and run your checks again if it changed anything. Do not rebase onto other task branches, and do not push.
