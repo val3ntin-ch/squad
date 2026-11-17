@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: FSL-1.1-MIT
 # squad - run a team of coding agents on a repository, inside herdr.
 # https://herdr.dev is the terminal runtime; squad sets up the team on top of it.
 

@@ -265,4 +265,11 @@ Run `bash test/smoke.sh` and `shellcheck -S warning bin/squad install.sh test/sm
 
 ## License
 
-MIT
+squad is released under the **Functional Source License, Version 1.1, MIT Future License** ([FSL-1.1-MIT](LICENSE), part of [Fair Source](https://fair.io/)):
+
+- **Free to use** for any purpose — your own projects, your company's work, teaching, research — and to read, change and share.
+- **Not allowed:** offering squad, or a product or service built from it, in competition with squad.
+- **Each version becomes MIT** two years after its release.
+- **Versions released before 17 Nov 2026** stay under the MIT License they were released with.
+
+The exact terms are in [LICENSE](LICENSE).
