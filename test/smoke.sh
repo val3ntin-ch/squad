@@ -988,6 +988,9 @@ seats_c='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4"
 reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_c "$squad" watch --once >/dev/null 2>&1
 check "016: a dispatch that did not start shows NOT STARTED, not CODING" grep -q 'w2:p4 .*--token phase=NOT STARTED' "$MOCK_LOG"
 check "016: a blocked squad seat counts as one that needs the owner" grep -q 'workspace report-metadata w2 .*--token needs=1 need you' "$MOCK_LOG"
+printf '%s dev-b T-876 DISPATCH round=1\n%s dev-b T-877 DISPATCH_FAILED queue timeout\n' "$(now)" "$(now)" >>.team/events.log
+reset_log; MOCK_AGENTS=$seats_c "$squad" watch --once >/dev/null 2>&1
+check "016: a queued task that times out does not hide the task the seat runs" grep -q 'w2:p4 .*--token ticket=T-876 .*--token phase=CODING' "$MOCK_LOG"
 # the tab bar line: only squad's seats count; a team that is gone leaves the list
 rm -f "$HOME/.config/squad/teams"/*
 echo "$PWD/.team" >"$HOME/.config/squad/teams/a"; echo "$tmp/gone/.team" >"$HOME/.config/squad/teams/b"; echo /x/sock >.team/herdr.sock

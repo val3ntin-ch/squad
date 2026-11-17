@@ -1695,7 +1695,8 @@ task_title() { awk -F'|' -v id="$1" '{ t = $2; gsub(/^ +| +$/, "", t) } t == id 
 
 seat_phase() { # <seat> <role> -> "TASK|PHASE|EPOCH" from its newest event, the phase in plain words
   awk -v s="$1" -v r="$2" '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { a = $3; k = $4; v = $5; ww = $1 " " $2 } else { a = $2; k = $3; v = $4; ww = "" } }   # an older log has no date
-    a == s && k != "-" && v ~ /^(DISPATCH|DISPATCH_FAILED|DISPATCH_NOT_STARTED|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = k; e = v; d = $0; w = ww; at = NR }
+    a == s && k != "-" && v ~ /^(DISPATCH_FAILED|DISPATCH_NOT_STARTED)$/ && k == t && e == "DISPATCH" { e = v; d = $0; w = ww; at = NR; next }   # only the attempt it ends: a queued task that times out leaves the running one
+    a == s && k != "-" && v ~ /^(DISPATCH|DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|HEAVY_START|HEAVY_END|MERGE|CONTRACT)$/ { t = k; e = v; d = $0; w = ww; at = NR }
     END { if (t == "") { print "|||"; exit }
       if (e == "DISPATCH") {
         if (r == "dev") p = "CODING"
