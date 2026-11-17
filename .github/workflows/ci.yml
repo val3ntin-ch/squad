@@ -16,7 +16,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
+    timeout-minutes: 20   # macOS runs the whole suite twice (bash 5 and bash 3.2): about 10 min
     steps:
       - uses: actions/checkout@v4
       - name: Tools
