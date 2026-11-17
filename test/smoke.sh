@@ -384,6 +384,16 @@ rm -f .team/observer/.watchdog/limit-lead; printf 'limit_fallback claude-opus-5-
 reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your Fable limit · resets Nov 20 at 9am" "$squad" watch --once >/dev/null 2>&1
 check "with limit_fallback the seat switches to that model" sh -c "grep -q 'agent prompt lead /model claude-opus-5-5' '$MOCK_LOG' && grep -q ' lead - FALLBACK model=claude-opus-5-5' .team/events.log"
 sed -i.bak '/^limit_fallback /d' .team/team.conf; rm -f .team/team.conf.bak .team/observer/.watchdog/limit-lead
+agents_w='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1","agent":"claude"}]}}'
+reset_log; MOCK_AGENTS="$agents_w" MOCK_PANE_TEXT="reading a diff that says: You've hit your limit" "$squad" watch --once >/dev/null 2>&1
+check "a seat at work that only shows the words is left alone" refuses grep -q 'notification show squad: lead at its usage limit' "$MOCK_LOG"
+reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your limit · resets 3pm" "$squad" watch --once >/dev/null 2>&1
+check "the short wording 'hit your limit' is recognized" grep -q 'notification show squad: lead at its usage limit' "$MOCK_LOG"
+rm -f .team/observer/.watchdog/limit-lead
+cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-161 CHANGES review=3\n' >>.team/events.log; ln -s "tester@proj4:$$:$(date +%s):1200" "$HV/lock"
+reset_log; "$squad" watch --once >/dev/null 2>&1
+check "no stall alert while a heavy run holds the lock" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
+rm -f "$HV/lock"; cp "$tmp/events.keep" .team/events.log
 rm -f "$tmp/state"
 check "a dev starts without a contract while the tester is in a run, and the contract is queued for the tester" sh -c "MOCK_DYNAMIC=1 MOCK_TESTER=working SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-102 >/dev/null 2>&1 && grep -q ' dev-a T-102 CONTRACT_DEFERRED' .team/events.log && grep -q ' tester T-102 DISPATCH_QUEUED contract=1' .team/events.log"
 agents_ti='{"result":{"agents":[{"name":"tester","agent_status":"idle","pane_id":"w2:p9","agent":"claude"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p3","agent":"claude"}]}}'
