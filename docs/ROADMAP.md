@@ -1,6 +1,6 @@
 # Roadmap
 
-## Later: one container per seat (decided by V!, 13 Nov 2026)
+## Later: one container per seat (decided by the owner, 13 Nov 2026)
 
 **When:** once a second, more powerful machine is available.
 
@@ -27,5 +27,5 @@ shared resource such as a browser farm.
 
 Two repositories with the same folder name (for example `~/a/app` and `~/b/app`) get the same
 herdr session name and workspace label (CodeRabbit, PR #10). Not a risk today: every repository
-of V! has its own name. Fix when needed: `session <name>` in team.conf, or a short hash of the
-path in the default name (that would rename existing sessions such as `hive`).
+of the owner has its own name. Fix when needed: `session <name>` in team.conf, or a short hash of the
+path in the default name (that would rename existing sessions such as `project A`).

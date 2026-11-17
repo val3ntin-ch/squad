@@ -24,5 +24,5 @@ Status: draft
 ## Tasks
 - (each task, and the claims F-<n> it needs)
 
-## Open decisions for V!
+## Open decisions for the owner
 - (the choice — the options with their cost — the recommendation)

@@ -58,7 +58,7 @@ Usage:
   squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
   squad plan "<goal>" [--feature]   the planner researches and proves the plan before any work
   squad timed <seconds> -- <cmd>    run a command and stop it after the seconds (a viewer or screenshot script)
-  squad plan --check|--critique|--approve [F-n]   check it, let GPT critique it, approve it (V! only)
+  squad plan --check|--critique|--approve [F-n]   check it, let GPT critique it, approve it (the owner only)
   squad decisions [--check]         list the decisions; --check: every field filled
   squad feedback "<text>"           your feedback after testing what can be seen: saved, logged, sent to the lead
 
@@ -96,13 +96,14 @@ SAMPLE_PERCENT=10       # squad heavy --sample: the share of the tests one dev r
 HEAVY_SILENT_MINUTES=5  # a heavy run with no new output and no CPU for this long is hung (0: off)
 IDLE_MINUTES=5          # a dev idle with no task for this long: the lead is told once (0: off)
 OWNER_MODE=all          # visual: the human tests what can be seen and gives feedback; the lead decides the rest
-VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (V!'s global Stop hook skips them)
+VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (the owner's global Stop hook skips them)
 STALL_MINUTES=15        # a seat with an open task and no work for this long is stalled
 OBSERVE_MINUTES=20      # the longest gap between two observer passes
 ESCALATE_MODEL=""       # model for a fix round from round 4 on (claude seats)
 OBSERVER_DEEP_MODEL=""  # model for an observer pass that found a large loss
-LIMIT_FALLBACK=""       # team.conf "limit_fallback <model>": a Claude seat at its usage limit switches to it (V!'s choice)
-STALL_ALERT_MINUTES=30  # team.conf "stall_alert_minutes": no event this long while work waits for the lead: tell V!
+OWNER_NAME="the owner"  # team.conf "owner_name <name>": how the agents and messages name the human who owns the project
+LIMIT_FALLBACK=""       # team.conf "limit_fallback <model>": a Claude seat at its usage limit switches to it (the owner's choice)
+STALL_ALERT_MINUTES=30  # team.conf "stall_alert_minutes": no event this long while work waits for the lead: tell the owner
 CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
 SESSION_NAME=""         # herdr session of this team (default: the repository's name)
 
@@ -137,6 +138,7 @@ load_conf() {
                       SAMPLE_PERCENT=$rest ;;
       escalate_model) ESCALATE_MODEL=$rest ;;
       observer_deep_model) OBSERVER_DEEP_MODEL=$rest ;;
+      owner_name) [ -n "$rest" ] || die "team.conf line $line_no: 'owner_name' needs a name."; OWNER_NAME=$rest ;;
       limit_fallback) LIMIT_FALLBACK=$rest ;;
       stall_alert_minutes) [[ "$rest" =~ ^[1-9][0-9]{0,2}$ ]] || die "team.conf line $line_no: 'stall_alert_minutes' needs minutes (1 to 999)."; STALL_ALERT_MINUTES=$((10#$rest)) ;;
       consult) [ -n "$rest" ] || die "team.conf line $line_no: 'consult' needs a command, e.g. consult codex --search exec -m gpt-6.1-sol"
@@ -292,7 +294,7 @@ render() { # <template> <dest>
   local sq="$SQUAD_HOME/bin/squad" k=0 sub
   local -a pairs=(
     "\$TEAM_DIR" "$TEAM_DIR"  "\$TEAM_BASE" "$TEAM_BASE"  "\$REVIEW_ROUNDS" "$REVIEW_ROUNDS"
-    "\$HEAVY_TIMEOUT" "$HEAVY_TIMEOUT"  "\$STALL_MINUTES" "$STALL_MINUTES"
+    "\$HEAVY_TIMEOUT" "$HEAVY_TIMEOUT"  "\$STALL_MINUTES" "$STALL_MINUTES"  "\$OWNER" "$OWNER_NAME"
     "herdr agent " "$sq herdr agent ")
   # every squad command an agent runs: the absolute path, so one permission rule covers it
   for sub in "done" heavy dispatch merge consult notify decisions report; do pairs+=("squad $sub " "$sq $sub "); done
@@ -1042,7 +1044,7 @@ cmd_consult() {
 # ---- plan (ticket 012): research and proof before any work ------------------------
 # .team/PLAN.md (the project) and .team/plan/F-<n>.md (a feature). A plan passes the check only when
 # every claim has an official source and a proof file, no claim is unproven, and every critique item
-# has an answer. squad dispatch starts no task before V! approves its plan.
+# has an answer. squad dispatch starts no task before the owner approves its plan.
 plan_file() { # [F-<n>] -> the plan's path
   if [ -n "${1:-}" ]; then echo "$TEAM_DIR/plan/$1.md"; else echo "$TEAM_DIR/PLAN.md"; fi
 }
@@ -1094,7 +1096,7 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
   return 0
 }
 
-# V!'s approval: the plan's sha256, kept outside the team folder (agents write there); any later edit voids it
+# the owner's approval: the plan's sha256, kept outside the team folder (agents write there); any later edit voids it
 plan_seal() { echo "$HOME/.config/squad/approvals/$SESSION_NAME-$(basename "$1").sha256"; }   # fixed: not under the team folder, not chosen by a variable
 plan_hash() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 plan_approved() { local s; s=$(plan_seal "$1"); [ -f "$1" ] && [ -f "$s" ] && [ "$(cat "$s")" = "$(plan_hash "$1")" ]; }
@@ -1172,9 +1174,9 @@ cmd_plan() {
       log_event "$(first_role planner)" "${feature:--}" PLAN_CRITIQUE "items=$items"
       say "critique written: ${crit#"$REPO"/}" ;;
     approve)
-      [ -z "${TEAM_ROLE:-}" ] || die "only V! approves a plan (an agent's pane cannot)."
+      [ -z "${TEAM_ROLE:-}" ] || die "only $OWNER_NAME approves a plan (an agent's pane cannot)."
       plan=$(plan_file "$feature"); crit=$(plan_critique_file "$feature")
-      # V! approves one snapshot: the one checked, shown and sealed; any other content gets no seal
+      # the owner approves one snapshot: the one checked, shown and sealed; any other content gets no seal
       local snap snapc ans="" seal st new
       [ -t 0 ] || die "approve from your own terminal: it asks you to type APPROVE."
       snap=$(mktemp); snapc=$(mktemp); cp "$plan" "$snap"; [ -f "$crit" ] && cp "$crit" "$snapc"
@@ -1184,7 +1186,7 @@ cmd_plan() {
       IFS= read -r ans || true; ans=${ans%$'\r'}
       [ "$ans" = APPROVE ] || { rm -f "$snap"; die "not approved."; }
       [ "$(plan_hash "$plan")" = "$(plan_hash "$snap")" ] || { rm -f "$snap"; die "the plan changed while you were approving it: run squad plan --approve again."; }
-      st="Status: approved by V! $(date '+%Y-%m-%d %H:%M')"; new=$(mktemp)
+      st="Status: approved by $OWNER_NAME $(date '+%Y-%m-%d %H:%M')"; new=$(mktemp)
       if grep -q '^Status:' "$snap"; then awk -v s="$st" '!d && /^Status:/ { print s; d = 1; next } { print }' "$snap" >"$new"
       else awk -v s="$st" 'NR == 1 { print; print ""; print s; next } { print }' "$snap" >"$new"; fi
       cp "$new" "$plan"; rm -f "$snap"
@@ -1216,10 +1218,10 @@ plan_gate() { # <task>: dies when the task's plan is not approved (only in a tea
   [ -n "$(first_role planner)" ] || return 0
   local f="$TEAM_DIR/PLAN.md" fp
   # a team that started before the planner has no PLAN.md: its work goes on, and only new features need a plan;
-  # a new team gets a draft PLAN.md at init, so nothing starts there before V! approves it
-  [ ! -f "$f" ] || plan_approved "$f" || die "no task starts before V! approves the plan: ${f#"$REPO"/} (the planner: squad plan \"<goal>\"; V!: squad plan --approve)."
+  # a new team gets a draft PLAN.md at init, so nothing starts there before the owner approves it
+  [ ! -f "$f" ] || plan_approved "$f" || die "no task starts before $OWNER_NAME approves the plan: ${f#"$REPO"/} (the planner: squad plan \"<goal>\"; ${OWNER_NAME}: squad plan --approve)."
   fp=$(grep -m1 -E '^- Plan: F-[0-9]+' "$TEAM_DIR/tasks/$1.md" 2>/dev/null | grep -oE 'F-[0-9]+' || true)
-  [ -z "$fp" ] || plan_approved "$TEAM_DIR/plan/$fp.md" || die "$1 belongs to feature plan $fp, which V! has not approved yet (squad plan --approve $fp)."
+  [ -z "$fp" ] || plan_approved "$TEAM_DIR/plan/$fp.md" || die "$1 belongs to feature plan $fp, which $OWNER_NAME has not approved yet (squad plan --approve $fp)."
   return 0
 }
 
@@ -1227,7 +1229,7 @@ plan_gate() { # <task>: dies when the task's plan is not approved (only in a tea
 # One block per decision in DECISIONS.md:
 #   ## D-001 · <title>
 #   - Time: / - Question: / - Options: / - Claude: / - GPT: / - Sources: /
-#   - Decision: / - Why: / - Status: provisional — open decision for V! | final
+#   - Decision: / - Why: / - Status: provisional — open decision for the owner | final
 DECISION_FIELDS="Time Question Options Claude GPT Sources Decision Why Status See"   # See: optional
 
 decisions_tsv() { # DECISIONS.md -> one line per decision: id \t title \t field=value ... (tabs)
@@ -1264,7 +1266,7 @@ cmd_decisions() {
   say "DECISIONS.md: $(decisions_tsv | grep -c . || true) decision(s), every field filled."
 }
 
-# ---- squad report: one page with everything V! needs to follow the team ---------
+# ---- squad report: one page with everything the owner needs to follow the team ---------
 # Built only from the team's plain files: events.log, DECISIONS.md, consult/,
 # observer/, reports/, LESSONS.md, READY.md. --live: the same, in a terminal,
 # refreshed every 20 s ('o' opens the HTML page). Default: write the HTML page.
@@ -1386,11 +1388,11 @@ HEAD
     echo '</div></section>'
 
     # Decisions
-    echo '<section id=Decisions><div class=f><button data-f=all aria-pressed=true>All</button><button data-f=prov aria-pressed=false>Open for V!</button><button data-f=final aria-pressed=false>Final</button></div>'
+    echo '<section id=Decisions><div class=f><button data-f=all aria-pressed=true>All</button><button data-f=prov aria-pressed=false>Open for the owner</button><button data-f=final aria-pressed=false>Final</button></div>'
     if [ -n "$(decisions_tsv)" ]; then
       while IFS=$'\t' read -r id title fields; do
         status=$(tr '\t' '\n' <<<"$fields" | sed -n 's/^Status=//p')
-        case "$status" in final*) k=final ;; *) k=prov ;; esac   # provisional and "to test" both wait for V!
+        case "$status" in final*) k=final ;; *) k=prov ;; esac   # provisional and "to test" both wait for the owner
         printf '<div class="card dec" data-k=%s><h3>%s · %s<span class="badge %s">%s</span></h3><dl>\n' "$k" "$(html_escape <<<"$id")" "$(html_escape <<<"$title")" "$k" "$(html_escape <<<"${status:-no status}")"
         while IFS= read -r v; do
           [ -n "$v" ] || continue
@@ -1458,7 +1460,7 @@ report_text() { # the live view: what matters now, in a terminal
   local open_s
   open_s=$(awk '/^## / { t = $0 } tolower($0) ~ /^- status: *open/ && t != "" { sub(/^#+ */, "", t); print "   " t; t = "" }' "$TEAM_DIR/observer/SUGGESTIONS.md" 2>/dev/null | head -6 | cut -c1-"$w" || true)
   printf '%s\n' "${open_s:-   none}"
-  printf '\n TO TEST BY V! (then: squad feedback "...")\n'
+  printf '\n TO TEST BY %s (then: squad feedback "...")\n' "$(printf '%s' "$OWNER_NAME" | tr '[:lower:]' '[:upper:]')"
   local tt
   tt=$(decisions_tsv | awk -F'\t' '{ s = ""; see = ""; for (i = 3; i <= NF; i++) { if ($i ~ /^Status=/) s = substr($i, 8); if ($i ~ /^See=/) see = substr($i, 5) } if (s !~ /^final/) printf "   %s %s — look: %s\n", $1, $2, (see == "" ? "?" : see) }' | head -8 | cut -c1-"$w" || true)
   printf '%s\n' "${tt:-   nothing to test}"
@@ -1506,7 +1508,7 @@ cmd_feedback() {
   printf '\n## F-%s · %s\n\n%s\n\n- Status: open\n' "$n" "$(date '+%Y-%m-%d %H:%M')" "$text" >>"$TEAM_DIR/FEEDBACK.md"
   rmdir "$TEAM_DIR/.feedback.lock"
   log_event owner - FEEDBACK "F-$n $(printf '%s' "$text" | head -1 | cut -c1-80)"
-  if herdr_team agent prompt "$LEAD" "[squad] Feedback F-$n from V! in $TEAM_DIR/FEEDBACK.md: $(printf '%s' "$text" | head -1 | cut -c1-120). Turn it into a brief or a decision, then mark F-$n done with its id. (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
+  if herdr_team agent prompt "$LEAD" "[squad] Feedback F-$n from $OWNER_NAME in $TEAM_DIR/FEEDBACK.md: $(printf '%s' "$text" | head -1 | cut -c1-120). Turn it into a brief or a decision, then mark F-$n done with its id. (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
     say "F-$n saved and sent to $LEAD."
   else
     say "F-$n saved in .team/FEEDBACK.md; the lead could not be reached now and will read it at its next start."
@@ -1514,7 +1516,7 @@ cmd_feedback() {
 }
 
 # ---- the verify switch -----------------------------------------------------------
-# V!'s global Stop hook runs the whole repository's verify at every turn end;
+# the owner's global Stop hook runs the whole repository's verify at every turn end;
 # in a team that is a heavy run outside the lock. verify_hook off writes the
 # file that hook already honours into every team worktree.
 apply_verify_switch() {
@@ -1647,7 +1649,7 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
 trouble_hint() { # <kind> <seat>
   case "$1" in
     dead) echo "its agent is gone (closed pane or crash): run 'squad up' to start it again" ;;
-    login) echo "it shows a sign-in error: V! must run /login in its pane" ;;
+    login) echo "it shows a sign-in error: $OWNER_NAME must run /login in its pane" ;;
     blocked) echo "it waits on a prompt or a question: read it with squad herdr agent read $2 --source visible" ;;
     stalled) echo "it has an open task and has not worked for $STALL_MINUTES min: read its pane, then re-send or re-dispatch" ;;
   esac
@@ -1680,9 +1682,9 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
   fi
 }
 
-# The watchdog (observer S-48), from the team tab's strip: it tells V! when the team stalls while
+# The watchdog (observer S-48), from the team tab's strip: it tells the owner when the team stalls while
 # work waits for the lead, when a seat stops at its usage limit, and when Claude's week reaches 80 %.
-v_notify() { # <title> <body>: a herdr notification to V! (and a line in events.log)
+v_notify() { # <title> <body>: a herdr notification to the owner (and a line in events.log)
   herdr notification show "$1" --body "$2" --sound request >/dev/null 2>&1 || true
 }
 watchdog_tick() {
@@ -1712,7 +1714,7 @@ watchdog_tick() {
       fi
     fi
   fi
-  # 2. a seat at its usage limit: tell V! once; with limit_fallback, switch a Claude seat to that model
+  # 2. a seat at its usage limit: tell the owner once; with limit_fallback, switch a Claude seat to that model
   agents=$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')
   for ((i = 0; i < $(seat_count); i++)); do
     name=${S_NAME[$i]}; st=$(seat_state "$agents" "$name")
@@ -2090,7 +2092,7 @@ cmd_init() {
 
   update_conf
   load_conf
-  # a new team starts with a draft plan: no task starts before the planner proves it and V! approves it
+  # a new team starts with a draft plan: no task starts before the planner proves it and the owner approves it
   [ "$new_conf" = 1 ] && grep -qE '^[[:space:]]*seat[[:space:]]+[^[:space:]]+[[:space:]]+[^[:space:]]+[[:space:]]+planner([[:space:]]|$)' "$TEAM_DIR/team.conf" 2>/dev/null && [ ! -f "$TEAM_DIR/PLAN.md" ] \
     && SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="(the goal: squad plan \"<goal>\")" subst "$TEMPLATES/PLAN.md" >"$TEAM_DIR/PLAN.md"
   # Protocol and roles belong to the tool: refresh them so upgrades take effect.
@@ -2696,7 +2698,7 @@ check_session() {
 }
 
 # One 'squad up' at a time per team: worktrees and npm installs take minutes,
-# and a second run in that time creates a second workspace (seen on tonus).
+# and a second run in that time creates a second workspace (seen on a team).
 up_lock() { # .team/up.lock -> <pid>: a link, created atomically; a dead owner's lock is taken over
   local f="$TEAM_DIR/up.lock" pid
   mkdir -p "$TEAM_DIR"

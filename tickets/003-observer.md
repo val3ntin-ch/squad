@@ -1,10 +1,10 @@
 # 003 · Observer seat and tab: stuck seats, timeline, suggestions
-Status: Done — awaiting V!'s review (approved 13 Nov 2026)
+Status: Done — awaiting the owner's review (approved 13 Nov 2026)
 Size: M
 
 ## Goal
-V! opens one herdr tab, `observer`, and sees what happens now, what went wrong, what it
-cost, and what to change — written to files that are easy to follow later. The hive run
+the owner opens one herdr tab, `observer`, and sees what happens now, what went wrong, what it
+cost, and what to change — written to files that are easy to follow later. The project A run
 had an observer by hand; v2 ships it.
 
 ## Scope
@@ -40,8 +40,8 @@ had an observer by hand; v2 ships it.
 - [x] `bash test/smoke.sh` and `shellcheck` pass.
 
 ## Plan
-- `templates/roles/observer.md` (from the hive observer's practice: numbers, basis, source,
-  "Decision for V!" when it touches V!'s files).
+- `templates/roles/observer.md` (from the project A observer's practice: numbers, basis, source,
+  "Decision for the owner" when it touches the owner's files).
 - `bin/squad`: `observer` role in load_conf and roster; `make_layout` adds the tab;
   `watch_once --observe` with stall detection (herdr `agent list`, `pane read` tail,
   `git log -1` per worktree, report mtimes).
@@ -57,7 +57,7 @@ had an observer by hand; v2 ships it.
 
 ## Assumptions & open questions
 1. Assumption: Sonnet, low effort, is enough for the observer (it reads files and panes).
-2. The report page is opened by V! in a browser (`open .team/report.html`); no server.
+2. The report page is opened by the owner in a browser (`open .team/report.html`); no server.
 
 ## Evidence (13 Nov 2026)
 `bash test/smoke.sh`: 234 passed under bash 5 and under /bin/bash 3.2.57; `shellcheck -S warning`: clean. smoke: 'the tabs come in order: review, changes, observer, report', 'the report gets its own tab, live', 'the watcher starts the observer's first pass', 'a merge starts the next pass', 'a seat with an open task and no work is stalled', 'the stall is logged once and the lead is told', 'a sign-in error is named', 'the page shows the observer's now and suggestions', 'the timeline has the task's minutes'. Not verified with a real observer seat writing its files.

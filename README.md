@@ -118,7 +118,7 @@ setup pnpm install --frozen-lockfile
 - **heavy_timeout** is how many minutes one heavy run may hold the lock (one lock for the whole machine, in `~/.cache/squad/heavy`: teams of several repositories share it); **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/.runs/<seat>`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
 - **heavy_silent_minutes** (5): a heavy run whose output and CPU time do not move for this long is stopped as hung (`HUNG`), as CI systems stop a step with no output; the hard limit stays. **idle_minutes** (5): a dev with no task for this long is told to the lead once.
 - **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
-- **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by V!`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you.
+- **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by the owner`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
 - **observe_minutes** is the longest gap between two observer passes.
@@ -210,7 +210,7 @@ No agent pushes. Your own checkout is never touched: all work happens in worktre
 - **Write the goal** in `.team/GOAL.md`. Say where the rules, the design and the references are.
 - **Answer permission prompts and sign-in errors.** squad shows them in red on the board and tells the lead; the lead tells you. Allow git, your package manager and your test commands in Claude Code once, or agents will stall.
 - **Review at the end.** Open the report (`report` tab, or `squad report --open`), read `READY.md`, confirm or change each provisional decision, then push the base branch.
-- **Decide what the lead brings you:** a task that is not approved after the allowed rounds, observer suggestions marked `for V!`, or anything that needs a push, a deletion or a change outside the repository.
+- **Decide what the lead brings you:** a task that is not approved after the allowed rounds, observer suggestions marked `for the owner`, or anything that needs a push, a deletion or a change outside the repository.
 
 ## Why this keeps cost down
 

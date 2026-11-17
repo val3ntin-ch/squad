@@ -1,5 +1,5 @@
 # 006 · One herdr session per repository, and resume where the team stopped
-Status: Done — awaiting V!'s review (approved 13 Nov 2026)
+Status: Done — awaiting the owner's review (approved 13 Nov 2026)
 Size: M
 
 ## Goal
@@ -14,10 +14,10 @@ restart (of herdr, of the Mac) every seat comes back with its own conversation, 
 - Out: moving a running team between machines; herdr's own session storage.
 
 ## Done when
-- [x] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: V!'s running team already uses the session `hive`; `session <name>` in team.conf overrides it) and starts
+- [x] `squad up` run outside herdr starts or attaches the session `<repo>` (changed from `squad-<repo>`: the owner's running team already uses the session `project A`; `session <name>` in team.conf overrides it) and starts
       the team in it; run inside herdr in another repository's session, it stops and prints
       the one command to switch (`squad up` never mixes two repositories in one session).
-- Exception (kept on purpose): a team that already runs in another session keeps it while `.team/herdr.sock` names that session (`check_session`), so teams started before v2 (hive, tonus) are not forced to move. Isolation is then by workspace, not by session.
+- Exception (kept on purpose): a team that already runs in another session keeps it while `.team/herdr.sock` names that session (`check_session`), so teams started before v2 (project A, project B) are not forced to move. Isolation is then by workspace, not by session.
 - [ ] Two repositories can run teams at the same time, each in its own session, with no
       "an agent named lead is already running" error.
 - [x] On first start squad gives each Claude seat `--session-id <uuid>` and records it in
@@ -51,7 +51,7 @@ restart (of herdr, of the Mac) every seat comes back with its own conversation, 
    <id>` is accepted. If not, `squad up` outside herdr prints the two commands instead.
 2. Assumption: `/clear` in Claude starts a new session id, so the resume id must be updated
    at each dispatch (checked at implementation time).
-3. **Open decision for V!:** the observer's model. Your hive observer runs Opus 5.5 and its
+3. **Open decision for the owner:** the observer's model. Your project A observer runs Opus 5.5 and its
    analysis was good; the ticket planned Sonnet (cheaper). Recommended: Sonnet for the
    watch passes, and Opus only when a pass finds a loss over 30 min.
 

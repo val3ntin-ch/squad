@@ -1,5 +1,5 @@
 # 008 · Heavy runs from a snapshot, in their own process group, a sample mode for devs, and team.conf kept up to date
-Status: Approved (V!, 13 Nov 2026)
+Status: Approved (the owner, 13 Nov 2026)
 Size: M
 
 ## Goal
@@ -63,4 +63,4 @@ command', '--sample without {shard} is refused', 'update-conf adds what an old t
 the GPT reviewer for the team's own devs, and the observer', 'a second run adds nothing', 'upgrade off
 leaves team.conf alone', 'a small team gets the settings but no reviewer or observer', 'init from an old
 personal default brings it up to date', 'the roadmap keeps the containers reminder'.
-Also (found while planning the hive switch): a task already under way goes on without a contract.
+Also (found while planning the project A switch): a task already under way goes on without a contract.

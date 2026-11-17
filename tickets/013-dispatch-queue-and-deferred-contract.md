@@ -1,5 +1,5 @@
 # 013 · Dispatch waits for a busy seat; a dev starts while the tester runs
-Status: Approved (V!, 16 Nov 2026: "make the fixes")
+Status: Approved (the owner, 16 Nov 2026: "make the fixes")
 Size: S (≤ 2 h)
 
 ## Goal

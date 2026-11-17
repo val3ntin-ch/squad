@@ -12,7 +12,7 @@ The team's `SPEC.md` and `DECISIONS.md` win over this file where they differ (fo
 The human tests what can be seen and gives feedback; you decide everything else. So that the team never waits:
 
 - **A decision the eye cannot see** (an API, a behaviour, a dependency, a test, a tool, a structure) is yours. Take it from sources, write it down, and give it the status `final`.
-- **A visible difference** (look, layout, motion, text on screen) that you had to choose, or that differs from the approved design or reference: decide it the same way, then give it the status `to test by V!` and a `- See:` line that says where the human looks (the story id, the page and size, or the screen) and what they should see. The human tests it and answers with feedback.
+- **A visible difference** (look, layout, motion, text on screen) that you had to choose, or that differs from the approved design or reference: decide it the same way, then give it the status `to test by $OWNER` and a `- See:` line that says where the human looks (the story id, the page and size, or the screen) and what they should see. The human tests it and answers with feedback.
 - Nothing waits for the human. Go on with the work while an item waits to be tested.
 <!-- /owner:visual -->
 <!-- owner:all -->
@@ -62,11 +62,11 @@ Every decision goes into `$TEAM_DIR/DECISIONS.md` at the moment you take it, in 
 - Decision: <what the team does>
 - Why: <the reason, tied to the sources>
 <!-- owner:visual -->
-- Status: final   (or "to test by V!" for a visible difference)
-- See: <only for "to test by V!": the story id, the page and size, or the screen, and what V! should see>
+- Status: final   (or "to test by $OWNER" for a visible difference)
+- See: <only for "to test by $OWNER": the story id, the page and size, or the screen, and what $OWNER should see>
 <!-- /owner:visual -->
 <!-- owner:all -->
-- Status: provisional — open decision for V!   (or "final" when the repository or the human already decided it)
+- Status: provisional — open decision for $OWNER   (or "final" when the repository or the human already decided it)
 <!-- /owner:all -->
 ```
 
@@ -82,9 +82,9 @@ Set the status to `APPROVED` when the spec is complete enough to hand out tasks.
 
 ## Phase 1b: the plan (when the team has a planner)
 
-Before any task, the planner researches and proves the plan: `squad plan "<the goal from GOAL.md>"`. It writes `$TEAM_DIR/PLAN.md` with an official source and a proof for every claim, gets GPT's critique and passes `squad plan --check`. squad starts no task before V! approves it (`squad plan --approve`, V! only). Build the tasks from the plan's "Tasks"; do not promise anything the plan marks unproven.
+Before any task, the planner researches and proves the plan: `squad plan "<the goal from GOAL.md>"`. It writes `$TEAM_DIR/PLAN.md` with an official source and a proof for every claim, gets GPT's critique and passes `squad plan --check`. squad starts no task before $OWNER approves it (`squad plan --approve`, $OWNER only). Build the tasks from the plan's "Tasks"; do not promise anything the plan marks unproven.
 
-A new feature in the middle of the project gets its own plan: `squad plan "<goal>" --feature` writes `$TEAM_DIR/plan/F-<n>.md`. Write `- Plan: F-<n>` in the brief of each of its tasks; squad starts them only after V! approves that plan. A small fix inside an approved task needs no plan.
+A new feature in the middle of the project gets its own plan: `squad plan "<goal>" --feature` writes `$TEAM_DIR/plan/F-<n>.md`. Write `- Plan: F-<n>` in the brief of each of its tasks; squad starts them only after $OWNER approves that plan. A small fix inside an approved task needs no plan.
 
 ## Phase 2: tasks
 
@@ -96,7 +96,7 @@ A good task:
 - fits in one sitting and one context. If you would describe it with "and", split it;
 - has acceptance rows that someone can check by running or measuring something, with the expected value written in the row;
 - names its dev check (light, only this task's files) and the tester's check command;
-- lists its consumers: the tests and files outside its own that use what it changes (find them with the import graph, for example `vitest related`, and with a search for names read as text). Hive lost four tester runs to consumers nobody listed;
+- lists its consumers: the tests and files outside its own that use what it changes (find them with the import graph, for example `vitest related`, and with a search for names read as text). Project A lost four tester runs to consumers nobody listed;
 - says what to do when a check outside its files breaks;
 - for a bug: the red run on the base commit that shows the bug before the fix.
 
@@ -137,9 +137,9 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 
 - An approved task goes into the next candidate when the tester is free. Join it with another task only when that task is approved too; never hold an approved task for a task still in review. A task whose proof needs another task is rebased on the merged one.
 - The candidate brief lists its commands for one `squad heavy <tester> CANDIDATE-<n> --batch <file>` run: one lock for the whole candidate, so no dev run slips in between its commands. A long step gets `--limit <minutes>` (up to 99) instead of a higher `heavy_timeout` for everyone.
-- When V! announces a stop, build the candidate for every approved task first, and send it to the tester before the stop if it fits in the time given.
+- When $OWNER announces a stop, build the candidate for every approved task first, and send it to the tester before the stop if it fits in the time given.
 
-**The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for V!`: list it in `READY.md`.
+**The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for $OWNER`: list it in `READY.md`.
 
 **A rule changes.** When you change a line of SPEC.md, PROTOCOL.md, a role file or a brief that running work uses, tell the seats at work in one command: `squad notify "<file and section>" "<the new rule in one sentence>"`.
 
@@ -171,7 +171,7 @@ Every task is reviewed by a fresh pair of eyes and decided by you. Nothing is sk
 3. Go through the acceptance table row by row. For each row, look at the evidence yourself: run the command, open the file at the line, look at the screenshot. A row whose evidence you did not see is not met.
 4. Visual result: look at it. Open every screenshot the tester saved. When a detail matters and the screenshot does not settle it, start the viewer from the dev's worktree (`<repository>-team/<seat>`, read-only for you) as "Visual check" in the SPEC says, and measure. Compare with the reference. "Close" is a defect.
 5. Look for what nobody listed: a state or a size that the brief forgot, a broken neighbour, a test that would pass without the change, a value written by hand where a shared one exists.
-6. **One finding per class.** When you find a defect, look for the same defect in every variant, scheme, size, state and scope of the part before you write the review. Write one finding for the class with the list of places. A second round for a place you could have found in round 1 is a defect of the review (hive: one task took four rounds for one rule).
+6. **One finding per class.** When you find a defect, look for the same defect in every variant, scheme, size, state and scope of the part before you write the review. Write one finding for the class with the list of places. A second round for a place you could have found in round 1 is a defect of the review (project A: one task took four rounds for one rule).
 7. Write `$TEAM_DIR/reports/<ID>-review-<round>.md`:
 
 ```
@@ -195,7 +195,7 @@ Every finding is concrete: where, expected, actual. A finding the dev cannot act
 
 `APPROVE` means every row is met and you saw the evidence. The task then goes into the next candidate (PROTOCOL, "How much to test"); after the candidate's PASS, `squad merge <ID>`. If it conflicts, it aborts the merge; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
 
-**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task: set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for V! with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
+**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task: set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for $OWNER with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
 
 ## Keeping your own context clean
 
@@ -223,7 +223,7 @@ The human gives feedback with `squad feedback`; it lands in `$TEAM_DIR/FEEDBACK.
 Only for these: a seat shows a permission prompt or a sign-in error (say what it shows; never answer it yourself); something needs a push, a deletion or a change outside the repository; the goal itself turns out to be impossible or to contradict the repository's rules.
 
 <!-- owner:visual -->
-Everything else you decide, log, and continue: `final` when the eye cannot see it, `to test by V!` with a `See:` line when it can. The human tests the visible ones and answers with feedback.
+Everything else you decide, log, and continue: `final` when the eye cannot see it, `to test by $OWNER` with a `See:` line when it can. The human tests the visible ones and answers with feedback.
 <!-- /owner:visual -->
 <!-- owner:all -->
 Everything else you decide provisionally, log, and continue; the human sees it in `READY.md`.
@@ -231,17 +231,17 @@ Everything else you decide provisionally, log, and continue; the human sees it i
 
 ## Finishing
 
-When every task is merged, or stopped at the round limit and listed for V!:
+When every task is merged, or stopped at the round limit and listed for $OWNER:
 
 1. Ask the tester for one full run on `$TEAM_BASE`.
 2. **Converge.** Compare `$TEAM_BASE` with the SPEC and every acceptance table, row by row: the full diff against where it started, every screen or page in the visual check, every row of "Definition of done". Anything missing or wrong becomes a new task through the loop. Repeat until nothing is missing.
 3. **Lessons.** In `$TEAM_DIR/LESSONS.md`, for each finding or failure that came back more than once: the cheapest change that stops it next time (a lint rule or a test that fails on the defect, a line in a template, a rule in the protocol), with the file to change. Read `observer/SUGGESTIONS.md` for it too.
 4. Run `squad decisions --check` and `squad report`.
 <!-- owner:visual -->
-5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every decision with the status `to test by V!` (id, title, where to look), as the human's test list; the open suggestions marked `for V!`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
+5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every decision with the status `to test by $OWNER` (id, title, where to look), as the human's test list; the open suggestions marked `for $OWNER`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
 <!-- /owner:visual -->
 <!-- owner:all -->
-5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every provisional decision (id, title, decision) for the human to confirm; the open suggestions marked `for V!`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
+5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every provisional decision (id, title, decision) for the human to confirm; the open suggestions marked `for $OWNER`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
 <!-- /owner:all -->
 
 The human reviews and pushes.

@@ -256,9 +256,9 @@ cd "$tmp"
 check "new creates a project with the shipped default team" "$squad" new proj4
 cd proj4; reset_log
 check "init creates the goal, the decisions log and the task template" test -f .team/GOAL.md -a -f .team/DECISIONS.md -a -f .team/tasks/_TEMPLATE.md
-check "a new team starts with a draft plan (no task before V! approves it)" grep -qx 'Status: draft' .team/PLAN.md
-printf '# Plan: tests\n\nStatus: approved by V! 2026-11-16 10:00\n' >.team/PLAN.md   # the dispatch tests below start tasks
-mkdir -p "$HOME/.config/squad/approvals"; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$HOME/.config/squad/approvals/proj4-PLAN.md.sha256"   # V!'s seal
+check "a new team starts with a draft plan (no task before the owner approves it)" grep -qx 'Status: draft' .team/PLAN.md
+printf '# Plan: tests\n\nStatus: approved by the owner 2026-11-16 10:00\n' >.team/PLAN.md   # the dispatch tests below start tasks
+mkdir -p "$HOME/.config/squad/approvals"; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$HOME/.config/squad/approvals/proj4-PLAN.md.sha256"   # the owner's seal
 check "up starts the shipped team" "$squad" up
 check "the lead runs the strongest model and may read the devs' worktrees" grep -qE "^herdr agent start lead --kind claude .* -- --model claude-fable-5-2 --add-dir $tmp/proj4/.team --add-dir [^ ]+ --add-dir $tmp/proj4-team " "$MOCK_LOG"
 check "devs run at medium effort" grep -qE '^herdr agent start dev-a --kind claude .* -- --model claude-opus-5-5 --effort medium ' "$MOCK_LOG"
@@ -373,13 +373,13 @@ check "a lock left by a killed queue is cleared, so the seat is not blocked" sh 
 rm -f "$tmp/state"
 cp .team/events.log "$tmp/events.keep"; printf '2026-01-01 10:00:00 rev-gpt T-160 CHANGES review=3\n' >>.team/events.log; reset_log
 "$squad" watch --once >/dev/null 2>&1
-check "the watchdog tells V! and the lead when the team stalls while a verdict waits" sh -c "grep -q ' lead - STALLED .*T-160 CHANGES' .team/events.log && grep -q 'notification show squad: proj4 stalled' '$MOCK_LOG' && grep -q 'agent prompt lead .*T-160 CHANGES' '$MOCK_LOG'"
+check "the watchdog tells the owner and the lead when the team stalls while a verdict waits" sh -c "grep -q ' lead - STALLED .*T-160 CHANGES' .team/events.log && grep -q 'notification show squad: proj4 stalled' '$MOCK_LOG' && grep -q 'agent prompt lead .*T-160 CHANGES' '$MOCK_LOG'"
 reset_log; "$squad" watch --once >/dev/null 2>&1
 check "it tells them once per stall" refuses grep -q 'notification show squad: proj4 stalled' "$MOCK_LOG"
 cp "$tmp/events.keep" .team/events.log
 agents_on='{"result":{"agents":[{"name":"lead","agent_status":"blocked","pane_id":"w2:p1","agent":"claude"}]}}'
 reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your Fable limit · resets Nov 20 at 9am" "$squad" watch --once >/dev/null 2>&1
-check "a seat at its usage limit: V! gets a notification, events.log a LIMIT line" sh -c "grep -q ' lead - LIMIT resets Nov 20 at 9am' .team/events.log && grep -q 'notification show squad: lead at its usage limit' '$MOCK_LOG'"
+check "a seat at its usage limit: the owner gets a notification, events.log a LIMIT line" sh -c "grep -q ' lead - LIMIT resets Nov 20 at 9am' .team/events.log && grep -q 'notification show squad: lead at its usage limit' '$MOCK_LOG'"
 rm -f .team/observer/.watchdog/limit-lead; printf 'limit_fallback claude-opus-5-5\n' >>.team/team.conf
 reset_log; MOCK_AGENTS="$agents_on" MOCK_PANE_TEXT="You've hit your Fable limit · resets Nov 20 at 9am" "$squad" watch --once >/dev/null 2>&1
 check "with limit_fallback the seat switches to that model" sh -c "grep -q 'agent prompt lead /model claude-opus-5-5' '$MOCK_LOG' && grep -q ' lead - FALLBACK model=claude-opus-5-5' .team/events.log"
@@ -481,7 +481,7 @@ check "the plan tab has two agents: Claude plans, GPT Sol critiques with -a neve
 # ---- 012: the plan -----------------------------------------------------------------
 cp .team/PLAN.md "$tmp/plan.keep"; rm -f .team/PLAN.md
 sha() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
-# V! types APPROVE at a terminal: the tests give the command a pseudo-terminal
+# the owner types APPROVE at a terminal: the tests give the command a pseudo-terminal
 approve() { if script --version 2>/dev/null | grep -q util-linux; then (sleep 2; printf 'APPROVE\n'; sleep 2) | script -qec "$squad plan --approve" /dev/null; else (sleep 2; printf 'APPROVE\n'; sleep 2) | script -q /dev/null "$squad" plan --approve; fi; }
 check "a team without a PLAN.md (started before the planner) goes on: the gate asks only for feature plans" sh -c "! '$squad' dispatch dev-a T-779 2>&1 | grep -q 'approves the plan'"
 check "a goal that starts with F- stays a goal" sh -c "rm -f .team/PLAN.md; '$squad' plan 'F-35 flight sim' >/dev/null && grep -qx '# Plan: F-35 flight sim' .team/PLAN.md"
@@ -489,8 +489,8 @@ check "a feature id with more than F-<number> never becomes a path" sh -c "! '$s
 printf '# Plan: (the goal: squad plan "<goal>")\n\nStatus: draft\n' >.team/PLAN.md
 check "the draft plan from init gets the goal" sh -c "'$squad' plan 'a notes app' >/dev/null && grep -qx '# Plan: a notes app' .team/PLAN.md"
 rm -f .team/PLAN.md
-check "plan writes PLAN.md with every section and gives the planner the goal" sh -c "'$squad' plan 'a todo app' >/dev/null && for h in 'Goal' 'Platform and versions' 'Sources' 'Limits of the platform' 'Feasibility' 'Risks' 'Tasks' 'Open decisions for V!'; do grep -q \"^## \$h\" .team/PLAN.md || exit 1; done && grep -q 'agent prompt planner .*Plan this: a todo app' '$MOCK_LOG'"
-check "dispatch refuses a task before V! approves the plan" sh -c "out=\$('$squad' dispatch dev-a T-777 2>&1); test \$? != 0 && printf '%s' \"\$out\" | grep -q 'before V! approves the plan'"
+check "plan writes PLAN.md with every section and gives the planner the goal" sh -c "'$squad' plan 'a todo app' >/dev/null && for h in 'Goal' 'Platform and versions' 'Sources' 'Limits of the platform' 'Feasibility' 'Risks' 'Tasks' 'Open decisions for the owner'; do grep -q \"^## \$h\" .team/PLAN.md || exit 1; done && grep -q 'agent prompt planner .*Plan this: a todo app' '$MOCK_LOG'"
+check "dispatch refuses a task before the owner approves the plan" sh -c "out=\$('$squad' dispatch dev-a T-777 2>&1); test \$? != 0 && printf '%s' \"\$out\" | grep -q 'before the owner approves the plan'"
 mkdir -p .team/plan/proofs; echo "ran: node --version -> v24" >.team/plan/proofs/F1-node.txt
 good='| F-1 | Node 24 runs the app | https://nodejs.org/docs/latest-v24.x/api/ | F1-node.txt | proven |'
 cp .team/PLAN.md .team/PLAN.keep2
@@ -528,18 +528,19 @@ check "an item marked done without an Answer is not complete" sh -c "'$squad' pl
 printf '%s\n' "$good" '| | unsupported claim | | | unproven |' | mkplan; printf '# Critique\nITEMS: 0\n' >.team/plan/critique.md
 check "a claim row without an id fails the check" sh -c "'$squad' plan --check 2>&1 | grep -q 'a feasibility row has no id'"
 printf '%s\n' "$good" | mkplan
-check "an agent cannot approve a plan" sh -c "TEAM_ROLE=lead '$squad' plan --approve 2>&1 | grep -q 'only V! approves'"
+check "team.conf owner_name names the human in squad's messages" sh -c "printf 'owner_name Maria\n' >>.team/team.conf; TEAM_ROLE=lead '$squad' plan --approve 2>&1 | grep -q 'only Maria approves'; rc=\$?; sed -i.bak '/^owner_name /d' .team/team.conf; rm -f .team/team.conf.bak; exit \$rc"
+check "an agent cannot approve a plan" sh -c "TEAM_ROLE=lead '$squad' plan --approve 2>&1 | grep -q 'only the owner approves'"
 printf '# Critique\n- [x] F-1: the version — Answer: added the lock file line\nITEMS: 1\n' >.team/plan/critique.md
 check "approve without a terminal is refused" sh -c "'$squad' plan --approve </dev/null 2>&1 | grep -q 'from your own terminal'"
-check "a 'Status: approved' line written into the plan does not open the gate" sh -c "sed -i.bak 's/^Status: draft/Status: approved by V! 2026-01-01 00:00/' .team/PLAN.md; rm -f .team/PLAN.md.bak; '$squad' dispatch dev-a T-777 2>&1 | grep -q 'before V! approves the plan'"
-sed -i.bak 's/^Status: approved by V! 2026-01-01 00:00/Status: draft/' .team/PLAN.md; rm -f .team/PLAN.md.bak
+check "a 'Status: approved' line written into the plan does not open the gate" sh -c "sed -i.bak 's/^Status: draft/Status: approved by the owner 2026-01-01 00:00/' .team/PLAN.md; rm -f .team/PLAN.md.bak; '$squad' dispatch dev-a T-777 2>&1 | grep -q 'before the owner approves the plan'"
+sed -i.bak 's/^Status: approved by the owner 2026-01-01 00:00/Status: draft/' .team/PLAN.md; rm -f .team/PLAN.md.bak
 approve >/dev/null 2>&1 || true
-check "V! approves a complete plan at a terminal, with the date" grep -qE '^Status: approved by V! [0-9]{4}-' .team/PLAN.md
+check "the owner approves a complete plan at a terminal, with the date" grep -qE '^Status: approved by the owner [0-9]{4}-' .team/PLAN.md
 check "dispatch passes the plan gate once the plan is approved" sh -c "! '$squad' dispatch dev-a T-777 2>&1 | grep -q 'approves the plan'"
 printf '# T-778\n- Plan: F-1\n' >.team/tasks/T-778.md
-check "a task of a feature plan waits for that plan's approval" sh -c "'$squad' dispatch dev-a T-778 2>&1 | grep -q 'feature plan F-1, which V! has not approved'"
+check "a task of a feature plan waits for that plan's approval" sh -c "'$squad' dispatch dev-a T-778 2>&1 | grep -q 'feature plan F-1, which the owner has not approved'"
 echo "- one more task" >>.team/PLAN.md
-check "an edit after the approval voids it" sh -c "'$squad' dispatch dev-a T-777 2>&1 | grep -q 'before V! approves the plan'"
+check "an edit after the approval voids it" sh -c "'$squad' dispatch dev-a T-777 2>&1 | grep -q 'before the owner approves the plan'"
 rm -f .team/tasks/T-778.md .team/PLAN.keep2; rm -rf .team/plan .team/consult "$tmp/bin/codex"; printf '#!/bin/sh\n' >"$tmp/bin/codex"; chmod +x "$tmp/bin/codex"; cp "$tmp/plan.keep" .team/PLAN.md; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$HOME/.config/squad/approvals/proj4-PLAN.md.sha256"
 check "the observer is not a reviewer pane" refuses grep -qE 'pane split .* --cwd [^ ]+ .*observer' "$MOCK_LOG"
 check "the observer reads the devs' worktrees" grep -qE "^herdr agent start observer --kind claude .* --add-dir $tmp/proj4-team " "$MOCK_LOG"
@@ -596,7 +597,7 @@ cat >>.team/DECISIONS.md <<'DEC'
 - Sources: https://www.w3.org/WAI/WCAG22/Understanding/contrast-minimum (WCAG 2.2, read 2026-11-13)
 - Decision: 4.5:1
 - Why: SC 1.4.3 covers text
-- Status: provisional — open decision for V!
+- Status: provisional — open decision for the owner
 DEC
 check "decisions --check passes a full block" "$squad" decisions --check
 check "decisions --check writes each decision into the ledger once" sh -c "'$squad' decisions --check >/dev/null; test \$(grep -c ' - DECISION D-001 provisional' .team/events.log) = 1"
@@ -626,7 +627,7 @@ printf '## S-1 · Batch the tester queue\n- Status: open\n- Problem: queue\n' >.
 html=$("$squad" report)
 check "report writes one HTML page" test -s "$html"
 check "the page has its seven tabs, To test first" sh -c "for t in To-test Decisions Observer Timeline QA Cost Events; do grep -q \"data-t=.\$t.\" '$html' || exit 1; done"
-check "the page shows each decision with its status and the GPT consult" sh -c "grep -q 'D-001' '$html' && grep -q 'open decision for V!' '$html' && grep -q 'GPT consult (consult/1.md)' '$html'"
+check "the page shows each decision with its status and the GPT consult" sh -c "grep -q 'D-001' '$html' && grep -q 'open decision for the owner' '$html' && grep -q 'GPT consult (consult/1.md)' '$html'"
 check "the page shows the observer's now and suggestions" sh -c "grep -q 'T-500 waited 5 min for the tester' '$html' && grep -q 'Batch the tester queue' '$html'"
 check "the timeline has the task's minutes: total 90, dev 30, test 25, review 8" grep -qE '<tr><td>T-500</td><td>merged</td><td class=n>90</td><td class=n>30</td><td class=n>25</td><td class=n>8</td>' "$html"
 check "the cost tab sums the seat minutes and the Claude and Codex usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td><td class=n>3</td></tr>' "$html"
@@ -813,7 +814,7 @@ check "the roadmap keeps the containers reminder" grep -qF 'one container per se
 cd "$tmp/proj4"
 check "the shipped presets set owner visual" sh -c "grep -qx 'owner visual' '$here/../presets/default.conf'"
 "$squad" init >/dev/null 2>&1
-check "with owner visual the lead decides what the eye cannot see" sh -c "grep -q 'A decision the eye cannot see' .team/roles/lead.md && ! grep -q 'The human owns every decision' .team/roles/lead.md && ! grep -q 'owner:' .team/roles/lead.md"
+check "with owner visual the lead decides what the eye cannot see" sh -c "grep -q 'A decision the eye cannot see' .team/roles/lead.md && ! grep -q 'The human owns every decision' .team/roles/lead.md && ! grep -q '<!-- /\?owner:' .team/roles/lead.md"
 cp .team/team.conf "$tmp/conf.keep"; sed -i.bak 's/^owner .*/owner all/' .team/team.conf && rm -f .team/team.conf.bak; grep -q '^owner ' .team/team.conf || echo 'owner all' >>.team/team.conf
 "$squad" init >/dev/null 2>&1
 check "with owner all the v2 text stays" sh -c "grep -q 'The human owns every decision' .team/roles/lead.md && ! grep -q 'A decision the eye cannot see' .team/roles/lead.md"
@@ -830,7 +831,7 @@ cat >.team/DECISIONS.md <<'DEC'
 - Sources: reference/hive-ui-v1.1.html, computed
 - Decision: 11 px
 - Why: the preview wins
-- Status: to test by V!
+- Status: to test by the owner
 - See: overlays-tooltip--states, 1280 px, light and dark: the gap equals the preview's
 
 ## D-011 · Date picker wait
@@ -849,10 +850,10 @@ check "the ledger names it to-test" grep -q ' - DECISION D-010 to-test' .team/ev
 html=$("$squad" report)
 check "the To test tab lists the visual decision with where to look, not the final one" sh -c "sed -n '/id=To-test/,/<\\/section>/p' '$html' | grep -q 'overlays-tooltip--states' && ! sed -n '/id=To-test/,/<\\/section>/p' '$html' | grep -q 'D-011'"
 check "the live view lists what to test" sh -c "printf q | '$squad' report --live | grep -q 'D-010 Tooltip gap — look: overlays-tooltip--states'"
-printf '\n## D-012 · No place\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: to test by V!\n' >>.team/DECISIONS.md
+printf '\n## D-012 · No place\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: d\n- Why: w\n- Status: to test by the owner\n' >>.team/DECISIONS.md
 check "a decision to test without a See line is refused" refuses "$squad" decisions --check
 check "with owner visual nothing in the lead role says to decide provisionally" refuses grep -q 'decide provisionally' .team/roles/lead.md
-printf '\n## D-013 · No see, provisional\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: keep the card\n- Why: w\n- Status: provisional — open decision for V!\n' >>.team/DECISIONS.md
+printf '\n## D-013 · No see, provisional\n- Time: t\n- Question: q\n- Options: o\n- Claude: c\n- GPT: g\n- Sources: s\n- Decision: keep the card\n- Why: w\n- Status: provisional — open decision for the owner\n' >>.team/DECISIONS.md
 "$squad" report >/dev/null
 check "a decision without a See line keeps its columns in the To test tab" grep -qE '<td>D-013 · No see, provisional</td><td>-</td><td>keep the card</td>' "$html"
 printf 'x\n<!-- owner:all -->\n<!-- owner:visual -->\nin\n<!-- /owner:visual -->\nleak\n<!-- /owner:all -->\n' >"$tmp/nested.md"
@@ -862,7 +863,7 @@ check "an unclosed owner section is a template error" refuses "$squad" _owner-fi
 printf 'a\n<!-- owner:all -->\nold\n<!-- /owner:all -->\n<!-- owner:visual -->\nnew\n<!-- /owner:visual -->\nb\n' >"$tmp/ok.md"
 check "a well-formed template keeps only its mode" sh -c "test \"\$('$squad' _owner-filter visual <'$tmp/ok.md' | tr '\n' ' ')\" = 'a new b '"
 reset_log
-check "squad feedback saves, logs and tells the lead" sh -c "'$squad' feedback 'The tooltip gap looks 1 px too tight in dark' | grep -q 'F-1 saved and sent' && grep -q '^## F-1 · ' .team/FEEDBACK.md && grep -q 'too tight in dark' .team/FEEDBACK.md && grep -q ' owner - FEEDBACK F-1 The tooltip gap' .team/events.log && grep -q 'agent prompt lead \[squad\] Feedback F-1 from V!' '$MOCK_LOG'"
+check "squad feedback saves, logs and tells the lead" sh -c "'$squad' feedback 'The tooltip gap looks 1 px too tight in dark' | grep -q 'F-1 saved and sent' && grep -q '^## F-1 · ' .team/FEEDBACK.md && grep -q 'too tight in dark' .team/FEEDBACK.md && grep -q ' owner - FEEDBACK F-1 The tooltip gap' .team/events.log && grep -q 'agent prompt lead \[squad\] Feedback F-1 from the owner' '$MOCK_LOG'"
 printf 'Card raised: the shadow is too strong at 390 px\nCompare with the preview.\n' >"$tmp/fb.txt"
 check "squad feedback --file takes a longer note as F-2" sh -c "'$squad' feedback --file '$tmp/fb.txt' >/dev/null && grep -q '^## F-2 · ' .team/FEEDBACK.md && grep -q 'Compare with the preview.' .team/FEEDBACK.md"
 check "empty feedback is refused" refuses "$squad" feedback '   '

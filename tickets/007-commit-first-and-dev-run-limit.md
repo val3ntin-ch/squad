@@ -1,18 +1,18 @@
 # 007 · Heavy runs on committed code, and a shorter limit for dev runs
-Status: Approved (V!, 13 Nov 2026)
+Status: Approved (the owner, 13 Nov 2026)
 Size: S
 
 ## Goal
 A heavy run tests only committed code, so a killed run never leaves an edit behind and the
 result names the commit it proves. A dev's diagnostic run holds the shared lock for less time
-than the tester's full run. Source: hive observer passes 57–62 (decision 54 broken three times
+than the tester's full run. Source: project A observer passes 57–62 (decision 54 broken three times
 in an hour; `sed -i` edits inside lock scripts; dev runs of 21–25 min while two devs waited).
 
 ## Scope
 - In: `squad heavy` refuses a dev seat whose worktree has uncommitted changes; the commit is
   recorded in the lock and in `HEAVY_START`; `heavy_timeout_dev` in team.conf; role and
   protocol text; README.
-- Out: per-seat sandboxes or machines (isolation instead of a lock): an open decision for V!,
+- Out: per-seat sandboxes or machines (isolation instead of a lock): an open decision for the owner,
   pending the research; the tester's and the lead's runs (no commit rule for them).
 
 ## Done when
@@ -39,7 +39,7 @@ in an hour; `sed -i` edits inside lock scripts; dev runs of 21–25 min while tw
 ## Assumptions & open questions
 1. The rule applies to dev seats only (decision 54 is about devs; the tester checks out
    detached commits and writes its artefacts under `.team/`).
-2. Open decision for V! (after the research): isolation per seat instead of one shared lock.
+2. Open decision for the owner (after the research): isolation per seat instead of one shared lock.
 
 ## Evidence (13 Nov 2026)
 `bash test/smoke.sh`: 245 passed under bash 5 and /bin/bash 3.2.57; `shellcheck -S warning`: clean.
