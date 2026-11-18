@@ -907,10 +907,14 @@ queue_pending() { # <seat> [<my pending file>]: another dispatch waits for this 
   done
   return 1
 }
+request_kind() { # <dispatch arguments...> -> 1 for a contract request (the option after seat, task and --escalate), else 0
+  shift 2; [ "${1:-}" != --escalate ] || shift
+  if [ "${1:-}" = --contract ]; then echo 1; else echo 0; fi
+}
 dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the background until the seat is free, then dispatch
   local seat=$1 task=$2; shift 2
   local log="$TEAM_DIR/seats/$seat.queue.log" since contract=0 a
-  for a in "$@"; do [ "$a" = --contract ] && contract=1; done
+  contract=$(request_kind "$@")
   mkdir -p "$TEAM_DIR/seats/$seat.pending"
   since=$(wc -l <"$TEAM_DIR/events.log" | tr -d ' ')   # before the QUEUED line: a DISPATCH right after it still counts
   log_event "$seat" "$task" DISPATCH_QUEUED "$([ "$contract" = 1 ] && printf 'contract=1 ')waits for $seat to be free"
@@ -957,18 +961,18 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
 
 requeue_orphans() { # a queued request whose waiter is gone (a restart): a new waiter takes it, unless it was delivered
   local f c p a d args
+  mkdir -p "$TEAM_DIR/seats/claims"
   for f in "$TEAM_DIR"/seats/*.pending/*; do
-    case "$f" in *.claim) continue ;; esac
     [ -f "$f" ] || continue
     p=$(basename "$f" | cut -d- -f2)
     kill -0 "$p" 2>/dev/null && continue
-    c="$f.claim"; mv "$f" "$c" 2>/dev/null || continue   # one strip takes it
+    c="$TEAM_DIR/seats/claims/$(basename "$f")"; mv "$f" "$c" 2>/dev/null || continue   # one strip takes it
     args=(); while IFS= read -r -d '' a; do args+=("$a"); done <"$c"
     d=${args[0]:-}
     if [ "${d%%=*}" != deferred ] || [ "${#args[@]}" -lt 3 ]; then rm -f "$c"; continue; fi   # an older file without its request
     args=("${args[@]:1}")
     # delivered: its newest send for this seat and task is a DISPATCH that did not fail afterwards
-    local kc=0; case " ${args[*]} " in *" --contract "*) kc=1 ;; esac   # a contract request and a task request are separate
+    local kc; kc=$(request_kind "${args[@]}")   # a contract request and a task request are separate
     if awk -v s="${args[0]}" -v t="${args[1]}" -v c="$kc" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 == t {
          if ($5 == "DISPATCH") { k = (index($0, "contract=1") > 0) ? 1 : 0; if (k == c) ok = 1 }
          else if ($5 == "DISPATCH_QUEUED") { if (((index($0, "contract=1") > 0) ? 1 : 0) == c) ok = 0 }   # queued again: a new request
@@ -2762,6 +2766,7 @@ observer_tab() { # <workspace> <observer index> -> the observer's pane; the watc
 revive_helpers() { # <pane list json>: after a herdr restart a helper pane holds only its shell: run its program again
   local l c p fg
   for l in watch observe report changes; do
+    case " ${S_NAME[*]} " in *" $l "*) continue ;; esac   # a seat with that name is an agent's pane, not the helper
     p=$(jq -r --arg l "$l" '.result.panes[] | select(.label == $l) | .pane_id' <<<"$1" | head -1)
     [ -n "$p" ] || continue
     # idle: herdr names only bare shells (no arguments) in the foreground; anything else, or no answer, is left alone

@@ -7,9 +7,10 @@ The owner opens the review or the observer tab and sees at once what each seat t
 for how long, in the same colours as the sidebar and the report.
 
 ## Scope
-- In: one status line on top of the review tab (tester and reviewers) and of the observer tab: per seat the
+- In: one status line per seat on top of the review tab (tester and reviewers) and of the observer tab: per seat the
   state mark, name and role in its colour, phase, ticket, title and time (the same line as the report's NOW).
-  It refreshes every 20 s.
+  It refreshes every 20 s. The pane has one row per seat in that tab. In the mission layout (no review tab:
+  the tester and reviewers are in the team tab) the pane goes under those seats in the team tab.
 - Out: the agents' own panes (squad does not draw inside them); new tabs; the HTML page.
 
 ## Done when
@@ -27,4 +28,4 @@ for how long, in the same colours as the sidebar and the report.
 - Preview in hive (read only) before the merge.
 
 ## Assumptions & open questions
-- Assumption: a 3-row pane is enough for up to 3 seats in a tab; more seats wrap into more rows.
+- The pane height follows the number of seats in the tab, so every seat has its own line.

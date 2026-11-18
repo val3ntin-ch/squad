@@ -19,9 +19,9 @@ Squad integrates the exact candidate that passed its required checks. The lead a
       reads that receipt and does not trust its caller; a PASS without a matching receipt is refused.
 - [ ] Candidate `PASS` requires every required check. The receipt matches the candidate SHA and hashes of the approved contract and check plan.
       A pending, unavailable or inconclusive row, a missing candidate brief, or a report whose `RESULT:` line
-      disagrees blocks the PASS. The ticket names where the candidate brief lives.
+      disagrees blocks the PASS. A candidate's brief lives at `.team/tasks/CANDIDATE-<n>.md`, as a task's brief does.
 - [ ] The tester's checkout is refused when it is dirty; events.log records the full SHA.
-- [ ] Integration advances to the tested candidate only with approvals for the exact task heads. The update checks the expected base atomically and stops if it moved.
+- [ ] Integration advances to the tested candidate only when the candidate contains the expected base and every approved task head, and each approval covers the exact task head. The update checks the expected base atomically and stops if it moved.
 - [ ] The smoke checks pass on macOS Bash 3.2 and CI's Linux shell. `shellcheck -S warning bin/squad install.sh test/smoke.sh` passes.
 
 ## Plan
@@ -44,6 +44,6 @@ Squad integrates the exact candidate that passed its required checks. The lead a
 - **Open decision for V!** Option A adds the local candidate gate in this ticket. Option B moves the evidence and promotion gate into hosted CI first. Recommend A for the current setup. A later ticket can add independent release enforcement.
 - **Open decision for V!** For work already in progress, either retest before its next integration or keep the old path temporarily. Recommend retest so every new integration has evidence.
 - A local receipt prevents workflow mistakes. Independent authority for release approval belongs in the delivery pilot.
-- [Audit findings](../docs/research/2026-11-17-squad-factory-audit.md)
-- Verification of the audit (17 Nov 2026): [audit check](../docs/research/2026-11-17-squad-factory-audit-verification.md).
+- Audit findings: the owner's local file `docs/research/2026-11-17-squad-factory-audit.md` (not in the repository).
+- Verification of the audit (17 Nov 2026): the local file `docs/research/2026-11-17-squad-factory-audit-verification.md` (not in the repository).
   It added the receipt authority, the untested rows, the brief location and the dirty checkout to "Done when".
