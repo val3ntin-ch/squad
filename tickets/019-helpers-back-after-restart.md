@@ -1,5 +1,5 @@
 # 019 · The helper tabs come back after a herdr restart; tests leave nothing running
-Status: Approved (the owner, 18 Nov 2026: "ok")
+Status: Done — awaiting PR review (approved by the owner on 18 Nov 2026)
 Size: S (≤ 2 h)
 
 ## Goal
@@ -35,3 +35,6 @@ leave no process behind.
 
 ## Assumptions & open questions
 - Assumption: "only a shell" means the pane's foreground process is the login shell (`-zsh`, `bash`, `sh`).
+
+## Verification
+Independent verifier on 1f630ea: READY (457 passed, 0 failed on /bin/bash 3.2; shellcheck clean; no leftover process; SIGTERM keeps the queued request, checked with its own probe). Its one open point, a task never measured, now shows `?` (smoke "020: a task never measured shows ?, not 0"; 458 passed).

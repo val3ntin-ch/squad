@@ -1157,6 +1157,8 @@ MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true;
 check "020: a failed contract send does not cancel a delivered test request" test "$(grep -c ' tester T-901 DISPATCH round' .team/events.log)" = 1
 # a reading at one end only is unknown too
 printf '2026-11-18 09:00:00 dev-b T-902 DISPATCH round=1\n2026-11-18 09:10:00 dev-b T-902 DONE u=44/90 c=22/50\n' >>.team/events.log
+printf '2026-11-18 09:00:00 dev-b T-903 DISPATCH round=1\n2026-11-18 09:10:00 dev-b T-903 DONE\n' >>.team/events.log
+check "020: a task never measured shows ?, not 0" grep -qE 'T-903 .*│ \? · \?$' <<<"$(printf q | "$squad" report --live 2>/dev/null || true)"
 check "020: a reading at one end only shows ?" grep -qE 'T-902 .*│ \? · \?$' <<<"$(printf q | "$squad" report --live 2>/dev/null || true)"
 echo
 echo "$pass passed, $fail failed"

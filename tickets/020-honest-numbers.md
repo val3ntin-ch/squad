@@ -1,5 +1,5 @@
 # 020 · Honest numbers: unknown cost, PASS with untested rows, queued tasks that survive
-Status: Approved (the owner, 18 Nov 2026: "ok")
+Status: Done — awaiting PR review (approved by the owner on 18 Nov 2026)
 Size: M (≤ 1 day)
 
 ## Goal
@@ -40,3 +40,6 @@ task is lost at a restart, or dropped when an earlier send never started.
 ## Assumptions & open questions
 - Assumption: two seats that work at the same time still share one quota window; the report keeps its note
   "an estimate, not exact tokens". Per-task tokens come with a later ticket.
+
+## Verification
+Independent verifier on 1f630ea: READY (457 passed, 0 failed on /bin/bash 3.2; shellcheck clean; no leftover process; SIGTERM keeps the queued request, checked with its own probe). Its one open point, a task never measured, now shows `?` (smoke "020: a task never measured shows ?, not 0"; 458 passed).

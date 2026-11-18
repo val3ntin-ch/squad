@@ -1332,8 +1332,8 @@ task_stats_raw() {
         dur = now - open[key]; st = role[s]
         if (st == "dev") dev[id] += dur; else if (st == "tester") tst[id] += dur; else rev[id] += dur
         # a reading that was unknown ("?") or that crossed a quota reset makes the cost of the task unknown, never 0
-        if (u == "?" || ou[key] == "?" || (u == "") != (ou[key] == "")) unk[id] = 1; else if (u != "" && ou[key] != "") { if (u >= ou[key]) cost[id] += u - ou[key]; else unk[id] = 1 }
-        if (cx == "?" || oc[key] == "?" || (cx == "") != (oc[key] == "")) cunk[id] = 1; else if (cx != "" && oc[key] != "") { if (cx >= oc[key]) ccost[id] += cx - oc[key]; else cunk[id] = 1 }
+        if (u == "?" || ou[key] == "?" || (u == "") != (ou[key] == "")) unk[id] = 1; else if (u != "" && ou[key] != "") { if (u >= ou[key]) { cost[id] += u - ou[key]; meas[id] = 1 } else unk[id] = 1 }
+        if (cx == "?" || oc[key] == "?" || (cx == "") != (oc[key] == "")) cunk[id] = 1; else if (cx != "" && oc[key] != "") { if (cx >= oc[key]) { ccost[id] += cx - oc[key]; cmeas[id] = 1 } else cunk[id] = 1 }
         delete open[key]
       }
       if (ev == "FAIL") fails[id]++
@@ -1344,7 +1344,7 @@ task_stats_raw() {
     }
     END { for (k = 1; k <= nt; k++) { id = order[k]; end = (id in merged) ? merged[id] : last[id]; tot = end - first[id]
             w = tot - dev[id] - tst[id] - rev[id]; if (w < 0) w = 0
-            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, ((id in unk) ? "?" : cost[id] + 0), ((id in cunk) ? "?" : ccost[id] + 0) } }' \
+            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, ((id in unk) || !(id in meas) ? "?" : cost[id] + 0), ((id in cunk) || !(id in cmeas) ? "?" : ccost[id] + 0) } }' \
     "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
