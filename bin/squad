@@ -903,30 +903,39 @@ queue_pending() { # <seat> [<my pending file>]: another dispatch waits for this 
     [ -e "$f" ] || continue
     [ "$f" = "${2:-}" ] && return 1   # sorted: the files before mine are ahead of me
     p=$(cut -d- -f2 <<<"$(basename "$f")")
-    if kill -0 "$p" 2>/dev/null; then return 0; fi
-    rm -f "$f"   # its waiter is gone
+    if kill -0 "$p" 2>/dev/null; then return 0; fi   # a dead waiter's file stays: report_lost_requests tells the lead
   done
   return 1
+}
+request_kind() { # <dispatch arguments...> -> 1 for a contract request (the option after seat, task and --escalate), else 0
+  shift 2; [ "${1:-}" != --escalate ] || shift
+  if [ "${1:-}" = --contract ]; then echo 1; else echo 0; fi
 }
 dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the background until the seat is free, then dispatch
   local seat=$1 task=$2; shift 2
   local log="$TEAM_DIR/seats/$seat.queue.log" since contract=0 a
-  for a in "$@"; do [ "$a" = --contract ] && contract=1; done
+  contract=$(request_kind "$@")
   mkdir -p "$TEAM_DIR/seats/$seat.pending"
   since=$(wc -l <"$TEAM_DIR/events.log" | tr -d ' ')   # before the QUEUED line: a DISPATCH right after it still counts
   log_event "$seat" "$task" DISPATCH_QUEUED "$([ "$contract" = 1 ] && printf 'contract=1 ')waits for $seat to be free"
   (
     set +e
-    me=$(sh -c 'echo $PPID'); mine="$TEAM_DIR/seats/$seat.pending/$(date +%s%N 2>/dev/null | tr -dc 0-9 | cut -c1-19)-$me-$task"
-    : >"$mine"; lockd="$TEAM_DIR/seats/$seat.dispatching"
-    trap 'rm -f "$mine"; [ "$(readlink "$lockd" 2>/dev/null)" = "$me" ] && rm -f "$lockd"' EXIT
+    me=$(exec sh -c 'echo "$PPID"'); mine="$TEAM_DIR/seats/$seat.pending/$(date +%s%N 2>/dev/null | tr -dc 0-9 | cut -c1-19)-$me-$task"
+    printf '%s\0' squad-request "$@" >"$mine"; lockd="$TEAM_DIR/seats/$seat.dispatching"   # the request, NUL-separated: after a restart the lead is told (report_lost_requests)
+    # a waiter stopped by a signal (a restart) keeps its file, so report_lost_requests can tell the lead
+    keep=0; trap 'keep=1; exit 129' HUP; trap 'keep=1; exit 143' TERM; trap 'keep=1; exit 130' INT
+    trap '[ "$keep" = 1 ] || rm -f "$mine"; [ "$(readlink "$lockd" 2>/dev/null)" = "$me" ] && rm -f "$lockd"' EXIT
     end=$(( $(date +%s) + DISPATCH_QUEUE_WAIT ))
     sent() { # this request is done meanwhile: sent for the same purpose (a contract, or the task), or the contract written
-      local lines; lines=$(tail -n +"$((since + 1))" "$TEAM_DIR/events.log" 2>/dev/null | grep -E "^[0-9-]+ [0-9:]+ $seat $task DISPATCH " || true)
-      if [ "$contract" = 1 ]; then printf '%s\n' "$lines" | grep -q 'contract=1' || [ -f "$TEAM_DIR/reports/$task-contract.md" ]
-      else printf '%s\n' "$lines" | grep -v 'contract=1' | grep -q .; fi
+      # a DISPATCH that ended in DISPATCH_NOT_STARTED or DISPATCH_FAILED was never sent
+      [ "$contract" = 1 ] && [ -f "$TEAM_DIR/reports/$task-contract.md" ] && return 0
+      tail -n +"$((since + 1))" "$TEAM_DIR/events.log" 2>/dev/null | awk -v s="$seat" -v t="$task" -v c="$contract" '
+        $3 == s && $4 == t && $5 == "DISPATCH" { k = (index($0, "contract=1") > 0) ? 1 : 0; if (k == c) ok = 1 }
+        $3 == s && $4 == t && ($5 == "DISPATCH_NOT_STARTED" || $5 == "DISPATCH_FAILED") && k == c { ok = 0 }
+        END { exit !ok }' 
     }
     while [ "$(date +%s)" -lt "$end" ]; do
+      [ -d "$TEAM_DIR" ] || exit 0   # the team is gone (deleted, or a test's folder): nothing to send to
       if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
       st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
       case "$st" in
@@ -947,6 +956,34 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
   ) >>"$log" 2>&1 </dev/null &
   disown $! 2>/dev/null || true
   say "$seat is busy: $task waits and is sent when $seat is free (queued; log: ${log#"$REPO"/})."
+}
+
+report_lost_requests() { # a queued request whose waiter is gone (a restart): the lead is told, squad sends nothing itself (the owner, 18 Nov 2026)
+  local f c p a args kc
+  mkdir -p "$TEAM_DIR/seats/claims"
+  for f in "$TEAM_DIR"/seats/*.pending/*; do
+    [ -f "$f" ] || continue
+    p=$(basename "$f" | cut -d- -f2)
+    kill -0 "$p" 2>/dev/null && continue
+    c="$TEAM_DIR/seats/claims/$(basename "$f")"; mv "$f" "$c" 2>/dev/null || continue   # one strip tells
+    args=(); while IFS= read -r -d '' a; do args+=("$a"); done <"$c"
+    [ "${args[0]:-}" = squad-request ] && [ "${#args[@]}" -ge 3 ] || { rm -f "$c"; continue; }   # an older file without its request
+    args=("${args[@]:1}"); kc=$(request_kind "${args[@]}")
+    if [ "$kc" = 1 ] && [ -f "$TEAM_DIR/reports/${args[1]}-contract.md" ]; then rm -f "$c"; continue; fi   # the contract is written meanwhile
+    # delivered: its newest send for this seat, task and purpose is a DISPATCH that did not fail afterwards
+    if awk -v s="${args[0]}" -v t="${args[1]}" -v c="$kc" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 == t {
+         if ($5 == "DISPATCH") { k = (index($0, "contract=1") > 0) ? 1 : 0; if (k == c) ok = 1 }
+         else if ($5 == "DISPATCH_QUEUED") { if (((index($0, "contract=1") > 0) ? 1 : 0) == c) ok = 0 }   # queued again: a new request
+         else if ($5 ~ /^DISPATCH_(NOT_STARTED|FAILED)$/ && k == c) ok = 0 } END { exit !ok }' "$TEAM_DIR/events.log" 2>/dev/null; then
+      rm -f "$c"; continue
+    fi
+    if herdr_team agent prompt "$LEAD" "[squad] ${args[1]} waited for ${args[0]} and was not sent when squad checked (its waiter stopped, for example at a herdr restart). Check the seat first; if it does not have the task, send it again: squad dispatch ${args[*]:0:2}$( [ "$kc" = 1 ] && printf ' --contract' ). (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
+      log_event "${args[0]}" "${args[1]}" DISPATCH_LOST "its waiter stopped (a restart); the lead was told"
+      rm -f "$c"
+    else
+      mv "$c" "$f" 2>/dev/null || true   # the lead is not reachable yet: the next tick tells it
+    fi
+  done
 }
 
 dev_seats() { local i n out=""; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = dev ] && out="$out ${S_NAME[$i]}"; done; echo "${out# }"; }
@@ -1290,8 +1327,8 @@ task_stats_raw() {
       prevsec = t[1] * 3600 + t[2] * 60 + t[3]
       now = day * 86400 + prevsec
       u = ""; cx = ""
-      for (k = f0; k <= NF; k++) { if ($k ~ /^u=[0-9]/) { split(substr($k, 3), uu, "/"); u = uu[1] + 0 }
-                                   if ($k ~ /^c=[0-9]/) { split(substr($k, 3), uu, "/"); cx = uu[1] + 0 } }
+      for (k = f0; k <= NF; k++) { if ($k ~ /^u=[0-9]/) { split(substr($k, 3), uu, "/"); u = uu[1] + 0 } else if ($k ~ /^u=\?/) u = "?"
+                                   if ($k ~ /^c=[0-9]/) { split(substr($k, 3), uu, "/"); cx = uu[1] + 0 } else if ($k ~ /^c=\?/) cx = "?" }
       if (id == "-" || id == "") next
       if (!(id in first)) { first[id] = now; order[++nt] = id }
       last[id] = now
@@ -1300,8 +1337,9 @@ task_stats_raw() {
       else if (ev ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT)$/ && (key in open)) {
         dur = now - open[key]; st = role[s]
         if (st == "dev") dev[id] += dur; else if (st == "tester") tst[id] += dur; else rev[id] += dur
-        if (u != "" && ou[key] != "" && u >= ou[key]) cost[id] += u - ou[key]
-        if (cx != "" && oc[key] != "" && cx >= oc[key]) ccost[id] += cx - oc[key]
+        # a reading that was unknown ("?") or that crossed a quota reset makes the cost of the task unknown, never 0
+        if (u == "?" || ou[key] == "?" || (u == "") != (ou[key] == "")) unk[id] = 1; else if (u != "" && ou[key] != "") { if (u >= ou[key]) { cost[id] += u - ou[key]; meas[id] = 1 } else unk[id] = 1 }
+        if (cx == "?" || oc[key] == "?" || (cx == "") != (oc[key] == "")) cunk[id] = 1; else if (cx != "" && oc[key] != "") { if (cx >= oc[key]) { ccost[id] += cx - oc[key]; cmeas[id] = 1 } else cunk[id] = 1 }
         delete open[key]
       }
       if (ev == "FAIL") fails[id]++
@@ -1312,7 +1350,7 @@ task_stats_raw() {
     }
     END { for (k = 1; k <= nt; k++) { id = order[k]; end = (id in merged) ? merged[id] : last[id]; tot = end - first[id]
             w = tot - dev[id] - tst[id] - rev[id]; if (w < 0) w = 0
-            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, cost[id] + 0, ccost[id] + 0 } }' \
+            printf "%s\t%s\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%s\t%s\n", id, (id in merged) ? "merged" : "open", tot / 60, dev[id] / 60, tst[id] / 60, rev[id] / 60, w / 60, chg[id] + 0, fails[id] + 0, blk[id] + 0, stl[id] + 0, ((id in unk) || !(id in meas) ? "?" : cost[id] + 0), ((id in cunk) || !(id in cmeas) ? "?" : ccost[id] + 0) } }' \
     "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
@@ -1433,7 +1471,7 @@ HEAD
     echo '</table></div></div></section>'
 
     echo '<section id=Cost><div class=card><h3>Cost per task</h3><p class=sub>Minutes from events.log. Claude and Codex 5-hour usage in percentage points, measured between dispatch and report when it was recorded; plan windows are shared by all seats, so this is an estimate, not exact tokens.</p><div class=tw><table><tr><th>Task</th><th>Seat minutes (dev + test + review)</th><th>Claude 5h points</th><th>Codex 5h points</th></tr>'
-    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 > 0 ? $12 : "—"), ($13 > 0 ? $13 : "—") }'
+    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 == "?" ? "?" : ($12 > 0 ? $12 : "—")), ($13 == "?" ? "?" : ($13 > 0 ? $13 : "—")) }'
     echo '</table></div></div></section>'
 
     echo '<section id=Events><div class=card><h3>Last 200 events</h3><pre>'
@@ -2157,7 +2195,7 @@ cmd_watch() {
   [ "$observe" = 1 ] || ui_reset   # a new strip (squad up, a herdr restart): send herdr everything again
   while :; do
     watch_once
-    [ "$observe" = 1 ] || { watchdog_tick || true; ui_sync || true; }
+    [ "$observe" = 1 ] || { watchdog_tick || true; ui_sync || true; report_lost_requests || true; }
     [ "$observe" = 0 ] || observe_tick
     [ "$once" = 1 ] && return 0
     sleep 20
@@ -2195,7 +2233,7 @@ dev_check_cmd() { # <brief> -> the first `command` under "## Dev check", or noth
        on && /`[^`]+`/ { match($0, /`[^`]+`/); print substr($0, RSTART + 1, RLENGTH - 2); exit }' "$1"
 }
 
-DONE_NOTE=""
+DONE_NOTE=""; DONE_UNTESTED=""
 done_gate() { # <index> <task> <status> <report>: refuse what is not proven
   local i=$1 task=$2 status=$3 report=$4 brief="$TEAM_DIR/tasks/$2.md" rows results missing="" failed="" open="" n r cmd log
   [ -f "$brief" ] || { DONE_NOTE="no brief $brief: gate skipped"; return 0; }
@@ -2226,7 +2264,7 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
       fi
     fi
   fi
-  [ -z "$open" ] || DONE_NOTE="not verified: rows$open"
+  [ -z "$open" ] || { DONE_NOTE="not verified: rows$open"; DONE_UNTESTED=$(printf '%s' "$open" | sed 's/([a-z]*)//g; s/^ //; s/ /,/g'); }
 }
 
 cmd_done() {
@@ -2246,7 +2284,7 @@ cmd_done() {
   DONE_NOTE=""
   case "$role:$status" in dev:DONE|tester:PASS) done_gate "$i" "$task" "$status" "$report" ;; esac
   [ -z "$report" ] || [ -f "$report" ] || say "squad: note — $report does not exist yet; write the report first."
-  log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)"
+  log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)${DONE_UNTESTED:+ untested=$DONE_UNTESTED}"
   [ "$seat" = "$LEAD" ] && return 0
   # Codex injects a message that arrives mid-turn into the running turn and
   # would drop the unfinished step; told to finish first, it does (tested).
@@ -2727,6 +2765,25 @@ observer_tab() { # <workspace> <observer index> -> the observer's pane; the watc
   echo "$p"
 }
 
+revive_helpers() { # <pane list json>: after a herdr restart a helper pane holds only its shell: run its program again
+  local l c p fg
+  for l in watch observe report changes; do
+    case " ${S_NAME[*]} " in *" $l "*) continue ;; esac   # a seat with that name is an agent's pane, not the helper
+    p=$(jq -r --arg l "$l" '.result.panes[] | select(.label == $l) | .pane_id' <<<"$1" | head -1)
+    [ -n "$p" ] || continue
+    # idle: herdr names only bare shells (no arguments) in the foreground; anything else, or no answer, is left alone
+    fg=$(herdr pane process-info --pane "$p" 2>/dev/null | jq -r '.result.process_info.foreground_processes | if length > 0 and all(.cmdline | test("^-?([^ ]*/)?(zsh|bash|sh|fish)$")) then "shell" else "busy" end' 2>/dev/null) || fg=""
+    [ "$fg" = shell ] || continue
+    case "$l" in
+      watch) c="$SQUAD_HOME/bin/squad watch" ;;
+      observe) c="$SQUAD_HOME/bin/squad watch --observe" ;;
+      report) c="$SQUAD_HOME/bin/squad report --live" ;;
+      changes) command -v lazygit >/dev/null 2>&1 || continue; c=lazygit ;;
+    esac
+    if herdr pane run "$p" "$c" >/dev/null 2>&1; then say "  restarted the $l pane"; fi
+  done
+}
+
 report_tab() { # <workspace>: the report, live, in the terminal ('o' opens the HTML page)
   local p
   p=$(new_tab "$1" report "$WT_ROOT/integration")
@@ -3071,6 +3128,7 @@ cmd_up() {
     if [ -z "$(jq -r '.result.panes[] | select(.label == "report") | .pane_id' <<<"$panes_json" | head -1)" ]; then
       report_tab "$ws"; say "  added the report tab"
     fi
+    revive_helpers "$panes_json"
   fi
 
   say "Starting agents"
