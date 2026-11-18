@@ -73,7 +73,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad doctor` | Checks what is installed. |
 | `squad permissions` | Once per machine: Claude Code's status line, and the Codex rules for the squad commands its seats run. |
 
-Used by the agents (you do not need them): `squad dispatch`, `squad done`, `squad heavy`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`, `squad git`, `squad herdr`, `squad session-id`.
+Used by the agents (you do not need them): `squad dispatch`, `squad done`, `squad heavy`, `squad candidate`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`, `squad git`, `squad herdr`, `squad session-id`.
 
 `init`, `new` and `config` accept `--preset NAME`.
 
@@ -174,11 +174,16 @@ lead   squad dispatch dev-a T-001              ▶ dev-a builds, runs its checks
 dev-a  squad done dev-a T-001 DONE             (refused while a row is missing or failed, or the dev check fails)
 lead   squad dispatch tester T-001             ▶ tester runs the checks through squad heavy, saves screenshots
 lead   squad dispatch rev-gpt T-001            ▶ GPT reviews the diff with a fresh context
-lead   adjudicates each finding, checks the screens, then squad merge T-001 — or sends it back
+lead   adjudicates each finding, checks the screens: squad done lead T-001 APPROVE (it records the exact commit) — or sends it back
+lead   writes tasks/CANDIDATE-1.md (its rows) and tasks/CANDIDATE-1.checks (its commands), then squad candidate CANDIDATE-1 T-001 T-002
+lead   squad dispatch tester CANDIDATE-1       ▶ tester runs squad heavy tester CANDIDATE-1 --batch …checks on that commit; a task's own PASS does not count
+lead   after the tester's PASS on CANDIDATE-1: squad merge CANDIDATE-1  (the integration branch becomes exactly that commit)
 lead   a real issue: squad consult "<question>" ▶ GPT brainstorms from official sources; both views go into DECISIONS.md
 observer  measures every pass, writes observer/NOW.md and SUGGESTIONS.md; the lead adopts or rejects each one
 lead   converge, LESSONS.md, READY.md ──▶ you   (only when everything is green)
 ```
+
+A team needs a tester seat to merge: `squad merge` takes only a candidate that the tester passed (add a `tester` seat to team.conf first).
 
 | File in `.team/` | Purpose |
 |---|---|

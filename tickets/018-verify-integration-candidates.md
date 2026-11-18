@@ -1,6 +1,6 @@
 # 018 · Check integration candidates before merge
 
-Status: Approved (the owner, 18 Nov 2026: "ok" to the recommended options: the gate runs locally in squad (A); running tasks are tested again before their next merge (B))
+Status: Done — awaiting PR review (approved by the owner on 18 Nov 2026: the gate runs locally in squad; running tasks are tested again before their next merge)
 Size: M (≤ 1 day)
 
 ## Goal
@@ -20,7 +20,7 @@ Squad integrates the exact candidate that passed its required checks. The lead a
 - [ ] Candidate `PASS` requires every required check. The receipt matches the candidate SHA and hashes of the approved contract and check plan.
       A pending, unavailable or inconclusive row, a missing candidate brief, or a report whose `RESULT:` line
       disagrees blocks the PASS. A candidate's brief lives at `.team/tasks/CANDIDATE-<n>.md`, as a task's brief does.
-- [ ] The tester's checkout is refused when it is dirty; events.log records the full SHA.
+- [ ] The tester's checkout is refused when it is dirty for a candidate run (a task run still keeps its saved screenshots); events.log records the full SHA.
 - [ ] Integration advances to the tested candidate only when the candidate contains the expected base and every approved task head, and each approval covers the exact task head. At promotion the receipt must still match the current approved contract and check plan. The update checks the expected base atomically and stops if it moved.
 - [ ] The smoke checks pass on macOS Bash 3.2 and CI's Linux shell. `shellcheck -S warning bin/squad install.sh test/smoke.sh` passes.
 
@@ -53,3 +53,7 @@ Squad integrates the exact candidate that passed its required checks. The lead a
   2. `squad done tester CANDIDATE-n PASS` with no brief, no report and no runner result logs `PASS`.
   3. With the tester worktree at commit A and the caller at commit B, `squad heavy tester … -- git rev-parse HEAD`
      prints B while events.log names A in `HEAVY_START`.
+
+## Verification
+Independent verifier on 284f431: every item PASS except the audit case 3 for a tester task run outside a candidate (the log named the tester worktree's commit while the command ran in the caller's folder). Fixed after that: a tester task run logs the commit of the folder its command runs in (smoke "018: a tester task run logs the commit its command saw"); `squad merge` also re-checks that the candidate contains its base and every approved commit. 497 passed, 0 failed on /bin/bash 3.2; shellcheck clean.
+Known limit (as the ticket says): every seat runs as the same OS user, so a seat could still edit a receipt, a record or events.log by hand; the gate stops workflow mistakes, not a determined seat.

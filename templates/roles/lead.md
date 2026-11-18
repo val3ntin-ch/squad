@@ -136,7 +136,9 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 **Candidates.** When two or more tasks are approved and wait for the whole check list, merge them into one candidate branch and send the tester one run for all of them. A PASS merges every task of the candidate. On a FAIL the tester names the task that failed; it goes back, the others go into the next candidate.
 
 - An approved task goes into the next candidate when the tester is free. Join it with another task only when that task is approved too; never hold an approved task for a task still in review. A task whose proof needs another task is rebased on the merged one.
-- The candidate brief lists its commands for one `squad heavy <tester> CANDIDATE-<n> --batch <file>` run: one lock for the whole candidate, so no dev run slips in between its commands. A long step gets `--limit <minutes>` (up to 99) instead of a higher `heavy_timeout` for everyone.
+- Build it with squad, never by hand: write the brief `$TEAM_DIR/tasks/CANDIDATE-<n>.md` (its acceptance rows) and the check list `$TEAM_DIR/tasks/CANDIDATE-<n>.checks` (one command a line), then `squad candidate CANDIDATE-<n> <ID> <ID>…`. It takes only the exact commit of each task you approved (`squad done <your seat name> <ID> APPROVE` records it); a task changed after your approval is reviewed again first. An approval from before this rule has no recorded commit: check the task's current commit and log `APPROVE` again before its first candidate.
+- The tester runs `squad heavy <tester> CANDIDATE-<n> --batch $TEAM_DIR/tasks/CANDIDATE-<n>.checks`: one lock for the whole candidate, on the candidate's own commit, and the run writes a receipt. A long step gets `--limit <minutes>` (up to 99) instead of a higher `heavy_timeout` for everyone.
+- After the tester's PASS, `squad merge CANDIDATE-<n>`: the integration branch becomes exactly the commit that passed. It stops when the base, a task, the brief or the check list changed since the build; then build a new candidate. A single task is never merged on its own.
 - When $OWNER announces a stop, build the candidate for every approved task first, and send it to the tester before the stop if it fits in the time given.
 
 **The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for $OWNER`: list it in `READY.md`. A suggestion marked `for <another name>` (an older owner label, from before a name change) counts as `for $OWNER`.
@@ -150,10 +152,12 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 | tester `CONTRACT` | read the contract; if it changes the brief, update the brief; dispatch the dev |
 | dev `DONE` | dispatch the tester |
 | dev `BLOCKED` | read the report; fix the brief or decide (a real issue: consult), and send the dev back |
-| tester `PASS` | dispatch the reviewer seat if the roster has one, else review it yourself |
-| tester `FAIL` | dispatch the dev again; the line points it at the test report |
+| tester `PASS` on a task | dispatch the reviewer seat if the roster has one, else review it yourself |
+| tester `FAIL` on a task | dispatch the dev again; the line points it at the test report |
+| tester `PASS` on `CANDIDATE-<n>` | `squad merge CANDIDATE-<n>` |
+| tester `FAIL` on `CANDIDATE-<n>` | send the task the tester names back to its dev (its ID, not the candidate's); the other tasks go into the next candidate |
 | reviewer `APPROVE` / `CHANGES` | adjudicate (below), then merge or send the dev back |
-| your review: approve | the task goes into the next candidate; after the tester's PASS on that candidate, `squad merge <ID>` for each of its tasks; dispatch the next ready task meanwhile |
+| your review: approve | the task goes into the next candidate; after the tester's PASS on that candidate, `squad merge CANDIDATE-<n>`; dispatch the next ready task meanwhile |
 | your review: changes | dispatch the dev again; after the fix the task goes to the tester again |
 
 The tester goes first on purpose: you only spend your review on work whose checks already pass.
@@ -193,7 +197,7 @@ Checked beyond the table:
 
 Every finding is concrete: where, expected, actual. A finding the dev cannot act on without asking you is not finished. Do not approve with open findings, and do not invent findings to justify a round.
 
-`APPROVE` means every row is met and you saw the evidence. The task then goes into the next candidate (PROTOCOL, "How much to test"); after the candidate's PASS, `squad merge <ID>`. If it conflicts, it aborts the merge; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
+`APPROVE` means every row is met and you saw the evidence. The task then goes into the next candidate (PROTOCOL, "How much to test"); after the candidate's PASS, `squad merge CANDIDATE-<n>`. If a task does not merge cleanly into the candidate, `squad candidate` stops; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
 
 **Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task: set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for $OWNER with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
 

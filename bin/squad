@@ -54,7 +54,8 @@ Usage:
   squad heavy <seat> [task] [--limit min] [--batch file] -- cmd   run a heavy command: one at a time,
                                     first come first served (agents); --batch: a candidate's commands under one lock
   squad dispatch <seat> <task>      clear a seat, give it the task, confirm it started (the lead)
-  squad merge <task>                merge an approved task into the integration branch (the lead)
+  squad candidate CANDIDATE-<n> <task...>  build a candidate from the lead's approved task commits (the lead)
+  squad merge CANDIDATE-<n>         the tested candidate becomes the integration branch, exactly (the lead)
   squad notify "<where>" "<rule>"   tell the seats at work that a rule changed (the lead)
   squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
   squad plan "<goal>" [--feature]   the planner researches and proves the plan before any work
@@ -334,7 +335,8 @@ valid_task() { # task ids reach file names, git branches and the report
 log_event() { # <seat> <task> <EVENT> [detail...]
   local seat=$1 task=$2 ev=$3; shift 3
   mkdir -p "$TEAM_DIR"
-  printf '%s %s %s %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$seat" "${task:--}" "$ev" "${*:+ $*}" >>"$TEAM_DIR/events.log"
+  local d="$*"; d=${d//$'\n'/ }; d=${d//$'\r'/ }   # one event is one line: a text cannot add a forged event
+  printf '%s %s %s %s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$seat" "${task:--}" "$ev" "${d:+ $d}" >>"$TEAM_DIR/events.log"
 }
 
 usage_tag() { # "u=<Claude 5h %>/<7d %> c=<Codex 5h %>/<7d %>" for cost lines (each only when known)
@@ -481,9 +483,10 @@ cmd_heavy() {
     shift
   done
   # a batch: the commands of one candidate under one lock, one after the other (observer S-44)
-  local -a batchv=()
+  local -a batchv=(); local bsnap=""
   if [ -n "$batch" ]; then
-    local bl; while IFS= read -r bl || [ -n "$bl" ]; do case "$bl" in ""|"#"*) ;; *) batchv+=("$bl") ;; esac; done <"$batch"
+    bsnap="$TEAM_DIR/heavy/checks.$$"; mkdir -p "$TEAM_DIR/heavy"; cp "$batch" "$bsnap" || die "cannot read $batch."   # one snapshot: what runs is what is hashed
+    local bl; while IFS= read -r bl; do batchv+=("$bl"); done < <(check_lines "$bsnap")
     [ "${#batchv[@]}" -gt 0 ] || die "--batch: $batch has no command."
     [ "$sample" = 0 ] || die "--sample and --batch do not go together: a candidate runs everything."
     [ "${1:-}" != -- ] || die "--batch takes its commands from the file, not after --."
@@ -492,7 +495,7 @@ cmd_heavy() {
     [ "${1:-}" = -- ] || die "$usage"
     shift; [ $# -gt 0 ] || die "squad heavy: no command after --"
   fi
-  local si wt sha dirty minutes run_dir shard="" a
+  local si wt sha dirty minutes run_dir="" shard="" a
   local -a cmdv=()
   si=$(seat_index "$seat") || die "no seat named '$seat' in this team."
   minutes=$HEAVY_TIMEOUT
@@ -508,7 +511,18 @@ cmd_heavy() {
       die "commit first: $seat's worktree has uncommitted changes (above). A WIP commit is fine; a diagnostic variant is a commit or a separate test file, never an edit inside the run."
     fi
   fi
-  sha=$(git -C "$wt" rev-parse --short HEAD 2>/dev/null || echo "?")
+  local crec="" full
+  if [ "${S_ROLE[$si]}" = tester ]; then
+    case "$task" in CANDIDATE-*) [ -f "$TEAM_DIR/candidates/$task" ] && crec="$TEAM_DIR/candidates/$task" ;; esac
+  fi
+  local cbuild="" cchecks="" csha=""
+  if [ -n "$crec" ]; then   # a built candidate: its own commit and check list, as recorded now (checked out under the lock)
+    cbuild=$(plan_hash "$crec"); csha=$(sed -n 's/^sha=//p' "$crec"); cchecks=$(plan_hash "$bsnap" 2>/dev/null || true)
+    [ -n "$batch" ] && [ "$cchecks" = "$(sed -n 's/^checks=//p' "$crec")" ] \
+      || die "$task runs its check list: --batch $TEAM_DIR/tasks/$task.checks (unchanged since 'squad candidate')."
+    run_dir=$(cd "$wt" && pwd -P)
+  fi
+  full=$(git -C "$wt" rev-parse HEAD 2>/dev/null || echo "?"); sha=${full:0:7}   # one lookup: the snapshot and the event name the same commit
 
   # --sample: one deterministic share of the tests (Anthropic's --fast: "deterministic per-agent");
   # {shard} goes where the runner takes it, e.g. vitest run --shard={shard}
@@ -528,7 +542,9 @@ cmd_heavy() {
   fi
 
   [ -z "$limit_opt" ] || minutes=$limit_opt   # a longer step of a candidate (observer S-31)
-  run_dir=$(pwd -P)
+  [ -n "$crec" ] || run_dir=$(pwd -P)
+  # the log names the commit the command really sees: the folder it runs in (a dev's snapshot is made from its own worktree)
+
   local snap_name="" limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
   local nsteps=1; [ -z "$batch" ] || nsteps=${#batchv[@]}
 
@@ -551,6 +567,15 @@ cmd_heavy() {
     HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$((limit * nsteps))"
   done
   rm -f "$HV_ME"; HV_ME=""
+  if [ "${S_ROLE[$si]}" != dev ] && [ -z "$crec" ]; then   # the commit the command really sees, read after the wait
+    full=$(git -C "$run_dir" rev-parse HEAD 2>/dev/null || echo "?"); sha=${full:0:7}
+  fi
+  if [ -n "$crec" ]; then   # under the lock: a second candidate run cannot change these files mid-run
+    dirty=$(wt_changes "$wt")
+    [ -z "$dirty" ] || { printf '%s\n' "$dirty" | head -10 >&2; die "the tester's worktree ($wt) has uncommitted changes (above): commit or clean it before a candidate run."; }
+    git -C "$wt" checkout -q --detach "$csha" || die "git could not check out $task in $wt."
+    sha=$(git -C "$wt" rev-parse --short HEAD); full=$(git -C "$wt" rev-parse HEAD)
+  fi
   # a dev's run happens in a snapshot of the commit, so the dev can keep working while it runs;
   # prepared under the lock, so a second run of the same seat cannot reset it mid-run
   if [ "${S_ROLE[$si]}" = dev ]; then
@@ -564,11 +589,11 @@ cmd_heavy() {
     [ -d "$run_dir" ] || run_dir=$snap
     snap_name=${snap#"$WT_ROOT"/}
   fi
-  local step=0 worst=0
+  local step=0 worst=0 rcs="" changed=0
   while :; do
     printf '@%s (%s min): %s\n' "$sha" "$minutes" "${cmdv[*]}" >"$HEAVY_DIR/lock.cmd"
     start=$(date +%s)
-    log_event "$seat" "$task" HEAVY_START "sha=$sha limit=${minutes}m${shard:+ sample=$shard}${snap_name:+ in=$snap_name}${batch:+ step=$((step + 1))/$nsteps} ${cmdv[*]}"
+    log_event "$seat" "$task" HEAVY_START "sha=$full limit=${minutes}m${shard:+ sample=$shard}${snap_name:+ in=$snap_name}${batch:+ step=$((step + 1))/$nsteps} ${cmdv[*]}"
     rm -f "$HEAVY_DIR/stopped.$$"
     HV_LOG="$HEAVY_DIR/run.$$.log"; : >"$HV_LOG"; HV_POS=0
     ( export SQUAD_SHARD="$shard"; run_in_group "$run_dir" "${cmdv[@]}" ) >"$HV_LOG" 2>&1 & HV_CPID=$!
@@ -592,11 +617,23 @@ cmd_heavy() {
     rm -f "$HEAVY_DIR/stopped.$$"
     log_event "$seat" "$task" HEAVY_END "rc=$rc $(( ($(date +%s) - start + 30) / 60 ))m${batch:+ step=$((step + 1))/$nsteps}"
     [ "$rc" = 0 ] || [ "$worst" != 0 ] || worst=$rc
-    step=$((step + 1))
+    step=$((step + 1)); rcs="$rcs step$step=$rc"
+    # a candidate step leaves its commit as it found it: a check that edits a tracked file proves nothing
+    if [ -n "$crec" ] && { [ "$(git -C "$wt" rev-parse HEAD)" != "$full" ] || [ -n "$(wt_changes "$wt")" ]; }; then changed=1; fi
     [ -n "$batch" ] && [ "$step" -lt "$nsteps" ] || break
     [ "$rc" != 124 ] || break   # a hung or timed-out step ends the batch: the lock goes to the next in line
     cmdv=(bash -c "${batchv[$step]}")
   done
+  if [ -n "$crec" ]; then   # the runner's receipt: written by this run, never by the seat that reports PASS
+    if [ "$changed" = 0 ] && [ "$(git -C "$wt" rev-parse HEAD)" = "$full" ] && [ -z "$(wt_changes "$wt")" ] && [ "$(plan_hash "$crec" 2>/dev/null)" = "$cbuild" ]; then
+      mkdir -p "$TEAM_DIR/receipts"
+      { echo "build=$cbuild"; echo "sha=$full"; echo "checks=$cchecks"; echo "steps=$step"; printf '%s\n' $rcs; } >"$TEAM_DIR/receipts/$task.tmp" \
+        && mv "$TEAM_DIR/receipts/$task.tmp" "$TEAM_DIR/receipts/$task"
+    else
+      say "squad heavy: the tester's worktree or $task's build changed during the run; no receipt for $task." >&2; [ "$worst" != 0 ] || worst=1
+    fi
+  fi
+  rm -f "$bsnap"
   heavy_release
   return "$worst"
 }
@@ -990,21 +1027,102 @@ dev_seats() { local i n out=""; n=$(seat_count); for ((i = 0; i < n; i++)); do [
 
 has_role() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = "$1" ] && return 0; done; return 1; }
 
-# ---- squad merge: merge an approved task into the integration branch ---------
-cmd_merge() {
+# ---- squad merge: the tested candidate becomes the integration branch ----------
+cmd_merge() { # squad merge CANDIDATE-<n>: the tested candidate becomes the integration branch, exactly (ticket 018)
   find_repo; load_conf
-  local task=${1:-} title
-  [ -n "$task" ] || die "usage: squad merge <task>"
-  valid_task "$task"
-  git -C "$WT_ROOT/integration" rev-parse --verify -q "task/$task" >/dev/null || die "no branch task/$task."
-  title=$(awk -F'|' -v id="$task" '{ gsub(/^ +| +$/, "", $2) } $2 == id { t = $3; gsub(/^ +| +$/, "", t); print t; exit }' "$TEAM_DIR/TASKS.md" 2>/dev/null || true)
-  if ! git -C "$WT_ROOT/integration" merge --no-ff "task/$task" -m "Merge $task${title:+: $title}"; then
-    git -C "$WT_ROOT/integration" merge --abort 2>/dev/null || true
-    log_event "$LEAD" "$task" MERGE_CONFLICT
-    die "merge of task/$task conflicts; aborted. Give the owning dev a task to bring $TEAM_BASE into task/$task."
-  fi
-  log_event "$LEAD" "$task" MERGE "$(git -C "$WT_ROOT/integration" rev-parse --short HEAD)"
-  say "merged task/$task into $TEAM_BASE."
+  local cand=${1:-} rec base sha line t h v why
+  case "$cand" in
+    CANDIDATE-[0-9]*) ;;
+    "") die "usage: squad merge CANDIDATE-<n>" ;;
+    *) die "a task reaches $TEAM_BASE only in a tested candidate: squad candidate CANDIDATE-<n> $cand …, the tester's PASS, then squad merge CANDIDATE-<n>." ;;
+  esac
+  valid_task "$cand"
+  mutex "$TEAM_DIR/.candidate.lock"; trap 'rmdir "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT   # builds and promotions one at a time
+  why=$(candidate_check "$cand") || die "merge refused: $why"
+  rec="$TEAM_DIR/candidates/$cand"
+  local testers=""; for ((t = 0; t < $(seat_count); t++)); do [ "${S_ROLE[$t]}" = tester ] && testers="$testers ${S_NAME[$t]}"; done
+  awk -v c="$cand" -v ts=" $testers " -v b="$(plan_hash "$rec")" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == c && index(ts, " " $3 " ") {
+      if ($5 == "PASS") p = (index($0, " build=" b) > 0); else if ($5 == "FAIL") p = 0 } END { exit !p }' "$TEAM_DIR/events.log" 2>/dev/null \
+    || die "merge refused: the tester has not logged PASS for this build of $cand."
+  base=$(sed -n 's/^base=//p' "$rec"); sha=$(sed -n 's/^sha=//p' "$rec")
+  while IFS= read -r line; do
+    t=${line%%:*}; h=${line#*:}
+    [ "$(git -C "$WT_ROOT/integration" rev-parse -q --verify "task/$t" 2>/dev/null)" = "$h" ] || die "merge refused: task/$t changed after $cand was built: build a new candidate."
+    v=$(lead_verdict "$t"); [ "$v" = "APPROVE $h" ] || die "merge refused: the lead's newest verdict on $t does not approve the commit in $cand."
+    git -C "$WT_ROOT/integration" merge-base --is-ancestor "$h" "$sha" || die "merge refused: $cand does not contain the approved commit of $t."
+  done < <(sed -n 's/^task=//p' "$rec")
+  local I="$WT_ROOT/integration"
+  git -C "$I" merge-base --is-ancestor "$base" "$sha" || die "merge refused: $cand is not built on ${base:0:12}."
+  [ "$(git -C "$I" symbolic-ref -q HEAD)" = "refs/heads/$TEAM_BASE" ] || die "merge refused: the integration worktree ($I) is not on $TEAM_BASE (switch it back first)."
+  [ "$(git -C "$I" rev-parse HEAD)" = "$base" ] || die "merge refused: $TEAM_BASE moved since $cand was built (it is not at ${base:0:12} any more): build a new candidate."
+  git -C "$I" read-tree -n -m -u "$base" "$sha" || die "merge refused: the integration worktree ($I) has changes in the way (above); nothing moved."
+  # compare and swap: the branch moves only if it is still at the base the candidate was built on
+  # one transaction: the branch moves only if it is still at the base and every task is still at its approved commit
+  { printf 'start\n'; sed -n 's/^task=\([^:]*\):\(.*\)/verify refs\/heads\/task\/\1 \2/p' "$rec"
+    printf 'update refs/heads/%s %s %s\nprepare\ncommit\n' "$TEAM_BASE" "$sha" "$base"; } | git -C "$I" update-ref --stdin 2>/dev/null \
+    || die "merge refused: $TEAM_BASE or a task branch moved since $cand was built: build a new candidate."
+  git -C "$I" read-tree -m -u "$base" "$sha" || die "$TEAM_BASE is now ${sha:0:12}, but the integration worktree files could not follow (above): fix that worktree by hand; nothing is logged as merged."
+  while IFS= read -r line; do log_event "$LEAD" "${line%%:*}" MERGE "$sha"; done < <(sed -n 's/^task=//p' "$rec")
+  log_event "$LEAD" "$cand" CANDIDATE_MERGED "$sha"
+  say "$TEAM_BASE is now $cand (${sha:0:12}), the commit the tester passed."
+}
+
+lead_verdict() { # <task> -> "APPROVE <head>" or "CHANGES <head>": the lead's newest verdict and the commit it covers
+  awk -v l="$LEAD" -v t="$1" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == l && $4 == t && ($5 == "APPROVE" || $5 == "CHANGES") {
+      e = $5; h = ""; for (i = 6; i <= NF; i++) if ($i ~ /^head=/) h = substr($i, 6) } END { if (e != "") print e " " h }' "$TEAM_DIR/events.log" 2>/dev/null || true
+}
+
+candidate_check() { # <CANDIDATE-n>: its record, the runner's receipt and today's brief and check list agree; prints why not
+  local c=$1 rec="$TEAM_DIR/candidates/$1" rcp="$TEAM_DIR/receipts/$1" n k r want
+  [ -f "$rec" ] || { echo "$c was not built with 'squad candidate' (no record)."; return 1; }
+  [ -f "$rcp" ] || { echo "no receipt for $c: the tester's 'squad heavy <tester> $c --batch .team/tasks/$c.checks' writes it."; return 1; }
+  kv() { sed -n "s/^$1=//p" "$2" | head -1; }
+  [ "$(kv build "$rcp")" = "$(plan_hash "$rec")" ] || { echo "the receipt is from another build of $c: run it again."; return 1; }
+  [ "$(kv sha "$rcp")" = "$(kv sha "$rec")" ] || { echo "the receipt is for another commit than $c."; return 1; }
+  [ -f "$TEAM_DIR/tasks/$c.checks" ] && [ "$(kv checks "$rec")" = "$(plan_hash "$TEAM_DIR/tasks/$c.checks")" ] && [ "$(kv checks "$rcp")" = "$(kv checks "$rec")" ] \
+    || { echo "the check list of $c changed after it was built or run: build and run it again."; return 1; }
+  [ -f "$TEAM_DIR/tasks/$c.md" ] && [ "$(kv brief "$rec")" = "$(plan_hash "$TEAM_DIR/tasks/$c.md")" ] \
+    || { echo "the brief of $c changed after it was built: build and run it again."; return 1; }
+  want=$(check_lines "$TEAM_DIR/tasks/$c.checks" | wc -l | tr -d ' ')
+  n=$(kv steps "$rcp"); [ "${n:-0}" = "$want" ] || { echo "the receipt has ${n:-0} of $want checks: the run did not finish."; return 1; }
+  for ((k = 1; k <= n; k++)); do r=$(kv "step$k" "$rcp"); [ "$r" = 0 ] || { echo "check $k of $c failed (exit ${r:-?})."; return 1; }; done
+  return 0
+}
+
+cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the base and the lead's approved task commits
+  find_repo; load_conf
+  local cand=${1:-} t h v tmp base sha brief checks I="$WT_ROOT/integration"
+  [[ "$cand" =~ ^CANDIDATE-[0-9]+$ ]] && [ $# -ge 2 ] || die "usage: squad candidate CANDIDATE-<n> <task> [<task>...]"
+  shift
+  mutex "$TEAM_DIR/.candidate.lock"; trap 'rmdir "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT   # builds and promotions one at a time
+  brief="$TEAM_DIR/tasks/$cand.md"; checks="$TEAM_DIR/tasks/$cand.checks"
+  [ -n "$(acceptance_rows "$brief" 2>/dev/null)" ] || die "write the candidate's brief first, with its acceptance rows: $brief"
+  grep -qvE '^[[:space:]]*(#|$)' "$checks" 2>/dev/null || die "write the candidate's check list first: $checks (one command a line)."
+  base=$(git -C "$I" rev-parse "$TEAM_BASE") || die "no branch $TEAM_BASE."
+  local -a heads=()
+  for t in "$@"; do
+    valid_task "$t"
+    h=$(git -C "$I" rev-parse -q --verify "task/$t") || die "no branch task/$t."
+    v=$(lead_verdict "$t")
+    [ "${v%% *}" = APPROVE ] || die "$t is not approved by the lead (newest verdict: ${v%% *}${v:-none})."
+    [ "${v#* }" = "$h" ] || die "$t changed after the lead approved it: review the new commit first."
+    heads+=("$t:$h")
+  done
+  tmp="$WT_ROOT/.build-$cand"; git -C "$REPO" worktree remove --force "$tmp" >/dev/null 2>&1 || true; rm -rf "$tmp"
+  git -C "$REPO" worktree add -q --detach "$tmp" "$base" || die "git could not prepare $tmp."
+  for h in "${heads[@]}"; do   # the approved commits themselves: a branch that moves meanwhile changes nothing
+    t=${h%%:*}
+    if ! git -C "$tmp" merge -q --no-ff "${h#*:}" -m "Merge $t into $cand" >/dev/null 2>&1; then
+      git -C "$REPO" worktree remove --force "$tmp" >/dev/null 2>&1 || true
+      die "$t does not merge cleanly into $cand: send it back to its dev to bring $TEAM_BASE in."
+    fi
+  done
+  sha=$(git -C "$tmp" rev-parse HEAD); git -C "$REPO" worktree remove --force "$tmp" >/dev/null 2>&1 || true
+  git -C "$REPO" branch -f "candidate/$cand" "$sha" >/dev/null
+  mkdir -p "$TEAM_DIR/candidates"; rm -f "$TEAM_DIR/receipts/$cand"   # a receipt of an older build does not count
+  { echo "base=$base"; echo "sha=$sha"; echo "brief=$(plan_hash "$brief")"; echo "checks=$(plan_hash "$checks")"; printf 'task=%s\n' "${heads[@]}"; } >"$TEAM_DIR/candidates/$cand"
+  log_event "$LEAD" "$cand" CANDIDATE "sha=$sha base=$base tasks=$*"
+  say "$cand is ${sha:0:12} (candidate/$cand). The tester runs: squad heavy <tester> $cand --batch .team/tasks/$cand.checks"
 }
 
 # ---- squad notify: tell the seats at work that a rule changed ---------------
@@ -1137,6 +1255,13 @@ plan_check() { # <plan file> <critique file> -> the problems, one a line; empty 
 
 # the owner's approval: the plan's sha256, kept outside the team folder (agents write there); any later edit voids it
 plan_seal() { echo "$HOME/.config/squad/approvals/$SESSION_NAME-$(basename "$1").sha256"; }   # fixed: not under the team folder, not chosen by a variable
+wt_changes() { # <worktree>: its staged, unstaged and untracked changes; a status git cannot read counts as a change
+  local o; o=$(git -C "$1" status --porcelain --untracked-files=all 2>/dev/null) || { echo "(git status failed)"; return 0; }
+  printf '%s\n' "$o" | grep -v ' \.agents-verify-off$' | grep . || true
+}
+
+check_lines() { grep -vE '^[[:space:]]*(#|$)' "$1" 2>/dev/null || true; }   # <file>: its commands, one a line (a check list)
+
 plan_hash() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 plan_approved() { local s; s=$(plan_seal "$1"); [ -f "$1" ] && [ -f "$s" ] && [ "$(cat "$s")" = "$(plan_hash "$1")" ]; }
 
@@ -1346,7 +1471,7 @@ task_stats_raw() {
       if (ev == "BLOCKED") blk[id]++
       if (ev == "CHANGES") chg[id]++
       if (ev == "STALLED" || ev == "DEAD" || ev == "LOGIN") stl[id]++
-      if (ev == "MERGE") merged[id] = now
+      if (ev == "MERGE" || ev == "CANDIDATE_MERGED") merged[id] = now
     }
     END { for (k = 1; k <= nt; k++) { id = order[k]; end = (id in merged) ? merged[id] : last[id]; tot = end - first[id]
             w = tot - dev[id] - tst[id] - rev[id]; if (w < 0) w = 0
@@ -2236,6 +2361,14 @@ dev_check_cmd() { # <brief> -> the first `command` under "## Dev check", or noth
 DONE_NOTE=""; DONE_UNTESTED=""
 done_gate() { # <index> <task> <status> <report>: refuse what is not proven
   local i=$1 task=$2 status=$3 report=$4 brief="$TEAM_DIR/tasks/$2.md" rows results missing="" failed="" open="" n r cmd log
+  case "$task" in CANDIDATE-*)
+    if [ "$status" = PASS ]; then
+      [ -f "$brief" ] || die "PASS refused: $task has no brief ($brief)."
+      [ -f "$report" ] || die "PASS refused: write $report first."
+      [ "$(grep -m1 '^RESULT:' "$report" | tr -d ' ')" = "RESULT:PASS" ] || die "PASS refused: $report does not say RESULT: PASS."
+      local why; why=$(candidate_check "$task") || die "PASS refused: $why"
+    fi ;;
+  esac
   [ -f "$brief" ] || { DONE_NOTE="no brief $brief: gate skipped"; return 0; }
   rows=$(acceptance_rows "$brief")
   [ -n "$rows" ] || { DONE_NOTE="the brief has no acceptance rows: gate skipped"; return 0; }
@@ -2264,6 +2397,10 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
       fi
     fi
   fi
+  case "$task:$status" in CANDIDATE-*:PASS)
+    [ -z "$(awk '$2 != "pass"' <<<"$results")" ] || die "PASS refused: the report has a row that is not pass (a candidate passes only when every row passes)."
+    [ -z "$(awk '{ print $1 }' <<<"$results" | sort | uniq -d)" ] || die "PASS refused: the report lists a row twice."
+    [ -z "$open" ] || die "PASS refused: row(s)$open are not tested; a candidate passes only when every row passes." ;; esac
   [ -z "$open" ] || { DONE_NOTE="not verified: rows$open"; DONE_UNTESTED=$(printf '%s' "$open" | sed 's/([a-z]*)//g; s/^ //; s/ /,/g'); }
 }
 
@@ -2275,6 +2412,9 @@ cmd_done() {
   find_repo; load_conf
   i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
   role=${S_ROLE[$i]}
+  [ -z "${TEAM_ROLE:-}" ] || [ "$TEAM_ROLE" = "$seat" ] || die "$TEAM_ROLE cannot report for $seat: a seat reports only as itself."
+  case "$task:$status" in CANDIDATE-*:PASS|CANDIDATE-*:FAIL) [ "$role" = tester ] || die "only the tester reports a candidate's $status." ;; esac
+  case "$status" in APPROVE|CHANGES) [ "$role" = lead ] || [ "$role" = reviewer ] || die "only the lead or a reviewer gives a verdict." ;; esac
   case "$role" in
     dev) report="$TEAM_DIR/reports/$task-dev.md" ;;
     tester) if [ "$status" = CONTRACT ]; then report="$TEAM_DIR/reports/$task-contract.md"; else report="$TEAM_DIR/reports/$task-test.md"; fi ;;
@@ -2283,8 +2423,11 @@ cmd_done() {
   esac
   DONE_NOTE=""
   case "$role:$status" in dev:DONE|tester:PASS) done_gate "$i" "$task" "$status" "$report" ;; esac
+  local head="" build=""   # a verdict covers one exact commit of the task; a candidate's PASS one build (ticket 018)
+  case "$task:$status" in CANDIDATE-*:PASS) build=$(plan_hash "$TEAM_DIR/candidates/$task" 2>/dev/null || true) ;; esac
+  case "$status" in APPROVE|CHANGES) head=$(git -C "$WT_ROOT/integration" rev-parse -q --verify "task/$task" 2>/dev/null || true) ;; esac
   [ -z "$report" ] || [ -f "$report" ] || say "squad: note — $report does not exist yet; write the report first."
-  log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)${DONE_UNTESTED:+ untested=$DONE_UNTESTED}"
+  log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)${DONE_UNTESTED:+ untested=$DONE_UNTESTED}${head:+ head=$head}${build:+ build=$build}"
   [ "$seat" = "$LEAD" ] && return 0
   # Codex injects a message that arrives mid-turn into the running turn and
   # would drop the unfinished step; told to finish first, it does (tested).
@@ -3265,6 +3408,7 @@ case "$cmd" in
   update-conf) cmd_update_conf ;;
   dispatch) cmd_dispatch "$@" ;;
   merge)   cmd_merge "$@" ;;
+  candidate) cmd_candidate "$@" ;;
   notify)  cmd_notify "$@" ;;
   consult) cmd_consult "$@" ;;
   plan)    cmd_plan "$@" ;;

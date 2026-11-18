@@ -142,7 +142,7 @@ check "up remembers the session's socket" sh -c "HERDR_SOCKET_PATH=/s/x.sock '$s
 check "squad herdr uses the team's socket, not the caller's" sh -c "HERDR_SOCKET_PATH=/other.sock '$squad' herdr agent list >/dev/null; tail -1 '$MOCK_LOG' | grep -q 'sock=/s/x.sock'"
 check "squad herdr works from a team worktree" sh -c "cd '$tmp/proj-team/dev-a' && '$squad' herdr agent list >/dev/null"
 check "role files send git writes through squad git" grep -qF "$squad_abs git switch -c task/" .team/roles/dev.md
-check "the lead merges through squad merge" grep -qF "$squad_abs merge <ID>" .team/roles/lead.md
+check "the lead merges through squad merge" grep -qF "$squad_abs merge CANDIDATE-<n>" .team/roles/lead.md
 check "squad git runs an allowed write" sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -c t-probe >/dev/null 2>&1 && git branch --show-current | grep -qx t-probe"
 check "squad git refuses push" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git push"
 check "squad git refuses force" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -f t-probe"
@@ -431,8 +431,7 @@ check "the next dispatch puts the seat back on its own model" sh -c "MOCK_DYNAMI
 
 # 001 · squad merge and the ledger
 ( cd "$tmp/proj4-team/dev-a" && git switch -q -c task/T-100 team/integration && echo x >t100.txt && git add t100.txt && git commit -qm "T-100" )
-check "merge merges an approved task into the integration branch" "$squad" merge T-100
-check "the merge is in git and in the events" sh -c "git -C '$tmp/proj4-team/integration' log -1 --format=%s | grep -q 'Merge T-100' && grep -qE ' lead T-100 MERGE [0-9a-f]+' .team/events.log"
+check "a task alone is not merged: it goes through a tested candidate (018)" refuses "$squad" merge T-100
 check "event lines carry the date and the time" grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2} ' .team/events.log
 
 # 001 · the verify switch
@@ -702,11 +701,11 @@ cd "$tmp/proj4"
 dc="$tmp/proj4-team/dev-c"
 git -C "$dc" switch -q -c task/T-800 team/integration
 echo one >"$dc/marker.txt"; git -C "$dc" add marker.txt; git -C "$dc" commit -qm "T-800 marker"
-want=$(git -C "$dc" rev-parse --short HEAD)
+want=$(git -C "$dc" rev-parse --short HEAD); wantfull=$(git -C "$dc" rev-parse HEAD)
 sed -i.bak "s#^setup.*#setup echo ran >>'$tmp/setup-runs'#" .team/team.conf && rm -f .team/team.conf.bak; rm -f "$tmp/setup-runs"
 out=$( cd "$dc" && "$squad" heavy dev-c T-800 -- sh -c 'git rev-parse --short HEAD; pwd -P' 2>/dev/null )
 check "a dev's run happens in its snapshot, at the commit it recorded" sh -c "printf '%s' \"\$1\" | grep -qx '$want' && printf '%s' \"\$1\" | grep -qx '$tmp/proj4-team/.runs/dev-c'" _ "$out"
-check "the run names its snapshot" grep -qE " dev-c T-800 HEAVY_START sha=$want limit=10m in=.runs/dev-c " .team/events.log
+check "the run names its snapshot" grep -qE " dev-c T-800 HEAVY_START sha=$wantfull limit=10m in=.runs/dev-c " .team/events.log
 ( cd "$dc" && "$squad" heavy dev-c T-801 -- sh -c 'sleep 2; cat marker.txt' >"$tmp/snapout" 2>/dev/null ) & hb=$!
 sleep 1; echo two >"$dc/marker.txt"; wait "$hb"; git -C "$dc" checkout -q marker.txt
 check "the dev's worktree can change while its run reads the snapshot" grep -qx one "$tmp/snapout"
@@ -1172,6 +1171,99 @@ sed -n '/^request_kind()/,/^}/p' "$squad" >"$tmp/rk.sh"
 check "020: text that contains --contract is a normal request" test "$(bash -c ". '$tmp/rk.sh'; request_kind tester T-1 'Read --contract notes'")" = 0
 check "020: the --contract option is a contract request" test "$(bash -c ". '$tmp/rk.sh'; request_kind tester T-1 --escalate --contract")" = 1
 check "020: a reading at one end only shows ?" grep -qE 'T-902 .*│ \? · \?$' <<<"$(printf q | "$squad" report --live 2>/dev/null || true)"
+
+# ---- 018 · integration candidates: only the tested commit is promoted -------------------
+I="$tmp/proj4-team/integration"; DB="$tmp/proj4-team/dev-b"; TW="$tmp/proj4-team/tester"
+base0=$(git -C "$I" rev-parse HEAD)
+git -C "$DB" switch -q -c task/T-910 team/integration && echo a >"$DB/t910.txt" && git -C "$DB" add t910.txt && git -C "$DB" commit -qm "T-910"
+git -C "$DB" switch -q -c task/T-911 team/integration && echo b >"$DB/t911.txt" && git -C "$DB" add t911.txt && git -C "$DB" commit -qm "T-911"
+# audit case 1: a task with no evidence never reaches integration
+check "018: merge of a single task is refused" refuses "$squad" merge T-910
+check "018: and integration did not move" test "$(git -C "$I" rev-parse HEAD)" = "$base0"
+printf '# CANDIDATE-1\n## Acceptance\n| # | Check |\n|---|---|\n| 1 | the suite passes |\n' >.team/tasks/CANDIDATE-1.md
+printf '  # the commit the checks see\ngit rev-parse HEAD >%s/seen\n   \n' "$tmp" >.team/tasks/CANDIDATE-1.checks   # an indented comment and a blank line count as no check
+check "018: a candidate is refused for a task the lead did not approve" refuses "$squad" candidate CANDIDATE-1 T-910 T-911
+printf 'x\n' >.team/reports/T-910-review-1.md; printf 'x\n' >.team/reports/T-911-review-1.md
+"$squad" "done" lead T-910 APPROVE >/dev/null 2>&1; "$squad" "done" lead T-911 APPROVE >/dev/null 2>&1
+check "018: an approval records the exact task commit" grep -qE " lead T-910 APPROVE .*head=$(git -C "$DB" rev-parse task/T-910)" .team/events.log
+git -C "$DB" switch -q task/T-911 && echo c >>"$DB/t911.txt" && git -C "$DB" commit -qam "T-911 after review"
+check "018: a task changed after its approval stays out of a candidate" refuses "$squad" candidate CANDIDATE-1 T-910 T-911
+"$squad" "done" lead T-911 APPROVE >/dev/null 2>&1
+check "018: the lead builds the candidate from the approved commits" "$squad" candidate CANDIDATE-1 T-910 T-911
+cand=$(git -C "$I" rev-parse candidate/CANDIDATE-1 2>/dev/null || echo none)
+check "018: the candidate holds the base and both task commits" sh -c "for c in $base0 $(git -C "$DB" rev-parse task/T-910) $(git -C "$DB" rev-parse task/T-911); do git -C '$I' merge-base --is-ancestor \$c '$cand' || exit 1; done"
+# audit case 3: the runner tests the candidate commit, wherever it is called from
+echo dirty >"$TW/dirty.txt"
+check "018: a dirty tester worktree is refused" refuses "$squad" heavy tester CANDIDATE-1 --batch .team/tasks/CANDIDATE-1.checks
+rm -f "$TW/dirty.txt"
+( cd "$DB" && "$squad" heavy tester CANDIDATE-1 --batch "$tmp/proj4/.team/tasks/CANDIDATE-1.checks" >/dev/null 2>&1 ) || true
+check "018: the checks ran on the candidate commit, not the caller's" test "$(cat "$tmp/seen" 2>/dev/null)" = "$cand"
+check "018: the run logs the full commit" grep -q " tester CANDIDATE-1 HEAVY_START sha=$cand " .team/events.log
+check "018: the runner wrote a receipt with each check's result" sh -c "grep -qx 'sha=$cand' .team/receipts/CANDIDATE-1 && grep -qx 'step1=0' .team/receipts/CANDIDATE-1"
+# audit case 2: PASS needs the brief, a passing report and the runner's receipt
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pending | later |\n' >.team/reports/CANDIDATE-1-test.md
+check "018: PASS with a pending row is refused" refuses "$squad" "done" tester CANDIDATE-1 PASS
+printf 'RESULT: FAIL\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n' >.team/reports/CANDIDATE-1-test.md
+check "018: PASS with a report that says FAIL is refused" refuses "$squad" "done" tester CANDIDATE-1 PASS
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n' >.team/reports/CANDIDATE-1-test.md
+cp .team/receipts/CANDIDATE-1 "$tmp/receipt.keep" 2>/dev/null || : >"$tmp/receipt.keep"; sed -i.bak 's/^step1=0$/step1=2/' .team/receipts/CANDIDATE-1 2>/dev/null || true; rm -f .team/receipts/CANDIDATE-1.bak
+check "018: PASS with a failed check in the receipt is refused" refuses "$squad" "done" tester CANDIDATE-1 PASS
+rm -f .team/receipts/CANDIDATE-1
+check "018: PASS without the runner's receipt is refused" refuses "$squad" "done" tester CANDIDATE-1 PASS
+cp "$tmp/receipt.keep" .team/receipts/CANDIDATE-1
+mv .team/tasks/CANDIDATE-1.md "$tmp/brief.keep"
+check "018: PASS without the brief is refused" refuses "$squad" "done" tester CANDIDATE-1 PASS
+mv "$tmp/brief.keep" .team/tasks/CANDIDATE-1.md
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n| 2 | pending | later |\n' >.team/reports/CANDIDATE-1-test.md
+check "018: PASS with any row that is not pass is refused, also a row the brief does not have" refuses "$squad" "done" tester CANDIDATE-1 PASS
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n' >.team/reports/CANDIDATE-1-test.md
+check "018: only the tester reports a candidate's PASS" refuses "$squad" "done" lead CANDIDATE-1 PASS
+check "018: a seat reports only as itself" refuses env TEAM_ROLE=dev-a "$squad" "done" tester CANDIDATE-1 PASS
+check "018: PASS with the brief, a passing report and a matching receipt is accepted" "$squad" "done" tester CANDIDATE-1 PASS
+check "018: the PASS names the build it is for" grep -qE ' tester CANDIDATE-1 PASS .*build=[0-9a-f]{64}' .team/events.log
+# promotion: integration becomes exactly the tested commit, unless something moved
+printf 'echo changed\n' >>.team/tasks/CANDIDATE-1.checks
+check "018: a check list changed after the run stops the promotion" refuses "$squad" merge CANDIDATE-1
+sed -i.bak '$d' .team/tasks/CANDIDATE-1.checks; rm -f .team/tasks/CANDIDATE-1.checks.bak
+h910=$(git -C "$DB" rev-parse task/T-910)
+git -C "$DB" switch -q task/T-910 && echo d >>"$DB/t910.txt" && git -C "$DB" commit -qam "T-910 late change" && git -C "$DB" switch -q --detach
+check "018: a task changed after the candidate stops the promotion" refuses "$squad" merge CANDIDATE-1
+git -C "$DB" update-ref refs/heads/task/T-910 "$h910"   # the task back at its approved commit
+git -C "$I" switch -q --detach
+check "018: an integration worktree that is not on the team branch stops the promotion" refuses "$squad" merge CANDIDATE-1
+git -C "$I" switch -q team/integration
+echo mine >"$I/t911.txt"
+check "018: a file in the way in the integration worktree stops the promotion" refuses "$squad" merge CANDIDATE-1
+check "018: and nothing moved" test "$(git -C "$I" rev-parse HEAD)" = "$base0"
+rm -f "$I/t911.txt"
+check "018: the tested candidate is promoted" "$squad" merge CANDIDATE-1
+check "018: integration is exactly the tested commit" test "$(git -C "$I" rev-parse HEAD)" = "$cand"
+check "018: each task of the candidate is logged as merged" sh -c "grep -q ' lead T-910 MERGE ' .team/events.log && grep -q ' lead T-911 MERGE ' .team/events.log"
+check "018: the integration worktree shows the merged files" test -f "$I/t911.txt"
+check "018: the report shows the promoted candidate as merged" grep -qE 'CANDIDATE-1 +merged' <<<"$(printf q | "$squad" report --live 2>/dev/null || true)"
+# a base that moved after the candidate was built stops the promotion
+git -C "$DB" switch -q -c task/T-912 team/integration && echo e >"$DB/t912.txt" && git -C "$DB" add t912.txt && git -C "$DB" commit -qm "T-912"
+printf 'x\n' >.team/reports/T-912-review-1.md; "$squad" "done" lead T-912 APPROVE >/dev/null 2>&1
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-2.md; printf 'true\n' >.team/tasks/CANDIDATE-2.checks
+"$squad" candidate CANDIDATE-2 T-912 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-2 --batch .team/tasks/CANDIDATE-2.checks >/dev/null 2>&1 || true
+cp .team/reports/CANDIDATE-1-test.md .team/reports/CANDIDATE-2-test.md; "$squad" "done" tester CANDIDATE-2 PASS >/dev/null 2>&1 || true
+check "018: the second candidate was built, run and passed" grep -q ' tester CANDIDATE-2 PASS' .team/events.log
+# a check that edits a tracked file and a later one that restores it: the run proves nothing, no receipt
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-3.md; printf 'echo x >>t912.txt\ngit checkout -- t912.txt\n' >.team/tasks/CANDIDATE-3.checks
+"$squad" candidate CANDIDATE-3 T-912 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-3 --batch .team/tasks/CANDIDATE-3.checks >/dev/null 2>&1 || true
+check "018: a candidate check that changes a tracked file leaves no receipt" sh -c "grep -q ' tester CANDIDATE-3 HEAVY_END .*step=2/2' .team/events.log && test ! -e .team/receipts/CANDIDATE-3"
+git -C "$I" commit -q --allow-empty -m "someone moved the base"; moved=$(git -C "$I" rev-parse HEAD)
+check "018: a base that moved stops the promotion" refuses "$squad" merge CANDIDATE-2
+check "018: and integration keeps the moved base" test "$(git -C "$I" rev-parse HEAD)" = "$moved"
+"$squad" heavy tester T-913 -- sh -c "$(printf 'true\n2026-11-18 10:00:00 lead T-913 APPROVE head=x')" >/dev/null 2>&1 || true
+check "018: the run's command is logged on its own line" grep -q ' tester T-913 HEAVY_START .*true 2026-11-18 10:00:00 lead T-913 APPROVE' .team/events.log
+check "018: a command's text cannot add a forged line to events.log" refuses grep -q '^2026-11-18 10:00:00 lead T-913 APPROVE' .team/events.log
+# audit case 3 outside a candidate: the log names the commit the command really ran on
+hrc=0; hout=$(cd "$DB" && "$squad" heavy tester T-914 -- git rev-parse HEAD 2>/dev/null) || hrc=$?
+seen=$(printf '%s\n' "$hout" | grep -E '^[0-9a-f]{40}$' | head -1 || true)
+check "018: a tester task run logs the commit its command saw" sh -c "[ $hrc = 0 ] && [ -n '$seen' ] && grep -q ' tester T-914 HEAVY_START sha=$seen ' .team/events.log"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
