@@ -33,6 +33,9 @@ case "$1 $2" in
                   if [ "$st" = working ]; then printf '✻ Working… (esc to interrupt)\n❯ \n'; else printf 'Claude Code\n❯ \n'; fi
                 fi ;;
   "agent send-keys") echo '{}' ;;
+  # MOCK_BUSY_PANES: panes whose program runs; any other pane has only its shell
+  "pane process-info") case " ${MOCK_BUSY_PANES:-} " in *" $4 "*) echo "{\"result\":{\"process_info\":{\"foreground_processes\":[{\"cmdline\":\"bash squad run\"}]}}}" ;;
+                         *) echo '{"result":{"process_info":{"foreground_processes":[{"cmdline":"-zsh"}]}}}' ;; esac ;;
   "config check") if [ "${MOCK_BAD_CONFIG:-}" = 1 ]; then echo '{"error":"bad config"}'; exit 1; fi; echo '{}' ;;
   "notification show") if [ -n "${MOCK_NOTIFY:-}" ]; then echo "$MOCK_NOTIFY"; else echo '{}'; fi ;;
   "session list") echo "${MOCK_SESSIONS:-{\}}" ;;
@@ -112,6 +115,13 @@ check "resume adopts the unnamed agent in its seat's pane" log_has "agent rename
 check "resume starts only the missing seats" test "$(grep -c '^herdr agent start' "$MOCK_LOG")" = 4
 check "resume types nothing to seats that load their role" test "$(grep -c '^herdr agent prompt' "$MOCK_LOG")" = 0
 check "resume does not re-brief the lead" refuses log_has "agent prompt lead"
+# 019: after a herdr restart the helper panes hold only a shell: resume runs them again
+reset_log
+hp='{"result":{"panes":[{"pane_id":"w2:p1","label":"lead"},{"pane_id":"w2:p2","label":"dev-a"},{"pane_id":"w2:p3","label":"dev-b"},{"pane_id":"w2:p4","label":"rev-sol"},{"pane_id":"w2:p5","label":"rev-claude"},{"pane_id":"w2:p6","label":"tester"},{"pane_id":"w2:p7","label":"watch"},{"pane_id":"w2:p8","label":"report"},{"pane_id":"w2:p9","label":"changes"}]}}'
+env MOCK_WS="$ws" MOCK_PANES="$hp" MOCK_AGENTS="$agents" MOCK_BUSY_PANES="w2:p8" "$squad" up >/dev/null 2>&1 || true
+check "019: resume starts the strip again in a pane that holds only a shell" grep -q 'pane run w2:p7 .*/squad watch sock' "$MOCK_LOG"
+check "019: resume starts lazygit again in its pane" grep -q 'pane run w2:p9 lazygit' "$MOCK_LOG"
+check "019: a helper pane whose program runs is left alone" refuses grep -q 'pane run w2:p8' "$MOCK_LOG"
 
 # a seat that runs but was never briefed (its first run stopped early) gets briefed
 reset_log; rm -f .team/.briefed/dev-a
@@ -1076,6 +1086,46 @@ plan=$(printf q | MOCK_AGENTS='{"result":{"agents":[{"name":"planner","agent_sta
 check "017: an approval of an older plan does not mark the newest plan approved" grep -qE 'planner +planner +PLANNING +F-2 +Second goal +0m' <<<"$plan"
 printf '%s dev-b T-882 DISPATCH round=1\n%s dev-b T-882 DONE\n%s tester T-882 DISPATCH round=1\n%s rev-x T-882 APPROVE review=1\n' "$(now)" "$(now)" "$(now)" "$(now)" >>.team/events.log
 check "017: a reviewer's approval does not hide a test that is still running" grep -qE 'tester +tester +TESTING +T-882' <<<"$(printf q | MOCK_AGENTS='{"result":{"agents":[{"name":"planner","agent_status":"working"},{"name":"tester","agent_status":"working"}]}}' "$squad" report --live 2>/dev/null || true)"
+
+# ---- 019 · a queued dispatch whose team is gone stops ------------------------------------
+printf 'x\n' >.team/reports/T-890-contract.md
+echo working >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" dispatch dev-a T-890 >/dev/null 2>&1 || true
+qpid=""; for _ in 1 2 3 4 5 6 7 8 9 10; do   # the waiter writes its file a moment after dispatch returns
+  for f in .team/seats/dev-a.pending/*-T-890; do [ -e "$f" ] && qpid=$(basename "$f" | cut -d- -f2); done
+  [ -z "$qpid" ] || break; sleep 0.5; done
+check "019: the dispatch waits in the queue" test -n "$qpid"
+mv .team "$tmp/team.away"; sleep 4
+check "019: a queued dispatch whose team folder is gone stops" refuses kill -0 "${qpid:-1}"
+mv "$tmp/team.away" .team; rm -f "$tmp/state" .team/seats/dev-a.pending/*-T-890   # a deleted team does not come back
+
+# ---- 020 · honest numbers ----------------------------------------------------------------
+printf '2026-11-18 09:00:00 dev-b T-891 DISPATCH round=1 u=?/90 c=?/50\n2026-11-18 09:10:00 dev-b T-891 DONE u=44/90 c=22/50\n' >>.team/events.log
+printf '2026-11-18 09:00:00 dev-b T-892 DISPATCH round=1 u=40/90 c=20/50\n2026-11-18 09:10:00 dev-b T-892 DONE u=44/90 c=22/50\n' >>.team/events.log
+printf '2026-11-18 09:00:00 dev-b T-897 DISPATCH round=1 u=90/90 c=20/50\n2026-11-18 09:10:00 dev-b T-897 DONE u=5/90 c=22/50\n' >>.team/events.log
+costs=$(printf q | "$squad" report --live 2>/dev/null || true)
+check "020: a missing cost reading shows ?, not 0" grep -qE 'T-891 .*│ \? · \?$' <<<"$costs"
+check "020: a quota reset shows ? for that quota" grep -qE 'T-897 .*│ \? · 2$' <<<"$costs"
+check "020: a task with both readings keeps its number" grep -qE 'T-892 .*│ 4 · 2$' <<<"$costs"
+check "020: the HTML Cost tab shows ? too" sh -c "'$squad' report >/dev/null 2>&1; grep -q '<td>T-891</td><td class=n>[0-9]*</td><td class=n>?</td>' .team/report.html"
+printf '# T-893\n## Acceptance\n| # | Check |\n|---|---|\n| 1 | a |\n| 2 | b |\n| 3 | c |\n' >.team/tasks/T-893.md
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | x |\n| 2 | pending | y |\n| 3 | unavailable | z |\n' >.team/reports/T-893-test.md
+"$squad" "done" tester T-893 PASS >/dev/null 2>&1 || true
+check "020: a PASS with untested rows says which rows in events.log" grep -qE ' tester T-893 PASS .*untested=2,3' .team/events.log
+sed 's/T-893/T-894/' .team/tasks/T-893.md >.team/tasks/T-894.md
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | x |\n| 2 | pass | y |\n| 3 | pass | z |\n' >.team/reports/T-894-test.md
+"$squad" "done" tester T-894 PASS >/dev/null 2>&1 || true
+check "020: a PASS with every row passing has no untested part" sh -c "grep -q ' tester T-894 PASS' .team/events.log && ! grep -q ' tester T-894 PASS .*untested' .team/events.log"
+# a queued dispatch whose waiter died is sent again by the strip, with its arguments
+printf 'x\n' >.team/reports/T-895-contract.md; mkdir -p .team/seats/dev-a.pending
+printf 'dev-a\nT-895\n' >".team/seats/dev-a.pending/1000000000000000000-999999-T-895"
+echo idle >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 "$squad" watch --once >/dev/null 2>&1 || true
+check "020: the strip sends a queued task whose waiter died" sh -c "for k in 1 2 3 4 5 6 7 8 9 10; do grep -q ' dev-a T-895 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
+# a send that never started does not count as sent
+printf 'x\n' >.team/reports/T-896-contract.md; echo working >"$tmp/state"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-896 >/dev/null 2>&1 || true
+printf '%s dev-a T-896 DISPATCH round=1\n%s dev-a T-896 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" >>.team/events.log; echo idle >"$tmp/state"
+check "020: a queued task is not dropped after a send that never started" sh -c "for k in \$(seq 1 15); do [ \$(grep -c ' dev-a T-896 DISPATCH round' .team/events.log) -ge 2 ] && ! grep -q ' dev-a T-896 DISPATCH_DROPPED' .team/events.log && exit 0; sleep 1; done; exit 1"
+rm -f "$tmp/state"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
