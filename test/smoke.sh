@@ -25,7 +25,8 @@ case "$1 $2" in
   "agent list") if [ "${MOCK_DYNAMIC:-}" = 1 ]; then st=$(cat "$(dirname "$MOCK_LOG")/state" 2>/dev/null || echo idle)
                   echo "{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"$st\"},{\"name\":\"observer\",\"agent_status\":\"idle\"},{\"name\":\"lead\",\"agent_status\":\"working\"},{\"name\":\"tester\",\"agent_status\":\"${MOCK_TESTER:-idle}\"}]}}"
                 elif [ -n "${MOCK_AGENTS:-}" ]; then echo "$MOCK_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
-  "agent prompt") if [ "${MOCK_DYNAMIC:-}" = 1 ] && [ "$3" = dev-a ]; then
+  "agent prompt") if [ "$3" = "${MOCK_FAIL_PROMPT:-}" ]; then echo '{"error":"agent_not_found"}' >&2; exit 1; fi
+                if [ "${MOCK_DYNAMIC:-}" = 1 ] && [ "$3" = dev-a ]; then
                     case "$4" in /*) echo idle ;; *) if [ "${MOCK_NEVER_WORK:-}" = 1 ]; then echo idle; else echo working; fi ;; esac >"$(dirname "$MOCK_LOG")/state"; fi
                   echo '{}' ;;
   "agent read") if [ -n "${MOCK_PANE_TEXT:-}" ]; then echo "$MOCK_PANE_TEXT"
@@ -1120,7 +1121,12 @@ printf 'x\n' >.team/reports/T-895-contract.md; mkdir -p .team/seats/dev-a.pendin
 printf 'squad-request\0dev-a\0T-895\0' >".team/seats/dev-a.pending/1000000000000000000-999999-T-895"
 echo idle >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 "$squad" watch --once >/dev/null 2>&1 || true
 check "020: the lead hears of a queued task whose waiter died, with the command to send it" sh -c "grep -q ' dev-a T-895 DISPATCH_LOST' .team/events.log && grep -q 'agent prompt lead .*T-895 waited for dev-a.*squad dispatch dev-a T-895' '$MOCK_LOG'"
-check "020: squad does not send it by itself" refuses grep -q ' dev-a T-895 DISPATCH round' .team/events.log
+check "020: squad does not send it by itself, nor queue it again" sh -c "! grep -qE ' dev-a T-895 (DISPATCH round|DISPATCH_QUEUED)' .team/events.log"
+printf 'squad-request\0dev-a\0T-904\0' >".team/seats/dev-a.pending/1000000000000000005-999999-T-904"
+MOCK_FAIL_PROMPT=lead MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null 2>&1 || true
+check "020: when the lead cannot be told, the request stays for the next tick" sh -c "ls .team/seats/dev-a.pending/*-T-904 >/dev/null 2>&1 && ! grep -q ' dev-a T-904 DISPATCH_LOST' .team/events.log"
+MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null 2>&1 || true
+check "020: the next tick tells the lead, once" test "$(grep -c ' dev-a T-904 DISPATCH_LOST' .team/events.log)" = 1
 # a send that never started does not count as sent
 printf 'x\n' >.team/reports/T-896-contract.md; echo working >"$tmp/state"
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-896 >/dev/null 2>&1 || true
@@ -1143,7 +1149,7 @@ printf 'squad-request\0dev-a\0T-899\0' >".team/seats/dev-a.pending/1000000000000
 printf '%s dev-a T-899 DISPATCH_QUEUED x\n%s dev-a T-899 DISPATCH round=1\n' "$(now)" "$(now)" >>.team/events.log
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true; sleep 2
 check "020: a delivered request whose waiter died is not reported as lost" refuses grep -q ' dev-a T-899 DISPATCH_LOST' .team/events.log
-check "020: and its file is gone, with no claim left and no new queue entry" sh -c "! ls .team/seats/dev-a.pending/*-T-899 .team/seats/claims/*-T-899 >/dev/null 2>&1 && ! grep -q ' dev-a T-899 DISPATCH_QUEUED waits' .team/events.log"
+check "020: and its file is gone, with no claim left and no new queue entry" sh -c "for f in .team/seats/dev-a.pending/*-T-899 .team/seats/claims/*-T-899; do [ -e \"\$f\" ] && exit 1; done; ! grep -q ' dev-a T-899 DISPATCH_QUEUED waits' .team/events.log"
 # a request whose text has a line break is read back whole; a contract request is named as one
 printf 'squad-request\0tester\0T-900\0--contract\0line one\nline two\0' >".team/seats/tester.pending/1000000000000000002-999999-T-900"
 reset_log; MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null 2>&1 || true

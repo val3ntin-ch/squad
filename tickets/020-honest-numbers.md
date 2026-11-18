@@ -45,3 +45,7 @@ task is lost at a restart, or dropped when an earlier send never started.
 ## Verification
 Independent verifier on 1f630ea: READY (457 passed, 0 failed on /bin/bash 3.2; shellcheck clean; no leftover process; SIGTERM keeps the queued request, checked with its own probe). Its one open point, a task never measured, now shows `?` (smoke "020: a task never measured shows ?, not 0"; 458 passed).
 - Known limit (CodeRabbit, PR #24): the quota tag has no window id, so a rise inside a new 5-hour window after a reset to a lower value than before still shows a number. A later ticket can add the reset time to the tag.
+- Known limits after the owner's change to "tell the lead" (CodeRabbit, PR #24), each a rare double failure:
+  a manual send killed between its `DISPATCH` line and the prompt can hide a lost request; a newer queue entry for
+  the same task can make the lead get an extra "send it again" notice; a seat named `watch` keeps the strip pane
+  from being restarted.
