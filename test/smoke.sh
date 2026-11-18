@@ -1117,9 +1117,10 @@ printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1
 check "020: a PASS with every row passing has no untested part" sh -c "grep -q ' tester T-894 PASS' .team/events.log && ! grep -q ' tester T-894 PASS .*untested' .team/events.log"
 # a queued dispatch whose waiter died is sent again by the strip, with its arguments
 printf 'x\n' >.team/reports/T-895-contract.md; mkdir -p .team/seats/dev-a.pending
-printf 'deferred=0\0dev-a\0T-895\0' >".team/seats/dev-a.pending/1000000000000000000-999999-T-895"
+printf 'squad-request\0dev-a\0T-895\0' >".team/seats/dev-a.pending/1000000000000000000-999999-T-895"
 echo idle >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 "$squad" watch --once >/dev/null 2>&1 || true
-check "020: the strip sends a queued task whose waiter died" sh -c "for k in 1 2 3 4 5 6 7 8 9 10; do grep -q ' dev-a T-895 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
+check "020: the lead hears of a queued task whose waiter died, with the command to send it" sh -c "grep -q ' dev-a T-895 DISPATCH_LOST' .team/events.log && grep -q 'agent prompt lead .*T-895 waited for dev-a.*squad dispatch dev-a T-895' '$MOCK_LOG'"
+check "020: squad does not send it by itself" refuses grep -q ' dev-a T-895 DISPATCH round' .team/events.log
 # a send that never started does not count as sent
 printf 'x\n' >.team/reports/T-896-contract.md; echo working >"$tmp/state"
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-896 >/dev/null 2>&1 || true
@@ -1136,33 +1137,28 @@ if [ -n "$qpid" ] && [ "$qpid" -gt 1 ]; then kill -TERM "$qpid" 2>/dev/null || t
   for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$qpid" 2>/dev/null || break; sleep 0.5; done; fi   # the waiter has ended
 check "020: a waiter stopped by a signal keeps its request" test -e "$qf"
 echo idle >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" watch --once >/dev/null 2>&1 || true
-check "020: the strip sends that request again" sh -c "for k in \$(seq 1 15); do grep -q ' dev-a T-898 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
+check "020: the lead hears of that request" grep -q ' dev-a T-898 DISPATCH_LOST' .team/events.log
 # a request that was already delivered is not sent again
-printf 'deferred=0\0dev-a\0T-899\0' >".team/seats/dev-a.pending/1000000000000000001-999999-T-899"
+printf 'squad-request\0dev-a\0T-899\0' >".team/seats/dev-a.pending/1000000000000000001-999999-T-899"
 printf '%s dev-a T-899 DISPATCH_QUEUED x\n%s dev-a T-899 DISPATCH round=1\n' "$(now)" "$(now)" >>.team/events.log
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true; sleep 2
-check "020: a delivered request whose waiter died is not sent again" test "$(grep -c ' dev-a T-899 DISPATCH round' .team/events.log)" = 1
+check "020: a delivered request whose waiter died is not reported as lost" refuses grep -q ' dev-a T-899 DISPATCH_LOST' .team/events.log
 check "020: and its file is gone, with no claim left and no new queue entry" sh -c "! ls .team/seats/dev-a.pending/*-T-899 .team/seats/claims/*-T-899 >/dev/null 2>&1 && ! grep -q ' dev-a T-899 DISPATCH_QUEUED waits' .team/events.log"
-# a text with a line break stays one argument; the contract flag is kept
-echo working >"$tmp/state"
-printf 'deferred=1\0dev-a\0T-900\0line one\nline two\0' >".team/seats/dev-a.pending/1000000000000000002-999999-T-900"
-MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true
-nf=""; for _ in 1 2 3 4 5 6 7 8 9 10; do for f in .team/seats/dev-a.pending/*-T-900; do [ -e "$f" ] && [ "$f" != ".team/seats/dev-a.pending/1000000000000000002-999999-T-900" ] && nf=$f; done; [ -z "$nf" ] || break; sleep 0.5; done
-check "020: the new waiter keeps the arguments and the contract flag" test "$(tr '\0' '|' <"${nf:-/dev/null}")" = "deferred=1|dev-a|T-900|line one
-line two|"
-for f in .team/seats/dev-a.pending/*-T-900; do kill "$(basename "$f" | cut -d- -f2)" 2>/dev/null || true; done; rm -f .team/seats/dev-a.pending/*-T-900 "$tmp/state"
+# a request whose text has a line break is read back whole; a contract request is named as one
+printf 'squad-request\0tester\0T-900\0--contract\0line one\nline two\0' >".team/seats/tester.pending/1000000000000000002-999999-T-900"
+reset_log; MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null 2>&1 || true
+check "020: a lost contract request is named with --contract" grep -q 'agent prompt lead .*squad dispatch tester T-900 --contract' "$MOCK_LOG"
 # a failed contract send does not cancel a delivered test request (each purpose on its own)
 printf '%s tester T-901 DISPATCH_QUEUED x\n%s tester T-901 DISPATCH round=1\n%s tester T-901 DISPATCH contract=1 round=1\n%s tester T-901 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" "$(now)" "$(now)" >>.team/events.log
-printf 'deferred=0\0tester\0T-901\0' >".team/seats/tester.pending/1000000000000000003-999999-T-901"
+printf 'squad-request\0tester\0T-901\0' >".team/seats/tester.pending/1000000000000000003-999999-T-901"
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true; sleep 2
-check "020: a failed contract send does not cancel a delivered test request" test "$(grep -c ' tester T-901 DISPATCH round' .team/events.log)" = 1
+check "020: a failed contract send does not cancel a delivered test request" refuses grep -q ' tester T-901 DISPATCH_LOST' .team/events.log
 # a reading at one end only is unknown too
 printf '2026-11-18 09:00:00 dev-b T-902 DISPATCH round=1\n2026-11-18 09:10:00 dev-b T-902 DONE u=44/90 c=22/50\n' >>.team/events.log
 printf '2026-11-18 09:00:00 dev-b T-903 DISPATCH round=1\n2026-11-18 09:10:00 dev-b T-903 DONE\n' >>.team/events.log
 check "020: a task never measured shows ?, not 0" grep -qE 'T-903 .*│ \? · \?$' <<<"$(printf q | "$squad" report --live 2>/dev/null || true)"
-printf 'deferred=0\0dev-a\0T-1.claim\0' >".team/seats/dev-a.pending/1000000000000000004-999999-T-1.claim"
-check "020: a task id ending in .claim is still recovered" sh -c "MOCK_DYNAMIC=1 '$squad' watch --once >/dev/null 2>&1; ! ls .team/seats/dev-a.pending/1000000000000000004-999999-T-1.claim >/dev/null 2>&1"
-for f in .team/seats/dev-a.pending/*-T-1.claim; do [ -e "$f" ] && { kill "$(basename "$f" | cut -d- -f2)" 2>/dev/null || true; rm -f "$f"; }; done
+printf 'squad-request\0dev-a\0T-1.claim\0' >".team/seats/dev-a.pending/1000000000000000004-999999-T-1.claim"
+check "020: a task id ending in .claim is handled too" sh -c "MOCK_DYNAMIC=1 '$squad' watch --once >/dev/null 2>&1; grep -q ' dev-a T-1.claim DISPATCH_LOST' .team/events.log"
 sed -n '/^request_kind()/,/^}/p' "$squad" >"$tmp/rk.sh"
 check "020: text that contains --contract is a normal request" test "$(bash -c ". '$tmp/rk.sh'; request_kind tester T-1 'Read --contract notes'")" = 0
 check "020: the --contract option is a contract request" test "$(bash -c ". '$tmp/rk.sh'; request_kind tester T-1 --escalate --contract")" = 1

@@ -903,7 +903,7 @@ queue_pending() { # <seat> [<my pending file>]: another dispatch waits for this 
     [ -e "$f" ] || continue
     [ "$f" = "${2:-}" ] && return 1   # sorted: the files before mine are ahead of me
     p=$(cut -d- -f2 <<<"$(basename "$f")")
-    if kill -0 "$p" 2>/dev/null; then return 0; fi   # a dead waiter's file stays: requeue_orphans sends it again
+    if kill -0 "$p" 2>/dev/null; then return 0; fi   # a dead waiter's file stays: report_lost_requests tells the lead
   done
   return 1
 }
@@ -921,8 +921,8 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
   (
     set +e
     me=$(exec sh -c 'echo "$PPID"'); mine="$TEAM_DIR/seats/$seat.pending/$(date +%s%N 2>/dev/null | tr -dc 0-9 | cut -c1-19)-$me-$task"
-    printf '%s\0' "deferred=${SQUAD_CONTRACT_DEFERRED:-0}" "$@" >"$mine"; lockd="$TEAM_DIR/seats/$seat.dispatching"   # the request: a restart sends it again (requeue_orphans)
-    # a waiter stopped by a signal (a restart) keeps its file, so requeue_orphans can send the task again
+    printf '%s\0' squad-request "$@" >"$mine"; lockd="$TEAM_DIR/seats/$seat.dispatching"   # the request, NUL-separated: after a restart the lead is told (report_lost_requests)
+    # a waiter stopped by a signal (a restart) keeps its file, so report_lost_requests can tell the lead
     keep=0; trap 'keep=1; exit 129' HUP; trap 'keep=1; exit 143' TERM; trap 'keep=1; exit 130' INT
     trap '[ "$keep" = 1 ] || rm -f "$mine"; [ "$(readlink "$lockd" 2>/dev/null)" = "$me" ] && rm -f "$lockd"' EXIT
     end=$(( $(date +%s) + DISPATCH_QUEUE_WAIT ))
@@ -944,7 +944,6 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
             st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
             if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
             case "$st" in idle|done) ;; *) rm -f "$lockd"; sleep "${SQUAD_QUEUE_POLL:-15}"; continue ;; esac
-            rm -f "$mine"   # delivery starts: a kill from here on must not send it a second time
             if SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@"; then exit 0; fi
             herdr_team agent prompt "$LEAD" "[squad] the queued dispatch of $task to $seat failed: $log" >/dev/null 2>&1 || true
             exit 1
@@ -959,28 +958,26 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
   say "$seat is busy: $task waits and is sent when $seat is free (queued; log: ${log#"$REPO"/})."
 }
 
-requeue_orphans() { # a queued request whose waiter is gone (a restart): a new waiter takes it, unless it was delivered
-  local f c p a d args
+report_lost_requests() { # a queued request whose waiter is gone (a restart): the lead is told, squad sends nothing itself (the owner, 18 Nov 2026)
+  local f c p a args kc
   mkdir -p "$TEAM_DIR/seats/claims"
   for f in "$TEAM_DIR"/seats/*.pending/*; do
     [ -f "$f" ] || continue
     p=$(basename "$f" | cut -d- -f2)
     kill -0 "$p" 2>/dev/null && continue
-    c="$TEAM_DIR/seats/claims/$(basename "$f")"; mv "$f" "$c" 2>/dev/null || continue   # one strip takes it
-    args=(); while IFS= read -r -d '' a; do args+=("$a"); done <"$c"
-    d=${args[0]:-}
-    if [ "${d%%=*}" != deferred ] || [ "${#args[@]}" -lt 3 ]; then rm -f "$c"; continue; fi   # an older file without its request
-    args=("${args[@]:1}")
-    # delivered: its newest send for this seat and task is a DISPATCH that did not fail afterwards
-    local kc; kc=$(request_kind "${args[@]}")   # a contract request and a task request are separate
+    c="$TEAM_DIR/seats/claims/$(basename "$f")"; mv "$f" "$c" 2>/dev/null || continue   # one strip tells
+    args=(); while IFS= read -r -d '' a; do args+=("$a"); done <"$c"; rm -f "$c"
+    [ "${args[0]:-}" = squad-request ] && [ "${#args[@]}" -ge 3 ] || continue   # an older file without its request
+    args=("${args[@]:1}"); kc=$(request_kind "${args[@]}")
+    # delivered: its newest send for this seat, task and purpose is a DISPATCH that did not fail afterwards
     if awk -v s="${args[0]}" -v t="${args[1]}" -v c="$kc" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 == t {
          if ($5 == "DISPATCH") { k = (index($0, "contract=1") > 0) ? 1 : 0; if (k == c) ok = 1 }
          else if ($5 == "DISPATCH_QUEUED") { if (((index($0, "contract=1") > 0) ? 1 : 0) == c) ok = 0 }   # queued again: a new request
          else if ($5 ~ /^DISPATCH_(NOT_STARTED|FAILED)$/ && k == c) ok = 0 } END { exit !ok }' "$TEAM_DIR/events.log" 2>/dev/null; then
-      rm -f "$c"; continue
+      continue
     fi
-    SQUAD_CONTRACT_DEFERRED=${d#deferred=} dispatch_queue "${args[0]}" "${args[1]}" "${args[@]}" >/dev/null
-    rm -f "$c"
+    log_event "${args[0]}" "${args[1]}" DISPATCH_LOST "its waiter stopped (a restart); the lead sends it again"
+    herdr_team agent prompt "$LEAD" "[squad] ${args[1]} waited for ${args[0]} and was not sent (its waiter stopped, for example at a herdr restart). Send it again: squad dispatch ${args[*]:0:2}$( [ "$kc" = 1 ] && printf ' --contract' ). (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
   done
 }
 
@@ -2193,7 +2190,7 @@ cmd_watch() {
   [ "$observe" = 1 ] || ui_reset   # a new strip (squad up, a herdr restart): send herdr everything again
   while :; do
     watch_once
-    [ "$observe" = 1 ] || { watchdog_tick || true; ui_sync || true; requeue_orphans || true; }
+    [ "$observe" = 1 ] || { watchdog_tick || true; ui_sync || true; report_lost_requests || true; }
     [ "$observe" = 0 ] || observe_tick
     [ "$once" = 1 ] && return 0
     sleep 20
