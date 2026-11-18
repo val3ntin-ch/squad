@@ -34,7 +34,7 @@ case "$1 $2" in
                 fi ;;
   "agent send-keys") echo '{}' ;;
   # MOCK_BUSY_PANES: panes whose program runs; any other pane has only its shell
-  "pane process-info") case " ${MOCK_BUSY_PANES:-} " in *" $4 "*) echo "{\"result\":{\"process_info\":{\"foreground_processes\":[{\"cmdline\":\"bash squad run\"}]}}}" ;;
+  "pane process-info") case " ${MOCK_BUSY_PANES:-} " in *" $4 "*) echo "{\"result\":{\"process_info\":{\"foreground_processes\":[{\"cmdline\":\"-zsh -c /x/check.sh\"}]}}}" ;;
                          *) echo '{"result":{"process_info":{"foreground_processes":[{"cmdline":"-zsh"}]}}}' ;; esac ;;
   "config check") if [ "${MOCK_BAD_CONFIG:-}" = 1 ]; then echo '{"error":"bad config"}'; exit 1; fi; echo '{}' ;;
   "notification show") if [ -n "${MOCK_NOTIFY:-}" ]; then echo "$MOCK_NOTIFY"; else echo '{}'; fi ;;
@@ -1117,7 +1117,7 @@ printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1
 check "020: a PASS with every row passing has no untested part" sh -c "grep -q ' tester T-894 PASS' .team/events.log && ! grep -q ' tester T-894 PASS .*untested' .team/events.log"
 # a queued dispatch whose waiter died is sent again by the strip, with its arguments
 printf 'x\n' >.team/reports/T-895-contract.md; mkdir -p .team/seats/dev-a.pending
-printf 'dev-a\nT-895\n' >".team/seats/dev-a.pending/1000000000000000000-999999-T-895"
+printf 'deferred=0\0dev-a\0T-895\0' >".team/seats/dev-a.pending/1000000000000000000-999999-T-895"
 echo idle >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 "$squad" watch --once >/dev/null 2>&1 || true
 check "020: the strip sends a queued task whose waiter died" sh -c "for k in 1 2 3 4 5 6 7 8 9 10; do grep -q ' dev-a T-895 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
 # a send that never started does not count as sent
@@ -1126,6 +1126,38 @@ MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a 
 printf '%s dev-a T-896 DISPATCH round=1\n%s dev-a T-896 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" >>.team/events.log; echo idle >"$tmp/state"
 check "020: a queued task is not dropped after a send that never started" sh -c "for k in \$(seq 1 15); do [ \$(grep -c ' dev-a T-896 DISPATCH round' .team/events.log) -ge 2 ] && ! grep -q ' dev-a T-896 DISPATCH_DROPPED' .team/events.log && exit 0; sleep 1; done; exit 1"
 rm -f "$tmp/state"
+# a waiter stopped by a signal (a herdr restart) keeps its request; the strip sends it again
+printf 'x\n' >.team/reports/T-898-contract.md; echo working >"$tmp/state"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-898 >/dev/null 2>&1 || true
+qf=""; for _ in 1 2 3 4 5 6 7 8 9 10; do for f in .team/seats/dev-a.pending/*-T-898; do [ -e "$f" ] && qf=$f; done; [ -z "$qf" ] || break; sleep 0.5; done
+qpid=$(basename "${qf:-x-1-x}" | cut -d- -f2)
+check "020: the queue file names the live waiter" kill -0 "$qpid"
+kill -TERM "$qpid" 2>/dev/null || true; sleep 1
+check "020: a waiter stopped by a signal keeps its request" test -e "$qf"
+echo idle >"$tmp/state"; MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" watch --once >/dev/null 2>&1 || true
+check "020: the strip sends that request again" sh -c "for k in \$(seq 1 15); do grep -q ' dev-a T-898 DISPATCH round' .team/events.log && exit 0; sleep 1; done; exit 1"
+# a request that was already delivered is not sent again
+printf 'deferred=0\0dev-a\0T-899\0' >".team/seats/dev-a.pending/1000000000000000001-999999-T-899"
+printf '%s dev-a T-899 DISPATCH_QUEUED x\n%s dev-a T-899 DISPATCH round=1\n' "$(now)" "$(now)" >>.team/events.log
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true; sleep 2
+check "020: a delivered request whose waiter died is not sent again" test "$(grep -c ' dev-a T-899 DISPATCH round' .team/events.log)" = 1
+check "020: and its file is gone" sh -c "! ls .team/seats/dev-a.pending/*-T-899 >/dev/null 2>&1"
+# a text with a line break stays one argument; the contract flag is kept
+echo working >"$tmp/state"
+printf 'deferred=1\0dev-a\0T-900\0line one\nline two\0' >".team/seats/dev-a.pending/1000000000000000002-999999-T-900"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true
+nf=""; for _ in 1 2 3 4 5 6 7 8 9 10; do for f in .team/seats/dev-a.pending/*-T-900; do [ -e "$f" ] && [ "$f" != ".team/seats/dev-a.pending/1000000000000000002-999999-T-900" ] && nf=$f; done; [ -z "$nf" ] || break; sleep 0.5; done
+check "020: the new waiter keeps the arguments and the contract flag" test "$(tr '\0' '|' <"${nf:-/dev/null}")" = "deferred=1|dev-a|T-900|line one
+line two|"
+for f in .team/seats/dev-a.pending/*-T-900; do kill "$(basename "$f" | cut -d- -f2)" 2>/dev/null || true; done; rm -f .team/seats/dev-a.pending/*-T-900 "$tmp/state"
+# a failed contract send does not cancel a delivered test request (each purpose on its own)
+printf '%s tester T-901 DISPATCH_QUEUED x\n%s tester T-901 DISPATCH round=1\n%s tester T-901 DISPATCH contract=1 round=1\n%s tester T-901 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" "$(now)" "$(now)" >>.team/events.log
+printf 'deferred=0\0tester\0T-901\0' >".team/seats/tester.pending/1000000000000000003-999999-T-901"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 "$squad" watch --once >/dev/null 2>&1 || true; sleep 2
+check "020: a failed contract send does not cancel a delivered test request" test "$(grep -c ' tester T-901 DISPATCH round' .team/events.log)" = 1
+# a reading at one end only is unknown too
+printf '2026-11-18 09:00:00 dev-b T-902 DISPATCH round=1\n2026-11-18 09:10:00 dev-b T-902 DONE u=44/90 c=22/50\n' >>.team/events.log
+check "020: a reading at one end only shows ?" grep -qE 'T-902 .*│ \? · \?$' <<<"$(printf q | "$squad" report --live 2>/dev/null || true)"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
