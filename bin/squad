@@ -969,6 +969,7 @@ report_lost_requests() { # a queued request whose waiter is gone (a restart): th
     args=(); while IFS= read -r -d '' a; do args+=("$a"); done <"$c"
     [ "${args[0]:-}" = squad-request ] && [ "${#args[@]}" -ge 3 ] || { rm -f "$c"; continue; }   # an older file without its request
     args=("${args[@]:1}"); kc=$(request_kind "${args[@]}")
+    if [ "$kc" = 1 ] && [ -f "$TEAM_DIR/reports/${args[1]}-contract.md" ]; then rm -f "$c"; continue; fi   # the contract is written meanwhile
     # delivered: its newest send for this seat, task and purpose is a DISPATCH that did not fail afterwards
     if awk -v s="${args[0]}" -v t="${args[1]}" -v c="$kc" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 == s && $4 == t {
          if ($5 == "DISPATCH") { k = (index($0, "contract=1") > 0) ? 1 : 0; if (k == c) ok = 1 }
@@ -976,7 +977,7 @@ report_lost_requests() { # a queued request whose waiter is gone (a restart): th
          else if ($5 ~ /^DISPATCH_(NOT_STARTED|FAILED)$/ && k == c) ok = 0 } END { exit !ok }' "$TEAM_DIR/events.log" 2>/dev/null; then
       rm -f "$c"; continue
     fi
-    if herdr_team agent prompt "$LEAD" "[squad] ${args[1]} waited for ${args[0]} and was not sent (its waiter stopped, for example at a herdr restart). Send it again: squad dispatch ${args[*]:0:2}$( [ "$kc" = 1 ] && printf ' --contract' ). (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
+    if herdr_team agent prompt "$LEAD" "[squad] ${args[1]} waited for ${args[0]} and was not sent when squad checked (its waiter stopped, for example at a herdr restart). Check the seat first; if it does not have the task, send it again: squad dispatch ${args[*]:0:2}$( [ "$kc" = 1 ] && printf ' --contract' ). (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
       log_event "${args[0]}" "${args[1]}" DISPATCH_LOST "its waiter stopped (a restart); the lead was told"
       rm -f "$c"
     else

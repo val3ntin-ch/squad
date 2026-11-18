@@ -10,8 +10,8 @@ for how long, in the same colours as the sidebar and the report.
 - In: one status line per seat on top of the review tab (tester and reviewers) and of the observer tab: per seat the
   state mark, name and role in its colour, phase, ticket, title and time (the same line as the report's NOW).
   It refreshes every 20 s. The pane has one row per seat in that tab. In the mission layout (no review tab:
-  the tester and reviewers are in the team tab), and after a resume that put those seats in the team tab, the pane
-  goes under those seats in the team tab.
+  the tester and reviewers are in the team tab), and after a resume that put those seats in another tab, the pane
+  goes under those seats, in whatever tab they are.
 - Out: the agents' own panes (squad does not draw inside them); new tabs; the HTML page.
 
 ## Done when

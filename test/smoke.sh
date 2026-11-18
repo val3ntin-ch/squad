@@ -1153,6 +1153,9 @@ check "020: and its file is gone, with no claim left and no new queue entry" sh 
 # a request whose text has a line break is read back whole; a contract request is named as one
 printf 'squad-request\0tester\0T-900\0--contract\0line one\nline two\0' >".team/seats/tester.pending/1000000000000000002-999999-T-900"
 reset_log; MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null 2>&1 || true
+printf 'x\n' >.team/reports/T-905-contract.md; printf 'squad-request\0tester\0T-905\0--contract\0' >".team/seats/tester.pending/1000000000000000006-999999-T-905"
+MOCK_DYNAMIC=1 "$squad" watch --once >/dev/null 2>&1 || true
+check "020: a lost contract request whose contract is written is not reported" refuses grep -q ' tester T-905 DISPATCH_LOST' .team/events.log
 check "020: a lost contract request is named with --contract" grep -q 'agent prompt lead .*squad dispatch tester T-900 --contract' "$MOCK_LOG"
 # a failed contract send does not cancel a delivered test request (each purpose on its own)
 printf '%s tester T-901 DISPATCH_QUEUED x\n%s tester T-901 DISPATCH round=1\n%s tester T-901 DISPATCH contract=1 round=1\n%s tester T-901 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" "$(now)" "$(now)" >>.team/events.log
