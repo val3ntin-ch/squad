@@ -1,6 +1,6 @@
 # 018 · Check integration candidates before merge
 
-Status: Approved (the owner, 18 Nov 2026: "ok" to the recommended options: the gate runs locally in squad (A); running tasks are tested again before their next merge (B))
+Status: Done — awaiting PR review (approved by the owner on 18 Nov 2026: the gate runs locally in squad; running tasks are tested again before their next merge)
 Size: M (≤ 1 day)
 
 ## Goal
@@ -53,3 +53,7 @@ Squad integrates the exact candidate that passed its required checks. The lead a
   2. `squad done tester CANDIDATE-n PASS` with no brief, no report and no runner result logs `PASS`.
   3. With the tester worktree at commit A and the caller at commit B, `squad heavy tester … -- git rev-parse HEAD`
      prints B while events.log names A in `HEAVY_START`.
+
+## Verification
+Independent verifier on 284f431: every item PASS except the audit case 3 for a tester task run outside a candidate (the log named the tester worktree's commit while the command ran in the caller's folder). Fixed after that: a tester task run logs the commit of the folder its command runs in (smoke "018: a tester task run logs the commit its command saw"); `squad merge` also re-checks that the candidate contains its base and every approved commit. 497 passed, 0 failed on /bin/bash 3.2; shellcheck clean.
+Known limit (as the ticket says): every seat runs as the same OS user, so a seat could still edit a receipt, a record or events.log by hand; the gate stops workflow mistakes, not a determined seat.

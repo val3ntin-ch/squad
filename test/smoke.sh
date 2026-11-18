@@ -1245,6 +1245,9 @@ check "018: and integration keeps the moved base" test "$(git -C "$I" rev-parse 
 "$squad" heavy tester T-913 -- sh -c "$(printf 'true\n2026-11-18 10:00:00 lead T-913 APPROVE head=x')" >/dev/null 2>&1 || true
 check "018: the run's command is logged on its own line" grep -q ' tester T-913 HEAVY_START .*true 2026-11-18 10:00:00 lead T-913 APPROVE' .team/events.log
 check "018: a command's text cannot add a forged line to events.log" refuses grep -q '^2026-11-18 10:00:00 lead T-913 APPROVE' .team/events.log
+# audit case 3 outside a candidate: the log names the commit the command really ran on
+seen=$(cd "$DB" && "$squad" heavy tester T-914 -- git rev-parse HEAD 2>/dev/null | grep -E '^[0-9a-f]{40}$' | head -1 || true)
+check "018: a tester task run logs the commit its command saw" sh -c "[ -n '$seen' ] && grep -q ' tester T-914 HEAVY_START sha=$seen ' .team/events.log"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

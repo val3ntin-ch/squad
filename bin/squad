@@ -542,6 +542,10 @@ cmd_heavy() {
 
   [ -z "$limit_opt" ] || minutes=$limit_opt   # a longer step of a candidate (observer S-31)
   [ -n "$crec" ] || run_dir=$(pwd -P)
+  # the log names the commit the command really sees: the folder it runs in (a dev's snapshot is made from its own worktree)
+  if [ "${S_ROLE[$si]}" != dev ] && [ -z "$crec" ]; then
+    sha=$(git -C "$run_dir" rev-parse --short HEAD 2>/dev/null || echo "?"); full=$(git -C "$run_dir" rev-parse HEAD 2>/dev/null || echo "?")
+  fi
   local snap_name="" limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
   local nsteps=1; [ -z "$batch" ] || nsteps=${#batchv[@]}
 
@@ -1039,8 +1043,10 @@ cmd_merge() { # squad merge CANDIDATE-<n>: the tested candidate becomes the inte
     t=${line%%:*}; h=${line#*:}
     [ "$(git -C "$WT_ROOT/integration" rev-parse -q --verify "task/$t" 2>/dev/null)" = "$h" ] || die "merge refused: task/$t changed after $cand was built: build a new candidate."
     v=$(lead_verdict "$t"); [ "$v" = "APPROVE $h" ] || die "merge refused: the lead's newest verdict on $t does not approve the commit in $cand."
+    git -C "$WT_ROOT/integration" merge-base --is-ancestor "$h" "$sha" || die "merge refused: $cand does not contain the approved commit of $t."
   done < <(sed -n 's/^task=//p' "$rec")
   local I="$WT_ROOT/integration"
+  git -C "$I" merge-base --is-ancestor "$base" "$sha" || die "merge refused: $cand is not built on ${base:0:12}."
   [ "$(git -C "$I" rev-parse HEAD)" = "$base" ] || die "merge refused: $TEAM_BASE moved since $cand was built (it is not at ${base:0:12} any more): build a new candidate."
   git -C "$I" read-tree -n -m -u "$base" "$sha" || die "merge refused: the integration worktree ($I) has changes in the way (above); nothing moved."
   # compare and swap: the branch moves only if it is still at the base the candidate was built on
