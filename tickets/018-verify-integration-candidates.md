@@ -20,7 +20,7 @@ Squad integrates the exact candidate that passed its required checks. The lead a
 - [ ] Candidate `PASS` requires every required check. The receipt matches the candidate SHA and hashes of the approved contract and check plan.
       A pending, unavailable or inconclusive row, a missing candidate brief, or a report whose `RESULT:` line
       disagrees blocks the PASS. A candidate's brief lives at `.team/tasks/CANDIDATE-<n>.md`, as a task's brief does.
-- [ ] The tester's checkout is refused when it is dirty; events.log records the full SHA.
+- [ ] The tester's checkout is refused when it is dirty for a candidate run (a task run still keeps its saved screenshots); events.log records the full SHA.
 - [ ] Integration advances to the tested candidate only when the candidate contains the expected base and every approved task head, and each approval covers the exact task head. At promotion the receipt must still match the current approved contract and check plan. The update checks the expected base atomically and stops if it moved.
 - [ ] The smoke checks pass on macOS Bash 3.2 and CI's Linux shell. `shellcheck -S warning bin/squad install.sh test/smoke.sh` passes.
 

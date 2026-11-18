@@ -73,7 +73,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad doctor` | Checks what is installed. |
 | `squad permissions` | Once per machine: Claude Code's status line, and the Codex rules for the squad commands its seats run. |
 
-Used by the agents (you do not need them): `squad dispatch`, `squad done`, `squad heavy`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`, `squad git`, `squad herdr`, `squad session-id`.
+Used by the agents (you do not need them): `squad dispatch`, `squad done`, `squad heavy`, `squad candidate`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`, `squad git`, `squad herdr`, `squad session-id`.
 
 `init`, `new` and `config` accept `--preset NAME`.
 
@@ -174,7 +174,7 @@ lead   squad dispatch dev-a T-001              ▶ dev-a builds, runs its checks
 dev-a  squad done dev-a T-001 DONE             (refused while a row is missing or failed, or the dev check fails)
 lead   squad dispatch tester T-001             ▶ tester runs the checks through squad heavy, saves screenshots
 lead   squad dispatch rev-gpt T-001            ▶ GPT reviews the diff with a fresh context
-lead   adjudicates each finding, checks the screens, then squad merge T-001 — or sends it back
+lead   adjudicates each finding, checks the screens, puts approved tasks in a candidate (squad candidate), and after the tester's PASS runs squad merge CANDIDATE-1 — or sends a task back
 lead   a real issue: squad consult "<question>" ▶ GPT brainstorms from official sources; both views go into DECISIONS.md
 observer  measures every pass, writes observer/NOW.md and SUGGESTIONS.md; the lead adopts or rejects each one
 lead   converge, LESSONS.md, READY.md ──▶ you   (only when everything is green)
