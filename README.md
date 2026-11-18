@@ -174,11 +174,16 @@ lead   squad dispatch dev-a T-001              ▶ dev-a builds, runs its checks
 dev-a  squad done dev-a T-001 DONE             (refused while a row is missing or failed, or the dev check fails)
 lead   squad dispatch tester T-001             ▶ tester runs the checks through squad heavy, saves screenshots
 lead   squad dispatch rev-gpt T-001            ▶ GPT reviews the diff with a fresh context
-lead   adjudicates each finding, checks the screens, puts approved tasks in a candidate (squad candidate), and after the tester's PASS runs squad merge CANDIDATE-1 — or sends a task back
+lead   adjudicates each finding, checks the screens: squad done lead T-001 APPROVE (it records the exact commit) — or sends it back
+lead   writes tasks/CANDIDATE-1.md (its rows) and tasks/CANDIDATE-1.checks (its commands), then squad candidate CANDIDATE-1 T-001 T-002
+lead   squad dispatch tester CANDIDATE-1       ▶ tester runs squad heavy tester CANDIDATE-1 --batch …checks on that commit; a task's own PASS does not count
+lead   after the tester's PASS on CANDIDATE-1: squad merge CANDIDATE-1  (the integration branch becomes exactly that commit)
 lead   a real issue: squad consult "<question>" ▶ GPT brainstorms from official sources; both views go into DECISIONS.md
 observer  measures every pass, writes observer/NOW.md and SUGGESTIONS.md; the lead adopts or rejects each one
 lead   converge, LESSONS.md, READY.md ──▶ you   (only when everything is green)
 ```
+
+A team needs a tester seat to merge: `squad merge` takes only a candidate that the tester passed (add a `tester` seat to team.conf first).
 
 | File in `.team/` | Purpose |
 |---|---|
