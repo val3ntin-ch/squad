@@ -154,9 +154,16 @@ cp .team/team.conf "$tmp/team.conf.bak"; echo "base team/custom" >>.team/team.co
 check "022: squad git push follows the base in team.conf (team/integration is not it any more)" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push"
 echo "base main" >>.team/team.conf
 check "022: squad git push refuses a base named main" refuses sh -c "cd '$tmp/proj' && '$squad' git push"
+cp "$tmp/team.conf.bak" .team/team.conf; echo "base production" >>.team/team.conf
+git switch -q -c production
+check "022: squad git push refuses a base named production" refuses "$squad" git push
+git switch -q -
 cp "$tmp/team.conf.bak" .team/team.conf
 check "022: a refused push leaves the remote empty" test -z "$(git -C "$tmp/origin.git" for-each-ref)"
+git -C "$tmp/proj-team/integration" -c user.name=t -c user.email=t@t tag -a v-probe -m probe
+git config push.followTags true
 check "022: squad git push pushes the integration branch" sh -c "cd '$tmp/proj-team/integration' && '$squad' git push >/dev/null 2>&1"
+git config --unset push.followTags
 check "022: origin has the integration branch, and only it" test "$(git -C "$tmp/origin.git" for-each-ref --format='%(refname)')" = refs/heads/team/integration
 check "squad git refuses force" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -f t-probe"
 check "squad git refuses deleting branches" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git branch -D t-probe"

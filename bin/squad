@@ -2451,9 +2451,9 @@ cmd_git() {
     push) # ticket 022: only the integration branch, only to origin, no arguments
       load_conf
       [ $# -eq 1 ] || die "squad git push takes no arguments: it pushes $TEAM_BASE to origin."
-      case "$TEAM_BASE" in main|master) die "squad git push: the team's base is $TEAM_BASE; main and master stay the owner's." ;; esac
+      case "$TEAM_BASE" in main|master|production|prod) die "squad git push: the team's base is $TEAM_BASE; main and production stay the owner's." ;; esac
       [ "$(git symbolic-ref -q --short HEAD)" = "$TEAM_BASE" ] || die "squad git push: only $TEAM_BASE is pushed (run it in the integration worktree). main and production stay the owner's."
-      exec git push origin "refs/heads/$TEAM_BASE:refs/heads/$TEAM_BASE" ;;
+      exec git push --no-follow-tags origin "refs/heads/$TEAM_BASE:refs/heads/$TEAM_BASE" ;;
     branch) case " $* " in *" -d "*|*" -D "*|*" --delete "*|*" -m "*|*" -M "*|*" --force "*) die "squad git branch: deleting, renaming or forcing branches is not allowed." ;; esac ;;
     *) die "squad git: '${1:-}' is not allowed. Allowed: switch add commit merge rebase restore stash branch push. Read-only git (status, diff, log, show) runs as plain git." ;;
   esac

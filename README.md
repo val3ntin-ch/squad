@@ -214,7 +214,7 @@ The lead pushes only the integration branch (`squad git push`, no arguments, aft
 
 Add a `planner` seat (and a `critic` seat, GPT) to team.conf, then `squad start-seat <planner>`: both open in a plan tab.
 
-1. `squad plan "<goal>"` (a project) or `squad plan "<goal>" --feature` (one feature). The planner reads the official documentation of the versions in use and proves each claim on the real platform, with a proof file in `.team/plan/proofs/`.
+1. `squad plan "<goal>"` (a project) or `squad plan "<goal>" --feature` (one feature). The planner reads the official documentation of the versions in use and proves each claim on the real platform, with a proof file in `.team/plan/proofs/`. For a feature, the later commands name it: `--critique F-<n>`, `--check F-<n>`, `--approve F-<n>`.
 2. The planner runs `squad plan --critique`: the critic lists every claim it cannot verify, and the planner answers each one.
 3. `squad plan --check` must say `PLAN OK`; then the planner tells the lead.
 4. You read `.team/PLAN.md` (or `.team/plan/F-<n>.md`), decide its open decisions, and run `squad plan --approve`. The team builds only an approved plan.
