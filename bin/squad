@@ -2448,8 +2448,12 @@ cmd_git() {
   case "$here/" in "$REPO"/*|"$WT_ROOT"/*) ;; *) die "squad git only runs inside the team's repository or worktrees." ;; esac
   case "${1:-}" in
     switch|add|commit|merge|rebase|restore|stash) ;;
+    push) # ticket 022: only the integration branch, only to origin, no arguments
+      [ $# -eq 1 ] || die "squad git push takes no arguments: it pushes $TEAM_BASE to origin."
+      [ "$(git symbolic-ref -q --short HEAD)" = "$TEAM_BASE" ] || die "squad git push: only $TEAM_BASE is pushed (run it in the integration worktree). main and production stay the owner's."
+      exec git push origin "refs/heads/$TEAM_BASE:refs/heads/$TEAM_BASE" ;;
     branch) case " $* " in *" -d "*|*" -D "*|*" --delete "*|*" -m "*|*" -M "*|*" --force "*) die "squad git branch: deleting, renaming or forcing branches is not allowed." ;; esac ;;
-    *) die "squad git: '${1:-}' is not allowed. Allowed: switch add commit merge rebase restore stash branch. Read-only git (status, diff, log, show) runs as plain git." ;;
+    *) die "squad git: '${1:-}' is not allowed. Allowed: switch add commit merge rebase restore stash branch push. Read-only git (status, diff, log, show) runs as plain git." ;;
   esac
   case " $* " in *" --force "*|*" -f "*|*" --force-with-lease"*) die "squad git: forcing is not allowed." ;; esac
   exec git "$@"

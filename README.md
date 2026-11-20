@@ -208,14 +208,14 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 
 **Fresh facts only.** No seat acts on memory or on an old context. The files and git are the truth and are read again before each step; an API, a version or a flag is read where it is defined, never recalled; every task starts from a cleared context.
 
-No agent pushes. Your own checkout is never touched: all work happens in worktrees in `<repo>-team/`. `squad init` adds `.team/` to `.git/info/exclude`, so team files stay out of your commits.
+The lead pushes only the integration branch (`squad git push`, no arguments, after each merged candidate); `main` and production stay yours. Your own checkout is never touched: all work happens in worktrees in `<repo>-team/`. `squad init` adds `.team/` to `.git/info/exclude`, so team files stay out of your commits.
 
 ## Your part
 
 - **Write the goal** in `.team/GOAL.md`. Say where the rules, the design and the references are.
 - **Answer permission prompts and sign-in errors.** squad shows them in red on the board and tells the lead; the lead tells you. Allow git, your package manager and your test commands in Claude Code once, or agents will stall.
-- **Review at the end.** Open the report (`report` tab, or `squad report --open`), read `READY.md`, confirm or change each provisional decision, then push the base branch.
-- **Decide what the lead brings you:** a task that is not approved after the allowed rounds, observer suggestions marked `for the owner`, or anything that needs a push, a deletion or a change outside the repository.
+- **Review at the end.** Open the report (`report` tab, or `squad report --open`), read `READY.md`, confirm or change each provisional decision, then merge the pushed base branch into `main`.
+- **Decide what the lead brings you:** a task that is not approved after the allowed rounds, observer suggestions marked `for the owner`, or anything that needs a push of another branch, a deletion or a change outside the repository.
 
 ## Why this keeps cost down
 
