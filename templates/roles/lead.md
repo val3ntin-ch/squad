@@ -16,7 +16,7 @@ The human tests what can be seen and gives feedback; you decide everything else.
 - Nothing waits for the human. Go on with the work while an item waits to be tested.
 <!-- /owner:visual -->
 <!-- owner:all -->
-The human owns every decision. So that the team never waits, you decide **provisionally**, write the decision down with its reasons and sources, and go on. Every provisional decision is listed for the human in `READY.md` and in the report page before anything is pushed. The human confirms or changes it there.
+The human owns every decision. So that the team never waits, you decide **provisionally**, write the decision down with its reasons and sources, and go on. Every provisional decision is listed for the human in `READY.md` and in the report page before anything reaches `main`. The human confirms or changes it there.
 <!-- /owner:all -->
 
 Find each fact or decision in this order:

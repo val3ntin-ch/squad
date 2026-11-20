@@ -150,6 +150,11 @@ check "022: squad git push refuses a task branch" refuses sh -c "cd '$tmp/proj-t
 check "022: squad git push refuses main" refuses sh -c "cd '$tmp/proj' && '$squad' git push"
 check "022: squad git push refuses any argument" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push --force"
 check "022: squad git push refuses a refspec" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push origin team/integration:main"
+cp .team/team.conf "$tmp/team.conf.bak"; echo "base team/custom" >>.team/team.conf
+check "022: squad git push follows the base in team.conf (team/integration is not it any more)" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push"
+echo "base main" >>.team/team.conf
+check "022: squad git push refuses a base named main" refuses sh -c "cd '$tmp/proj' && '$squad' git push"
+cp "$tmp/team.conf.bak" .team/team.conf
 check "022: a refused push leaves the remote empty" test -z "$(git -C "$tmp/origin.git" for-each-ref)"
 check "022: squad git push pushes the integration branch" sh -c "cd '$tmp/proj-team/integration' && '$squad' git push >/dev/null 2>&1"
 check "022: origin has the integration branch, and only it" test "$(git -C "$tmp/origin.git" for-each-ref --format='%(refname)')" = refs/heads/team/integration

@@ -50,7 +50,7 @@ Usage:
   squad usage                       one line of plan usage
   squad statusline                  Claude Code status line: shows and records Claude's usage
   squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
-  squad git <args>                  git writes for agents (switch/add/commit/merge...; no push/force/delete)
+  squad git <args>                  git writes for agents (switch/add/commit/merge...; push only the integration branch; no force/delete)
   squad heavy <seat> [task] [--limit min] [--batch file] -- cmd   run a heavy command: one at a time,
                                     first come first served (agents); --batch: a candidate's commands under one lock
   squad dispatch <seat> <task>      clear a seat, give it the task, confirm it started (the lead)
@@ -2440,7 +2440,7 @@ cmd_done() {
 # Codex's workspace-write sandbox keeps .git read-only by design (also the git
 # dir a worktree points to), so switch/add/commit/merge fail inside it. This
 # command, allowed by one Codex rule, runs only those writes, only inside a
-# squad team, and never push, force or delete.
+# squad team; it pushes only the integration branch and never forces or deletes.
 cmd_git() {
   find_repo
   [ -f "$TEAM_DIR/team.conf" ] || die "squad git only runs inside a repository with a squad team."
@@ -2449,7 +2449,9 @@ cmd_git() {
   case "${1:-}" in
     switch|add|commit|merge|rebase|restore|stash) ;;
     push) # ticket 022: only the integration branch, only to origin, no arguments
+      load_conf
       [ $# -eq 1 ] || die "squad git push takes no arguments: it pushes $TEAM_BASE to origin."
+      case "$TEAM_BASE" in main|master) die "squad git push: the team's base is $TEAM_BASE; main and master stay the owner's." ;; esac
       [ "$(git symbolic-ref -q --short HEAD)" = "$TEAM_BASE" ] || die "squad git push: only $TEAM_BASE is pushed (run it in the integration worktree). main and production stay the owner's."
       exec git push origin "refs/heads/$TEAM_BASE:refs/heads/$TEAM_BASE" ;;
     branch) case " $* " in *" -d "*|*" -D "*|*" --delete "*|*" -m "*|*" -M "*|*" --force "*) die "squad git branch: deleting, renaming or forcing branches is not allowed." ;; esac ;;
