@@ -210,6 +210,15 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 
 The lead pushes only the integration branch (`squad git push`, no arguments, after each merged candidate); `main` and production stay yours. Your own checkout is never touched: all work happens in worktrees in `<repo>-team/`. `squad init` adds `.team/` to `.git/info/exclude`, so team files stay out of your commits.
 
+## Plan before you build
+
+Add a `planner` seat (and a `critic` seat, GPT) to team.conf, then `squad start-seat <planner>`: both open in a plan tab.
+
+1. `squad plan "<goal>"` (a project) or `squad plan "<goal>" --feature` (one feature). The planner reads the official documentation of the versions in use and proves each claim on the real platform, with a proof file in `.team/plan/proofs/`.
+2. The planner runs `squad plan --critique`: the critic lists every claim it cannot verify, and the planner answers each one.
+3. `squad plan --check` must say `PLAN OK`; then the planner tells the lead.
+4. You read `.team/PLAN.md` (or `.team/plan/F-<n>.md`), decide its open decisions, and run `squad plan --approve`. The team builds only an approved plan.
+
 ## Your part
 
 - **Write the goal** in `.team/GOAL.md`. Say where the rules, the design and the references are.
