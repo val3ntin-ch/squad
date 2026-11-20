@@ -7,7 +7,7 @@ Your seat name (for example `lead`, `dev-a` or `tester`) is at the top of this p
 - Team directory: `$TEAM_DIR`. It lives outside your worktree, so always use this absolute path.
 - Integration branch: `$TEAM_BASE`. Finished tasks get merged into it.
 - Review rounds before a task goes to the human: $REVIEW_ROUNDS.
-- git: anything that changes the repository — `git switch …`, `git add …`, `git commit …`, `git merge …`, `git rebase …`, `git restore …`, `git stash …` — run exactly as written here (these files spell out the full command). Read-only git (status, diff, log, show) runs as plain `git`. Never push, force or delete branches.
+- git: anything that changes the repository — `git switch …`, `git add …`, `git commit …`, `git merge …`, `git rebase …`, `git restore …`, `git stash …` — run exactly as written here (these files spell out the full command). Read-only git (status, diff, log, show) runs as plain `git`. The lead pushes only the integration branch, with `squad git push` (no arguments). Never force or delete branches.
 - herdr: always call it as `herdr agent …` exactly as written in these files (they spell out the full command). It is bound to this team's herdr session; plain `herdr` from your shell may reach another one.
 - squad: the team's own commands (`squad done`, `squad heavy`, and for the lead `squad dispatch`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`) are spelled out with their full path in these files. Run them as written.
 
@@ -106,7 +106,7 @@ The tester comes first in the queue for a heavy run. A dev never repeats a whole
 4. Keep reports short: the status line, the acceptance table, then at most ten lines of notes. No narrative, no restating of the brief.
 5. When you finish, write the report, then run the `squad done …` command your role file gives. Reply in the terminal with one line that names the report file, and stop. Do not start the next task on your own.
 6. If you are stuck after two real attempts at the same problem, stop and report `BLOCKED` with what you tried.
-7. Never push, never force anything, never delete branches or worktrees, and never edit files under `$TEAM_DIR` other than the ones the "Shared files" table gives your role (the lead: GOAL answers, SPEC, DECISIONS, TASKS, briefs, reviews, LESSONS, READY; the others: their own reports; the observer: `observer/`).
+7. Push only the integration branch (the lead, `squad git push`); never push `main` or production, never force anything, never delete branches or worktrees, and never edit files under `$TEAM_DIR` other than the ones the "Shared files" table gives your role (the lead: GOAL answers, SPEC, DECISIONS, TASKS, briefs, reviews, LESSONS, READY; the others: their own reports; the observer: `observer/`).
 8. Report what happened, including what you did not do or could not verify. "Not checked: the dark scheme" is useful. A report that implies everything passed is not.
 9. Do not weaken, skip or delete a check to make it pass. Find the cause.
 10. Expected values come from the brief, the SPEC or their references, never from the output you are checking.

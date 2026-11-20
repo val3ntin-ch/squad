@@ -200,7 +200,7 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 | `READY.md` | The lead's final summary: what to look at, rows not verified, decisions open for you. |
 | `report.html` | All of the above on one page (`squad report`). |
 
-**Decisions are yours; the team does not wait.** The lead decides provisionally, from the repository first and then from official sources (the library's documentation for the installed version, standards bodies such as W3C, WCAG, WHATWG and OWASP, release notes, well-maintained projects). On a real issue (a finding that comes back, a task at round 3, sources that disagree, architecture, a dependency, accessibility, security or data) it writes its own options, asks GPT for an independent brainstorm, and compares. Every provisional decision is listed for you in `READY.md` and in the report's Decisions tab before anything is pushed.
+**Decisions are yours; the team does not wait.** The lead decides provisionally, from the repository first and then from official sources (the library's documentation for the installed version, standards bodies such as W3C, WCAG, WHATWG and OWASP, release notes, well-maintained projects). On a real issue (a finding that comes back, a task at round 3, sources that disagree, architecture, a dependency, accessibility, security or data) it writes its own options, asks GPT for an independent brainstorm, and compares. Every provisional decision is listed for you in `READY.md` and in the report's Decisions tab before anything reaches `main`.
 
 **QA comes first.** The tester agrees the acceptance contract before code is written: exact commands, thresholds, and the states the brief forgot. Every row ends in one of five results: pass, fail, pending, unavailable, inconclusive. Only pass counts; everything else is listed for the lead and for you.
 
@@ -208,14 +208,23 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 
 **Fresh facts only.** No seat acts on memory or on an old context. The files and git are the truth and are read again before each step; an API, a version or a flag is read where it is defined, never recalled; every task starts from a cleared context.
 
-No agent pushes. Your own checkout is never touched: all work happens in worktrees in `<repo>-team/`. `squad init` adds `.team/` to `.git/info/exclude`, so team files stay out of your commits.
+The lead pushes only the integration branch (`squad git push`, no arguments, after each merged candidate); `main` and production stay yours. Your own checkout is never touched: all work happens in worktrees in `<repo>-team/`. `squad init` adds `.team/` to `.git/info/exclude`, so team files stay out of your commits.
+
+## Plan before you build
+
+Add a `planner` seat (and a `critic` seat, GPT) to team.conf, then `squad start-seat <planner>`: both open in a plan tab.
+
+1. `squad plan "<goal>"` (a project) or `squad plan "<goal>" --feature` (one feature). The planner reads the official documentation of the versions in use and proves each claim on the real platform, with a proof file in `.team/plan/proofs/`. For a feature, the later commands name it: `--critique F-<n>`, `--check F-<n>`, `--approve F-<n>`.
+2. The planner runs `squad plan --critique`: the critic lists every claim it cannot verify, and the planner answers each one.
+3. `squad plan --check` must say `PLAN OK`; then the planner tells the lead.
+4. You read `.team/PLAN.md` (or `.team/plan/F-<n>.md`), decide its open decisions, and run `squad plan --approve`. The team builds only an approved plan.
 
 ## Your part
 
 - **Write the goal** in `.team/GOAL.md`. Say where the rules, the design and the references are.
 - **Answer permission prompts and sign-in errors.** squad shows them in red on the board and tells the lead; the lead tells you. Allow git, your package manager and your test commands in Claude Code once, or agents will stall.
-- **Review at the end.** Open the report (`report` tab, or `squad report --open`), read `READY.md`, confirm or change each provisional decision, then push the base branch.
-- **Decide what the lead brings you:** a task that is not approved after the allowed rounds, observer suggestions marked `for the owner`, or anything that needs a push, a deletion or a change outside the repository.
+- **Review at the end.** Open the report (`report` tab, or `squad report --open`), read `READY.md`, confirm or change each provisional decision, then merge the pushed base branch into `main`.
+- **Decide what the lead brings you:** a task that is not approved after the allowed rounds, observer suggestions marked `for the owner`, or anything that needs a push of another branch, a deletion or a change outside the repository.
 
 ## Why this keeps cost down
 

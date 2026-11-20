@@ -144,7 +144,27 @@ check "squad herdr works from a team worktree" sh -c "cd '$tmp/proj-team/dev-a' 
 check "role files send git writes through squad git" grep -qF "$squad_abs git switch -c task/" .team/roles/dev.md
 check "the lead merges through squad merge" grep -qF "$squad_abs merge CANDIDATE-<n>" .team/roles/lead.md
 check "squad git runs an allowed write" sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -c t-probe >/dev/null 2>&1 && git branch --show-current | grep -qx t-probe"
-check "squad git refuses push" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git push"
+# 022: the integration branch, and only it, is pushed to origin, with no arguments
+git init -q --bare "$tmp/origin.git"; git remote add origin "$tmp/origin.git"
+check "022: squad git push refuses a task branch" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git push"
+check "022: squad git push refuses main" refuses sh -c "cd '$tmp/proj' && '$squad' git push"
+check "022: squad git push refuses any argument" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push --force"
+check "022: squad git push refuses a refspec" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push origin team/integration:main"
+cp .team/team.conf "$tmp/team.conf.bak"; echo "base team/custom" >>.team/team.conf
+check "022: squad git push follows the base in team.conf (team/integration is not it any more)" refuses sh -c "cd '$tmp/proj-team/integration' && '$squad' git push"
+echo "base main" >>.team/team.conf
+check "022: squad git push refuses a base named main" refuses sh -c "cd '$tmp/proj' && '$squad' git push"
+cp "$tmp/team.conf.bak" .team/team.conf; echo "base production" >>.team/team.conf
+git switch -q -c production
+check "022: squad git push refuses a base named production" refuses "$squad" git push
+git switch -q -
+cp "$tmp/team.conf.bak" .team/team.conf
+check "022: a refused push leaves the remote empty" test -z "$(git -C "$tmp/origin.git" for-each-ref)"
+git -C "$tmp/proj-team/integration" -c user.name=t -c user.email=t@t tag -a v-probe -m probe
+git config push.followTags true
+check "022: squad git push pushes the integration branch" sh -c "cd '$tmp/proj-team/integration' && '$squad' git push >/dev/null 2>&1"
+git config --unset push.followTags
+check "022: origin has the integration branch, and only it" test "$(git -C "$tmp/origin.git" for-each-ref --format='%(refname)')" = refs/heads/team/integration
 check "squad git refuses force" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git switch -f t-probe"
 check "squad git refuses deleting branches" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git branch -D t-probe"
 check "squad git refuses read commands (plain git is fine)" refuses sh -c "cd '$tmp/proj-team/dev-a' && '$squad' git log"

@@ -16,7 +16,7 @@ The human tests what can be seen and gives feedback; you decide everything else.
 - Nothing waits for the human. Go on with the work while an item waits to be tested.
 <!-- /owner:visual -->
 <!-- owner:all -->
-The human owns every decision. So that the team never waits, you decide **provisionally**, write the decision down with its reasons and sources, and go on. Every provisional decision is listed for the human in `READY.md` and in the report page before anything is pushed. The human confirms or changes it there.
+The human owns every decision. So that the team never waits, you decide **provisionally**, write the decision down with its reasons and sources, and go on. Every provisional decision is listed for the human in `READY.md` and in the report page before anything reaches `main`. The human confirms or changes it there.
 <!-- /owner:all -->
 
 Find each fact or decision in this order:
@@ -139,6 +139,7 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 - Build it with squad, never by hand: write the brief `$TEAM_DIR/tasks/CANDIDATE-<n>.md` (its acceptance rows) and the check list `$TEAM_DIR/tasks/CANDIDATE-<n>.checks` (one command a line), then `squad candidate CANDIDATE-<n> <ID> <ID>…`. It takes only the exact commit of each task you approved (`squad done <your seat name> <ID> APPROVE` records it); a task changed after your approval is reviewed again first. An approval from before this rule has no recorded commit: check the task's current commit and log `APPROVE` again before its first candidate.
 - The tester runs `squad heavy <tester> CANDIDATE-<n> --batch $TEAM_DIR/tasks/CANDIDATE-<n>.checks`: one lock for the whole candidate, on the candidate's own commit, and the run writes a receipt. A long step gets `--limit <minutes>` (up to 99) instead of a higher `heavy_timeout` for everyone.
 - After the tester's PASS, `squad merge CANDIDATE-<n>`: the integration branch becomes exactly the commit that passed. It stops when the base, a task, the brief or the check list changed since the build; then build a new candidate. A single task is never merged on its own.
+- After each merge, run `squad git push` in the integration worktree: it pushes `$TEAM_BASE` to `origin`. Nothing else is pushed; `main` and production stay the human's.
 - When $OWNER announces a stop, build the candidate for every approved task first, and send it to the tester before the stop if it fits in the time given.
 
 **The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for $OWNER`: list it in `READY.md`. A suggestion marked `for <another name>` (an older owner label, from before a name change) counts as `for $OWNER`.
@@ -224,7 +225,7 @@ The human gives feedback with `squad feedback`; it lands in `$TEAM_DIR/FEEDBACK.
 
 ## When to stop for the human
 
-Only for these: a seat shows a permission prompt or a sign-in error (say what it shows; never answer it yourself); something needs a push, a deletion or a change outside the repository; the goal itself turns out to be impossible or to contradict the repository's rules.
+Only for these: a seat shows a permission prompt or a sign-in error (say what it shows; never answer it yourself); something needs a push of a branch other than `$TEAM_BASE`, a deletion or a change outside the repository; the goal itself turns out to be impossible or to contradict the repository's rules.
 
 <!-- owner:visual -->
 Everything else you decide, log, and continue: `final` when the eye cannot see it, `to test by $OWNER` with a `See:` line when it can. The human tests the visible ones and answers with feedback.
@@ -248,7 +249,7 @@ When every task is merged, or stopped at the round limit and listed for $OWNER:
 5. Only when everything is green, write `$TEAM_DIR/READY.md`: what was built; the checks and their results; every acceptance row that is not `pass`, with the reason; what to look at, as a list of pages or commands the human can open in order; every provisional decision (id, title, decision) for the human to confirm; the open suggestions marked `for $OWNER`; the link to `$TEAM_DIR/LESSONS.md` and how many lessons it holds; what was left out. Then tell the human in three lines that the work is ready for review, with the branch name and the report page `$TEAM_DIR/report.html`.
 <!-- /owner:all -->
 
-The human reviews and pushes.
+The human reviews the pushed `$TEAM_BASE` and merges it into `main`.
 
 ## After a restart
 
