@@ -29,7 +29,11 @@ case "$1 $2" in
                 # MOCK_AGENTS_LATER: the list once a pane's process was read (a seat that changes state inside one tick)
                 elif [ -n "${MOCK_AGENTS_LATER:-}" ] && [ -e "$(dirname "$MOCK_LOG")/pinfo" ]; then echo "$MOCK_AGENTS_LATER"
                 elif [ -n "${MOCK_AGENTS:-}" ]; then echo "$MOCK_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
+  # MOCK_PROMPT_SLEEP: the prompt takes this many seconds; MOCK_ON_PROMPT: a command that runs when a prompt arrives
+  # ($3: the seat, $4: the text): a seat whose state or screen changes because of the prompt
   "agent prompt") if [ "$3" = "${MOCK_FAIL_PROMPT:-}" ]; then echo '{"error":"agent_not_found"}' >&2; exit 1; fi
+                [ -z "${MOCK_PROMPT_SLEEP:-}" ] || sleep "$MOCK_PROMPT_SLEEP"
+                [ -z "${MOCK_ON_PROMPT:-}" ] || eval "$MOCK_ON_PROMPT" >/dev/null 2>&1
                 case "$4" in /exit|/quit) : >"$(dirname "$MOCK_LOG")/exited" ;; esac
                 if [ "${MOCK_DYNAMIC:-}" = 1 ] && [ "$3" = dev-a ]; then
                     case "$4" in /*) echo idle ;; *) if [ "${MOCK_NEVER_WORK:-}" = 1 ]; then echo idle; else echo working; fi ;; esac >"$(dirname "$MOCK_LOG")/state"; fi
@@ -570,7 +574,7 @@ check "notify tells each seat with an open task" sh -c "'$squad' notify 'SPEC Ch
 reset_log; nout=$(MOCK_AGENTS='{"result":{"agents":[{"name":"dev-b","agent_status":"blocked"}]}}' "$squad" notify 'SPEC Checks' 'rule two' 2>&1) || true
 check "2b: notify types nothing into a seat that herdr shows blocked" refuses log_has "agent prompt dev-b"
 check "2b: and prints which seats it skipped" grep -qE 'not told.* dev-b' <<<"$nout"
-reset_log; nout=$(MOCK_PANE_TEXT='Do you want to proceed?' "$squad" notify 'SPEC Checks' 'rule three' 2>&1) || true
+reset_log; nout=$(MOCK_PANE_TEXT=$(printf 'Do you want to proceed?\n❯ 1. Yes\n  2. No') "$squad" notify 'SPEC Checks' 'rule three' 2>&1) || true
 check "2b: nor into a seat whose pane shows a menu" refuses log_has "agent prompt dev-b"
 check "2b: that seat is named too" grep -qE 'not told.* dev-b' <<<"$nout"
 
@@ -1953,6 +1957,7 @@ t_gone='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"
 hook() { printf '%s' "$3" | TEAM_ROLE=$1 "$squad" seat-hook "$2"; }   # <seat> <event> <the hook's JSON>
 asks() { hook "$1" AskUserQuestion '{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which storage?"}]}}'; }
 perm() { hook "$1" PermissionRequest '{"tool_name":"Bash","tool_input":{"command":"rm x"}}'; }
+answered() { hook "$1" PostToolUse '{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which storage?"}],"answers":{"Which storage?":"Disk"}}}'; }   # <seat>: the owner answered its question
 W=.team/seats/dev-b.owner-wait
 # 2: has_menu reads the whole visible screen and a wrapped footer (seen through squad notify, which skips a seat with a dialog)
 ev dev-a T-960 DISPATCH round=1
@@ -1967,13 +1972,13 @@ jq_hooks='(.hooks.PostToolUse[0].hooks[0].command | endswith("seat-hook PostTool
 check "trial 1: a Claude seat's settings carry the PostToolUse and UserPromptSubmit hooks" jq -e "$jq_hooks" .team/seats/dev-a.settings.json
 check "trial 1: the worktree's settings carry them too" jq -e "$jq_hooks" "$tmp/trial-team/dev-a/.claude/settings.local.json"
 perm dev-b
-check "trial 1: the record names when, the tool and the length of events.log" grep -qE '^[0-9]+ Bash [0-9]+$' "$W"
+check "trial 1: the record names when, the tool, the length of events.log and the checksum of the call's input" grep -qE '^[0-9]+ Bash [0-9]+ [0-9]+$' "$W"
 hout=$(hook dev-b PostToolUse '{"tool_name":"Read"}' 2>&1)
 check "trial 1: the end of another tool does not end the record, and the hook prints nothing" test -f "$W" -a -z "$hout"
-hook dev-b PostToolUse '{"tool_name":"Bash"}'
+hook dev-b PostToolUse '{"tool_name":"Bash","tool_input":{"command":"rm x"}}'
 check "trial 1: the end of the tool the dialog asked for ends the record (PostToolUse)" test ! -e "$W"
-asks dev-b; check "trial 1: a question is recorded with its tool" grep -qE '^[0-9]+ AskUserQuestion [0-9]+$' "$W"
-hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'
+asks dev-b; check "trial 1: a question is recorded with its tool" grep -qE '^[0-9]+ AskUserQuestion [0-9]+ [0-9]+$' "$W"
+answered dev-b
 check "trial 1: an answered question ends the record (PostToolUse)" test ! -e "$W"
 asks dev-b; hook dev-b Stop '{"background_tasks":[]}'
 check "trial 1: the end of the turn ends the record (Stop)" test ! -e "$W"
@@ -2013,7 +2018,7 @@ ev dev-a T-962 DONE; echo idle >"$tmp/state"; asks dev-a; reset_log
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-963 >/dev/null 2>&1 || true
 sleep 3
 check "trial 3: a seat whose only sign of a dialog is the hook's record gets its dispatch queued, and nothing typed" sh -c "grep -q ' dev-a T-963 DISPATCH_QUEUED' .team/events.log && ! grep -qE 'agent (prompt|send-keys) dev-a' '$MOCK_LOG'"
-hook dev-a PostToolUse '{"tool_name":"AskUserQuestion"}'
+answered dev-a
 check "trial 3: it goes out when the hook says the question is answered" sent_soon T-963
 ev dev-a T-963 DONE; rm -f "$tmp/state"
 # 4: squad's own lines to the lead wait while the lead shows a dialog, and none is lost
@@ -2026,7 +2031,7 @@ check "trial 4: the first tick with the lead free sends the held notice, once, a
 ev lead T-964 SEEN; watch1
 asks lead; reset_log; fout=$(MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy "$squad" feedback "The save button does nothing" 2>&1) || true
 check "trial 4: squad feedback types nothing into a lead with an open question (the hook's record), saves it and says it is held" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && printf '%s\n' \"\$1\" | grep -q 'F-1 saved in .team/FEEDBACK.md and held' && grep -q 'The save button does nothing' .team/FEEDBACK.md" _ "$fout"
-hook lead PostToolUse '{"tool_name":"AskUserQuestion"}'
+answered lead
 MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
 check "trial 4: the watch delivers the held feedback when the lead is free, once" test "$(grep -c 'agent prompt lead \[squad\] Feedback F-1 from' "$MOCK_LOG")" = 1
 # 6: a seat that is gone: the lead's "is dead … run 'squad up'" line
@@ -2073,7 +2078,7 @@ age "$W" 1 5; seen 15; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$esc watch1
 check "trial 8: a record younger than 20 s is kept whatever the screen shows" test -f "$W"
 age "$W" 1 300; seen 15; MOCK_AGENTS=$(sed 's/"dev-b","agent_status":"idle"/"dev-b","agent_status":"blocked"/' <<<"$t_up") MOCK_PANE_TEXT=$esc watch1
 check "trial 8: a seat that herdr shows blocked keeps the record" test -f "$W"
-hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'; ev dev-b T-966 DONE; rm -f "$FR" "$SW"/held-*
+answered dev-b; ev dev-b T-966 DONE; rm -f "$FR" "$SW"/held-*
 printf 'x\n' >.team/reports/T-967-contract.md; echo idle >"$tmp/state"; asks dev-a; sleep 1; age .team/seats/dev-a.owner-wait 1 60; reset_log
 qout=$(MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-967 2>&1) || true
 sleep 4
@@ -2092,7 +2097,7 @@ check "trial 9: a seat with an open question and an open task past stall_minutes
 check "trial 9: the lead's line says that the seat waits for the owner's answer and that squad queues any dispatch to it" sh -c "[ \$(grep 'agent prompt lead \[squad\] dev-b is blocked on T-968: ' '$MOCK_LOG' | grep -c \"waits for .* answer.*squad queues any dispatch to it\") = 1 ]"
 check "trial 9: the lead's line does not say 're-send or re-dispatch'" refuses grep -q 'dev-b.*re-send or re-dispatch' "$MOCK_LOG"
 check "trial 9: the owner gets the 'waits for you' alert and no 'stalled' alert" sh -c "test -f '$HW' && test ! -e '$SW/held-stuck-dev-b' && ! grep -q 'notification show squad: dev-b stalled' '$MOCK_LOG'"
-hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'; rm -rf .team/observer/.alerted "$SW"; mkdir -p "$SW"; reset_log
+answered dev-b; rm -rf .team/observer/.alerted "$SW"; mkdir -p "$SW"; reset_log
 MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
 check "trial 9: a seat whose only sign of a dialog is the menu on its screen is blocked, not stalled" sh -c "[ \"\$(cat .team/observer/.alerted/dev-b)\" = blocked ] && ! grep -q ' dev-b T-968 SEAT_STALLED' .team/events.log && ! grep -q 'notification show squad: dev-b stalled' '$MOCK_LOG'"
 ago 400 >"$SW/blocked-dev-b"; MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
@@ -2101,7 +2106,7 @@ ev dev-b T-968 DONE; rm -rf .team/observer/.alerted .team/observer/.seen "$SW"; 
 ago 600 >.team/observer/.idle/dev-b; asks dev-b; sleep 1; i0=$(grep -c ' dev-b - IDLE ' .team/events.log || true); reset_log
 MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1
 check "trial 9: a dev with no task that shows a dialog gets no IDLE alarm" sh -c "! grep -q 'dev-b has had no task' '$MOCK_LOG' && [ \"\$(grep -c ' dev-b - IDLE ' .team/events.log)\" = '$i0' ] && test ! -e .team/observer/.idle/dev-b"
-hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'
+answered dev-b
 # 11: the stall clock starts again when the seat showed a dialog or did something (real trial 3: SEAT_STALLED 31 s after Escape)
 t_work='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
 rm -rf .team/observer/.alerted .team/observer/.seen "$SW"; mkdir -p "$SW" .team/observer/.seen
@@ -2109,7 +2114,7 @@ ev dev-b T-970 DISPATCH round=1; ago 3600 >.team/observer/.seen/dev-b
 asks dev-b; sleep 1
 MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
 check "trial 11: a seat that shows a dialog loses its stall clock" test ! -e .team/observer/.seen/dev-b
-hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'
+answered dev-b
 for e11 in Stop UserPromptSubmit SessionStart; do
   ago 3600 >.team/observer/.seen/dev-b; hook dev-b "$e11" '{"background_tasks":[],"source":"clear","session_id":"s11"}'
   check "trial 11: the seat's $e11 hook starts its stall clock again" test ! -e .team/observer/.seen/dev-b
@@ -2120,7 +2125,114 @@ check "trial 11: a seat that was just active is not stalled at the next tick" sh
 asks dev-b; sleep 1; age "$W" 1 60; seen 30
 MOCK_AGENTS=$t_work MOCK_PANE_TEXT=$esc watch1
 check "trial 11: the screen does not end a hook record while herdr shows the seat at work" test -f "$W"
-hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'; ev dev-b T-970 DONE
+answered dev-b; ev dev-b T-970 DONE
+# ---- the review of the trial fixes (21 Nov 2026): no false sign of a dialog, and no key into a dialog that a sign shows ----
+idle="$here/fixtures/panes/idle.txt"   # the real screen of an idle seat (45 columns): its last message, the echoed prompts, the status line
+permq="$here/fixtures/panes/permission.txt"   # the real screen of a permission dialog
+t_idle='{"result":{"agents":[{"name":"lead","agent_status":"idle","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"idle","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"idle","pane_id":"w2:p3"}]}}'
+rm -rf .team/observer/.alerted .team/observer/.seen .team/observer/.idle "$SW" "$NT"; mkdir -p "$SW" .team/observer/.seen
+# 12: the screen sign is the dialog's structure (a footer below the last rule, a selected numbered row with its next row), not its words
+ev dev-a T-971 DISPATCH round=1
+check "trial 12: the real idle screen is no dialog" told "$(cat "$idle")"
+check "trial 12: an idle screen whose last message has the line 'and did not run squad done, to allow the' is no dialog" told "$(sed '23s/.*/  and did not run squad done, to allow the/' "$idle")"
+check "trial 12: an idle screen whose last message has the line 'Do you want to keep the old test too?' is no dialog" told "$(sed '24s/.*/  Do you want to keep the old test too?/' "$idle")"
+check "trial 12: an idle screen whose last message wraps '… press esc to' / 'cancel the run …' is no dialog" told "$(sed -e '23s/.*/  To stop the check, press esc to/' -e '24s/.*/  cancel the run. I stop here./' "$idle")"
+check "trial 12: an idle screen with the echoed prompt '❯ 1. Rebase on integration 2. Fix the lint' 22 lines above the bottom is no dialog" told "$(sed '10s/.*/❯ 1. Rebase on integration 2. Fix the lint/' "$idle")"
+check "trial 12: the real question screen is a dialog" refuses told "$(cat "$longq")"
+check "trial 12: the real permission screen is a dialog" refuses told "$(cat "$permq")"
+check "trial 12: a selected numbered row with its next row is a dialog without a footer" refuses told "$(sed -n '1,26p' "$permq")"
+check "trial 12: the real screen after Escape is no dialog" told "$esc"
+ev dev-a T-971 DONE
+# 13: the Enter that re-submits a stranded task never goes into a dialog that herdr or the hook shows
+stuck() { printf 'Claude Code\n❯ Task %s is yours. Read %s/trial/.team/tasks/%s.md and follow your role file.' "$1" "$tmp" "$1"; }   # <task>: its text stays in the input line
+printf 'x\n' >.team/reports/T-972-contract.md; printf 'x\n' >.team/reports/T-973-contract.md; rm -f "$tmp/pinfo"; reset_log
+MOCK_AGENTS=$t_idle MOCK_AGENTS_LATER=$(sed 's/"dev-a","agent_status":"idle"/"dev-a","agent_status":"blocked"/' <<<"$t_idle") MOCK_ON_PROMPT="case \$4 in Task*) : >'$tmp/pinfo' ;; esac" \
+  MOCK_PANE_TEXT=$(stuck T-972) SQUAD_DISPATCH_WAIT=4 "$squad" dispatch dev-a T-972 >/dev/null 2>&1 || true
+check "trial 13: a stranded task gets no Enter when herdr shows the seat blocked, and the dispatch is not started" sh -c "grep -q 'agent prompt dev-a Task T-972' '$MOCK_LOG' && ! grep -q 'agent send-keys dev-a' '$MOCK_LOG' && grep -q ' dev-a T-972 DISPATCH_NOT_STARTED' .team/events.log"
+rm -f "$tmp/pinfo"; reset_log
+MOCK_AGENTS=$t_idle MOCK_ON_PROMPT="case \$4 in Task*) printf '%s' '{\"tool_name\":\"AskUserQuestion\",\"tool_input\":{\"questions\":[{\"question\":\"Which storage?\"}]}}' | TEAM_ROLE=dev-a '$squad' seat-hook AskUserQuestion ;; esac" \
+  MOCK_PANE_TEXT=$(stuck T-973) SQUAD_DISPATCH_WAIT=4 "$squad" dispatch dev-a T-973 >/dev/null 2>&1 || true
+check "trial 13: a stranded task gets no Enter when the seat's hook recorded a dialog, and the dispatch is not started" sh -c "grep -q 'agent prompt dev-a Task T-973' '$MOCK_LOG' && ! grep -q 'agent send-keys dev-a' '$MOCK_LOG' && grep -q ' dev-a T-973 DISPATCH_NOT_STARTED' .team/events.log"
+answered dev-a; reset_log
+MOCK_AGENTS=$t_idle MOCK_PANE_TEXT=$(stuck T-973) SQUAD_DISPATCH_WAIT=4 "$squad" dispatch dev-a T-973 >/dev/null 2>&1 || true
+check "trial 13: with no sign of a dialog the stranded task still gets its one Enter" test "$(grep -c 'agent send-keys dev-a enter' "$MOCK_LOG")" = 1
+sleep 1; rm -f "$SW"/held-*
+# 14: the watch ends only the record it decided on: the record of a new dialog, written in between, stays
+rec_at() { head -1 "$W" 2>/dev/null | cut -d' ' -f1; }   # the time of dev-b's record
+asks dev-b; sleep 1; age "$W" 1 60; seen 15; old14=$(rec_at)
+( sleep 2; asks dev-b ) & hp=$!
+SQUAD_TEST_CLAIM_PAUSE=4 MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$esc watch1; wait "$hp" || true
+check "trial 14: a new dialog's record that replaces the old one while the watch ends it is kept" test -n "$(rec_at)" -a "$(rec_at)" != "$old14"
+check "trial 14: no claimed record is left behind" sh -c "! ls .team/seats/ | grep -q 'owner-wait.claim'"
+age "$W" 1 60; seen 15; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$esc watch1
+check "trial 14: a record that nothing replaced still ends at the second sighting" test ! -e "$W" -a ! -e "$FR"
+asks dev-b; sleep 1; age "$W" 1 60; old14=$(rec_at)
+( sleep 2; asks dev-b ) & hp=$!
+printf '%s' '{"background_tasks":[]}' | SQUAD_TEST_CLAIM_PAUSE=4 TEAM_ROLE=dev-b "$squad" seat-hook Stop; wait "$hp" || true
+check "trial 14: the seat's hook ends only the record it read: a new dialog's record stays" test -n "$(rec_at)" -a "$(rec_at)" != "$old14"
+answered dev-b; sleep 1; rm -f "$SW"/held-* .team/seats/dev-b.background
+# 15: each held line asks the lead's state again: the first line can make the lead open a dialog
+notice dev-a T-974 BLOCKED 10; notice dev-b T-975 BLOCKED 10; : >"$NT/.unsent-T-974.dev-a"; : >"$NT/.unsent-T-975.dev-b"
+rm -f "$tmp/pane"; reset_log
+MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy MOCK_PANE_FILE="$tmp/pane" MOCK_ON_PROMPT="cp '$longq' '$tmp/pane'" watch1
+check "trial 15: two held notices: the second is not typed into the dialog that the lead opened after the first" sh -c "[ \$(grep -c 'agent prompt lead' '$MOCK_LOG') = 1 ] && [ \$(ls -A '$NT' | grep -c '^\.unsent-') = 1 ]"
+rm -f "$tmp/pane"; reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 15: the second notice goes out when the lead is free again" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] dev-. finished T-97[45]: BLOCKED' '$MOCK_LOG') = 1 ] && [ \$(ls -A '$NT' | grep -c '^\.unsent-') = 0 ]"
+rm -rf "$NT"
+# 16: two watches at once send a kept line once
+LL=.team/observer/.lead-lines; mkdir -p "$LL"; printf '[squad] a kept line\n' >"$LL/1-1-1"; reset_log
+MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy MOCK_PROMPT_SLEEP=3 watch1 & w1=$!
+MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy MOCK_PROMPT_SLEEP=3 watch1 & w2=$!
+wait "$w1" "$w2" || true
+check "trial 16: two watches that run at once send a kept line to the lead once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] a kept line' '$MOCK_LOG') = 1 ] && [ -z \"\$(ls -A '$LL')\" ]"
+printf '[squad] a claimed line\n' >"$LL/.claim.999999.2-2-2"; reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 16: a line whose claimer is gone is sent by the next tick" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] a claimed line' '$MOCK_LOG') = 1 ] && [ -z \"\$(ls -A '$LL')\" ]"
+printf '[squad] a held line\n' >"$LL/3-3-3"; reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$(cat "$longq") watch1
+check "trial 16: a line that is not sent (the lead shows a dialog) keeps its name" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && test -f '$LL/3-3-3'"
+rm -rf "$LL"
+# 17: the record ends with the call it was written for, not with any call of the same tool
+perm dev-b
+hook dev-b PostToolUse '{"tool_name":"Bash","tool_input":{"command":"ls"}}'
+check "trial 17: the end of another call of the same tool (in parallel, or in a subagent) does not end the record" test -f "$W"
+hook dev-b PostToolUse '{"tool_name":"Bash","tool_input":{"command":"rm x"},"tool_response":{"stdout":""}}'
+check "trial 17: the end of the call the dialog asked for ends the record" test ! -e "$W"
+asks dev-b; hook dev-b PostToolUse '{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Another question?"}],"answers":{"Another question?":"Yes"}}}'
+check "trial 17: the answer to another question does not end the record" test -f "$W"
+answered dev-b
+check "trial 17: the answer to its question ends the record: the answers in the input do not count" test ! -e "$W"
+perm dev-b; hook dev-b PermissionRequest '{"tool_name":"Bash","tool_input":{"command":"rm y"}}'
+check "trial 17: a second permission request for another call is recorded at once (only the same call, reported twice, is dropped)" sh -c "sed -n '2p' '$W' | grep -q 'rm y'"
+hook dev-b PostToolUse '{"tool_name":"Bash","tool_input":{"command":"rm x"}}'
+check "trial 17: the end of the first call does not end the second call's record" test -f "$W"
+hook dev-b PostToolUse '{"tool_name":"Bash","tool_input":{"command":"rm y"}}'
+printf '%s Bash 5\npermission for Bash: rm z\n' "$(date +%s)" >"$W"; hook dev-b PostToolUse '{"tool_name":"Bash","tool_input":{"command":"rm z"}}'
+check "trial 17: a record of an older squad (no checksum) ends with the tool's name" test ! -e "$W"
+sleep 1; rm -f "$SW"/held-*
+# 18: a tool that failed has ended too (PostToolUseFailure: https://code.claude.com/docs/en/hooks)
+jq_fail='(.hooks.PostToolUseFailure[0].hooks[0].command | endswith("seat-hook PostToolUseFailure")) and (.hooks.PostToolUseFailure[0] | has("matcher") | not) and (.hooks | keys | length == 8)'
+check "trial 18: a Claude seat's settings carry the PostToolUseFailure hook, and the file is valid JSON" jq -e "$jq_fail" .team/seats/dev-a.settings.json
+check "trial 18: the worktree's settings carry it too" jq -e '.hooks.PostToolUseFailure[0].hooks[0].command | endswith("seat-hook PostToolUseFailure")' "$tmp/trial-team/dev-a/.claude/settings.local.json"
+perm dev-b; hook dev-b PostToolUseFailure '{"tool_name":"Bash","tool_input":{"command":"ls"},"error":"Exit code 1"}'
+check "trial 18: the failure of another call does not end the record" test -f "$W"
+hout=$(hook dev-b PostToolUseFailure '{"tool_name":"Bash","tool_input":{"command":"rm x"},"error":"Exit code 1","is_interrupt":false}' 2>&1)
+check "trial 18: the failure of the call the dialog asked for ends the record, and the hook prints nothing" test ! -e "$W" -a -z "$hout"
+sleep 1; rm -f "$SW"/held-*
+# 19: an empty stall clock (the seat's hook removed the file while the watch read it) starts the clock now
+ev dev-b T-976 DISPATCH round=1; rm -rf .team/observer/.alerted; : >.team/observer/.seen/dev-b; reset_log
+sout=$(MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy "$squad" watch --once 2>/dev/null || true)
+check "trial 19: a seat with an empty stall clock is not stalled, and its clock starts now" sh -c "! printf '%s\n' \"\$1\" | grep -q 'dev-b ○ stalled' && ! grep -q ' dev-b T-976 SEAT_STALLED' .team/events.log && grep -qE '^[0-9]+\$' .team/observer/.seen/dev-b" _ "$sout"
+ago 3600 >.team/observer/.seen/dev-b; sout=$(MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy "$squad" watch --once 2>/dev/null || true)
+check "trial 19: a seat whose clock is older than stall_minutes is still stalled" sh -c "printf '%s\n' \"\$1\" | grep -q 'dev-b ○ stalled'" _ "$sout"
+ev dev-b T-976 DONE; rm -rf .team/observer/.alerted .team/observer/.seen "$SW"; mkdir -p "$SW"
+# 20: the cost of a tick: a seat's dialog check asks herdr for no agent list of its own, and the watch's seat checks share one read of its screen
+asks dev-b; sleep 1; age "$W" 1 60
+MOCK_AGENTS=$t_idle MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1   # the lead is told of the seat here
+reset_log; MOCK_AGENTS=$t_idle MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
+lists=$(grep -c '^herdr agent list' "$MOCK_LOG"); reads=$(grep -c '^herdr agent read dev-b ' "$MOCK_LOG")
+echo "     trial 20: one tick, three idle seats, one with a question: $lists 'agent list' calls, $reads reads of that seat's screen"
+check "trial 20: one watch tick with three idle seats makes at most 3 'agent list' calls: none for a seat" test "$lists" -le 3
+check "trial 20: and reads the screen of the idle seat with a question at most 3 times" test "$reads" -le 3
+answered dev-b; sleep 1
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
