@@ -2233,6 +2233,15 @@ echo "     trial 20: one tick, three idle seats, one with a question: $lists 'ag
 check "trial 20: one watch tick with three idle seats makes at most 3 'agent list' calls: none for a seat" test "$lists" -le 3
 check "trial 20: and reads the screen of the idle seat with a question at most 3 times" test "$reads" -le 3
 answered dev-b; sleep 1
+# 21: two watches at once send a held notice once (real trial 4: the notice of squad done arrived twice)
+reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$(cat "$longq") "$squad" "done" dev-a T-971 BLOCKED >/dev/null 2>&1 || true
+mkdir -p "$NT/.tick"; ( sleep 30 ) & tick21=$!; echo "$tick21" >"$NT/.tick/pid"
+MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 21: a watch sends no notice while another watch's tick holds the notices" refuses log_has "agent prompt lead [squad] dev-a finished T-971"
+kill "$tick21" 2>/dev/null || true; wait "$tick21" 2>/dev/null || true
+MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 21: a tick whose holder is gone takes the notices, and the held notice goes out once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] dev-a finished T-971: BLOCKED' '$MOCK_LOG') = 1 ] && test ! -e '$NT/.tick'"
+"$squad" seen T-971 >/dev/null 2>&1 || TEAM_ROLE=lead "$squad" seen T-971 >/dev/null 2>&1 || true
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

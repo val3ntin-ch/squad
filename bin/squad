@@ -2635,7 +2635,19 @@ notice_keep() { # <seat> <task> <status> <the line sent to the lead>
   rm -f "$d/.sent-$2.$1" "$d/.owner-$2.$1" "$d/.unsent-$2.$1"
 }
 
-notices_tick() {
+notices_tick() { # one watch at a time: two watches (the strip, and squad watch --once) would each send the same notice
+  local lk="$TEAM_DIR/observer/.notices/.tick" p
+  mkdir -p "$TEAM_DIR/observer/.notices"
+  if ! mkdir "$lk" 2>/dev/null; then
+    p=$(num_in "$lk/pid")
+    if [ "$p" -gt 0 ] && kill -0 "$p" 2>/dev/null; then return 0; fi   # another watch's tick holds the notices
+    rm -rf "$lk"; mkdir "$lk" 2>/dev/null || return 0                   # its holder is gone
+  fi
+  echo "$$" >"$lk/pid"
+  notices_tick_1 || true
+  rm -rf "$lk"
+}
+notices_tick_1() {
   local d="$TEAM_DIR/observer/.notices" f b at nr seat status task line now sent; now=$(date +%s)
   for f in "$d"/*; do
     [ -f "$f" ] || continue
