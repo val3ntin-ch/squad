@@ -1480,7 +1480,7 @@ check "seat_restart off: the owner is told once what to do" test "$(grep -c 'not
 check "seat_restart off: events.log has the case once" test "$(grep -c ' dev-a T-500 SEAT_GONE' .team/events.log)" = 1
 reset_log; rm -f "$tmp/exited"; bare1; bare1
 check "seat_restart off: a seat that runs without its squad options is not ended or started, and nothing is typed into any seat" no_typing
-check "seat_restart off: the owner is told once what to do" test "$(grep -c 'notification show squad: dev-b runs without its squad options --body dev-b runs without its squad options: run squad up. --sound request' "$MOCK_LOG")" = 1
+check "seat_restart off: the owner is told once what to do" test "$(grep -c 'notification show squad: dev-b runs without its squad options --body dev-b runs without its squad options: end its agent in its pane when its work is finished, then run squad up. --sound request' "$MOCK_LOG")" = 1
 check "seat_restart off: events.log has the case once" test "$(grep -c ' dev-b - SEAT_NO_OPTIONS' .team/events.log)" = 1
 a_back='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"idle","pane_id":"w2:p3"}]}}'
 MOCK_AGENTS=$a_back MOCK_CMDLINE="claude --append-system-prompt-file $tmp/sup/.team/seats/dev-b.md" MOCK_PANE_TEXT=$rdy watch1
@@ -1589,7 +1589,7 @@ check "023: a turn that ends on a usage limit is told to the owner at once" wait
 wait_log "osascript" || true
 printf '%s' '{"session_id":"s9","source":"resume"}' | TEAM_ROLE=tester "$squad" seat-hook SessionStart
 check "023: a seat resumed without its squad options reports it at its start" sh -c "grep -q ' tester - SEAT_NO_OPTIONS source=resume' .team/events.log && test -f .team/seats/tester.no-options"
-check "7: the owner is told there too (no watch may run)" wait_log "notification show squad: tester runs without its squad options --body tester runs without its squad options: run squad up."
+check "7: the owner is told there too (no watch may run)" wait_log "notification show squad: tester runs without its squad options --body tester runs without its squad options: end its agent in its pane when its work is finished, then run squad up."
 printf '%s' '{"session_id":"s9","source":"resume"}' | TEAM_ROLE=tester "$squad" seat-hook SessionStart; sleep 1
 check "7: once per seat" test "$(grep -c 'notification show squad: tester runs without its squad options' "$MOCK_LOG")" = 1
 sh -c "printf '%s' '{\"session_id\":\"s9\",\"source\":\"resume\"}' | TEAM_ROLE=dev-a '$squad' seat-hook SessionStart; true" hook --append-system-prompt-file "$tmp/sup/.team/seats/dev-a.md"
@@ -2235,13 +2235,88 @@ check "trial 20: and reads the screen of the idle seat with a question at most 3
 answered dev-b; sleep 1
 # 21: two watches at once send a held notice once (real trial 4: the notice of squad done arrived twice)
 reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$(cat "$longq") "$squad" "done" dev-a T-971 BLOCKED >/dev/null 2>&1 || true
-mkdir -p "$NT/.tick"; ( sleep 30 ) & tick21=$!; echo "$tick21" >"$NT/.tick/pid"
+( sleep 30 ) & tick21=$!; ln -s "$tick21" "$NT/.tick"   # the lock: a symbolic link to its owner's pid, made in one step
 MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
 check "trial 21: a watch sends no notice while another watch's tick holds the notices" refuses log_has "agent prompt lead [squad] dev-a finished T-971"
 kill "$tick21" 2>/dev/null || true; wait "$tick21" 2>/dev/null || true
 MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
 check "trial 21: a tick whose holder is gone takes the notices, and the held notice goes out once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] dev-a finished T-971: BLOCKED' '$MOCK_LOG') = 1 ] && test ! -e '$NT/.tick'"
 "$squad" seen T-971 >/dev/null 2>&1 || TEAM_ROLE=lead "$squad" seen T-971 >/dev/null 2>&1 || true
+# ---- the findings of the bot review of PR #27 ----
+# 22: the lock of the notices from an older squad (a folder with a pid file) does not hold the notices for ever
+"$squad" "done" dev-a T-977 BLOCKED >/dev/null 2>&1 || true; mkdir -p "$NT/.tick"; : >"$NT/.unsent-T-977.dev-a"; reset_log
+MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 22: a lock folder that an older squad left is cleared, and the held notice goes out once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] dev-a finished T-977: BLOCKED' '$MOCK_LOG') = 1 ] && test ! -e '$NT/.tick' -a ! -L '$NT/.tick'"
+ev lead T-977 SEEN; watch1
+# 23: 'squad seen' between the report's event and the kept notice counts: the boundary is the report's own line
+reset_log; ( sleep 1; ev lead T-978 SEEN ) & hp=$!
+SQUAD_TEST_NOTICE_PAUSE=3 MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy "$squad" "done" dev-a T-978 BLOCKED >/dev/null 2>&1 || true; wait "$hp" || true
+age "$NT/T-978.dev-a" 1 2000; reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 23: a 'squad seen' that came right after the report is not skipped: the notice is not sent again" sh -c "test ! -e '$NT/T-978.dev-a' && ! grep -q 'finished T-978' '$MOCK_LOG'"
+ev lead T-979 SEEN; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy "$squad" "done" dev-a T-979 BLOCKED >/dev/null 2>&1 || true
+age "$NT/T-979.dev-a" 1 2000; reset_log; MOCK_AGENTS=$t_free MOCK_PANE_TEXT=$rdy watch1
+check "trial 23: a 'squad seen' before the report leaves the new notice pending" sh -c "test -f '$NT/T-979.dev-a' && grep -q 'finished T-979: BLOCKED.*Sent again' '$MOCK_LOG'"
+ev lead T-979 SEEN; watch1
+# 24: a new dialog of the same second as the record that ends is another record: it stays
+perm dev-b; sleep 1; old24=$(rec_at)
+( sleep 2; printf '%s Bash 0 999\npermission for Bash: rm q\n' "$old24" >"$W" ) & hp=$!
+printf '%s' '{"background_tasks":[]}' | SQUAD_TEST_CLAIM_PAUSE=4 TEAM_ROLE=dev-b "$squad" seat-hook Stop; wait "$hp" || true
+check "trial 24: the record of a new dialog with the time of the old one is kept" grep -q 'rm q' "$W"
+rm -f "$W" .team/seats/dev-b.background; sleep 1; rm -f "$SW"/held-*
+# 25: a dialog that opens after the clear of a queued dispatch holds the task: it has not failed
+printf 'x\n' >.team/reports/T-980-contract.md; rm -f "$tmp/pinfo"; reset_log; rc25=0
+SQUAD_DISPATCH_QUEUED=1 MOCK_AGENTS=$t_idle MOCK_AGENTS_LATER=$(sed 's/"dev-a","agent_status":"idle"/"dev-a","agent_status":"blocked"/' <<<"$t_idle") MOCK_ON_PROMPT="case \$4 in /clear) : >'$tmp/pinfo' ;; esac" \
+  MOCK_PANE_TEXT=$rdy SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-980 >/dev/null 2>&1 || rc25=$?
+check "trial 25: a queued dispatch whose seat shows a dialog after the clear goes back to its waiter (exit 75), and the task is not typed" sh -c "[ $rc25 = 75 ] && grep -q 'agent prompt dev-a /clear' '$MOCK_LOG' && ! grep -q 'agent prompt dev-a Task' '$MOCK_LOG' && ! grep -q ' dev-a T-980 DISPATCH_FAILED' .team/events.log"
+rm -f "$tmp/pinfo"
+# 26: the owner hears of a dev with no task after 30 min, also when the lead could not be told (it shows a dialog)
+cp .team/TASKS.md "$tmp/tasks.keep26"; printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-002 | b | - | todo | - |\n' >.team/TASKS.md
+rm -rf .team/observer/.idle; mkdir -p .team/observer/.idle; ago 1860 >.team/observer/.idle/dev-b; reset_log
+MOCK_AGENTS=$(sed 's/"lead","agent_status":"idle"/"lead","agent_status":"blocked"/; s/"dev-a","agent_status":"idle"/"dev-a","agent_status":"working"/' <<<"$t_idle") MOCK_PANE_TEXT=$rdy watch1
+check "trial 26: a lead that shows a dialog is not told of the idle dev, and the owner is told at 30 min all the same" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && grep -q 'notification show squad: dev-b has no task --body dev-b has had no task for 31 min; 1 open task(s)' '$MOCK_LOG'"
+cp "$tmp/tasks.keep26" .team/TASKS.md; rm -rf .team/observer/.idle .team/observer/.alerted "$SW"; mkdir -p "$SW"
+# 27: the restart of a seat that runs without its options waits while its input line holds text ("/exit" would go in after the draft)
+printf 'seat_restart on\n' >>.team/team.conf; rm -f "$tmp/exited"; reset_log
+bare27() { MOCK_WS='{"result":{"workspaces":[{"workspace_id":"w2","label":"trial team"}]}}' MOCK_PANES='{"result":{"panes":[{"pane_id":"w2:p1","label":"lead"},{"pane_id":"w2:p3","label":"dev-b"}]}}' \
+  MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-b","agent_status":"idle","pane_id":"w2:p3"}]}}' MOCK_CMDLINE="claude --resume 1234" MOCK_PANE_TEXT=$1 SQUAD_EXIT_WAIT=1 watch1; }   # <every pane's text>
+bare27 "$(printf 'Claude Code\n❯ a note that is not sent yet')"
+check "trial 27: a seat with a draft in its input line is not ended: nothing is typed, the restart is put off" sh -c "! grep -qE 'agent (prompt|start|send-keys) dev-b' '$MOCK_LOG' && test -e '$SW/defer-dev-b'"
+bare27 "$rdy"
+check "trial 27: with an empty input line the seat is ended at its prompt" log_has "agent prompt dev-b /exit"
+sed -i.bak '/^seat_restart /d' .team/team.conf; rm -f .team/team.conf.bak "$tmp/exited" .team/seats/dev-b.no-options; rm -rf .team/observer/.alerted "$SW"; mkdir -p "$SW"
+# 28: a reminder of the wait for the owner never brings back a wait that 'squad wait-owner --done' ended meanwhile
+"$squad" wait-owner "T-981: the colour" >/dev/null 2>&1; age .team/owner-wait 3 18000; reset_log
+( sleep 1; "$squad" wait-owner --done >/dev/null 2>&1 ) & hp=$!
+SQUAD_TEST_REMIND_PAUSE=3 MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1; wait "$hp" || true
+check "trial 28: a wait that ended while its reminder was written stays ended" test ! -e .team/owner-wait
+"$squad" wait-owner "T-982: the font" >/dev/null 2>&1; age .team/owner-wait 3 18000; reset_log
+MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1
+check "trial 28: a wait that still holds gets its reminder, once" test "$(grep -c 'notification show squad: trial still waits for you --body T-982: the font' "$MOCK_LOG")" = 1
+"$squad" wait-owner --done >/dev/null 2>&1
+check "trial 28: the end of the wait removes the reminder's time too" test ! -e .team/owner-wait.reminded
+# 29: squad up keeps a team's round_limit: the preset's 'rounds' is the same setting and is not added
+cd "$tmp"; "$squad" new rl >/dev/null 2>&1; cd rl
+sed -i.bak 's/^rounds .*/round_limit 3/' .team/team.conf; rm -f .team/team.conf.bak; "$squad" update-conf >/dev/null 2>&1 || true
+check "trial 29: update-conf adds no 'rounds' line to a team.conf that has round_limit" sh -c "grep -qx 'round_limit 3' .team/team.conf && ! grep -qE '^rounds( |\$)' .team/team.conf"
+printf 'x\n' >.team/reports/T-983-review-1.md; printf 'x\n' >.team/reports/T-983-review-2.md; printf 'x\n' >.team/reports/T-983-review-3.md
+printf '2026-11-21 09:00:00 dev-a T-983 DONE\n' >>.team/events.log   # a task under way: the plan gate does not hold it
+check "trial 29: and the limit of 3 still holds a dispatch of round 4" sh -c "'$squad' dispatch dev-a T-983 2>&1 | grep -q 'the round limit is 3'"
+# 30: a queued task of a seat that fails does not close the token window of the task the seat works on
+cd "$tmp/proj27"; export CLAUDE_CONFIG_DIR="$tmp/home/.claude"
+sed -i.bak 's/^2026-11-20 10:05:00 dev-a T-701 DONE$/2026-11-20 10:02:00 dev-a T-799 DISPATCH_FAILED still busy after 120 min in the queue\
+&/' .team/events.log; rm -f .team/events.log.bak
+tok=$(TZ=UTC "$squad" tokens 2>&1 || true)
+check "trial 30: the failed dispatch of another task leaves the running task's tokens with the task" grep -qE '^T-701 +dev-a +2 +105 +3000 +200 +70$' <<<"$tok"
+unset CLAUDE_CONFIG_DIR
+# 31: the watch's own finding about a seat (SEAT_BLOCKED) between a dispatch and its failure does not keep the task open
+cd "$tmp/proj4"; mv .team/events.log "$tmp/events.keep"
+printf '2026-11-21 11:00:00 dev-a T-955 DISPATCH round=1\n2026-11-21 11:00:10 dev-a T-955 SEAT_BLOCKED\n2026-11-21 11:00:20 dev-a T-955 DISPATCH_NOT_STARTED no running turn in 20s\n' >.team/events.log; echo 0 >$O/.last-pass
+check "trial 31: a dispatch that did not start after the seat was seen blocked is no open task for the observer" refuses obs
+printf '2026-11-21 11:01:00 dev-a T-956 DISPATCH round=1\n2026-11-21 11:02:00 dev-a T-956 DONE\n2026-11-21 11:03:00 dev-a T-956 DISPATCH_FAILED not at its prompt\n' >.team/events.log; echo 0 >$O/.last-pass
+check "trial 31: a failed second send of a task the seat reported on does not close the task" obs
+mv "$tmp/events.keep" .team/events.log
+# 32: the README says what to do with a seat that runs without its options: squad up alone leaves it as it is
+check "trial 32: the README tells the owner to end a running seat's agent before squad up" grep -qE '^\| "squad: <seat> runs without its squad options" \| .*end its agent in its pane.*then run `squad up`' "$here/../README.md"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
