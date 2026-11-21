@@ -1,5 +1,5 @@
 # 026 · Candidate runs lose less time: one number one commit, logs kept, a flake rule, the lock wait logged
-Status: Approved (V!, 21 Nov 2026: "make all the fixes and improvements asap")
+Status: Done — awaiting PR review
 Size: M (≤ 1 day)
 
 ## Goal
@@ -47,3 +47,15 @@ One smoke test per "Done when" item.
   same test count) is not built: open decision for V!.
 - Report decision 14: option (b).
 - V!, 21 Nov 2026: old plain-file receipts are no longer read.
+
+## Verification
+Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).
+
+| Item | Result | Evidence |
+|---|---|---|
+| A used candidate number is refused | PASS | smoke "026: a candidate number that has a commit is refused…"; real trial 1 (check K) |
+| One log per step beside the receipt | PASS | smoke "026: a candidate batch keeps one log per step…"; real trial 1 |
+| `flake_rerun` | PASS | smoke "026: a batch step that fails once and passes alone…"; real trial 1 (FLAKE event, merge went through) |
+| `HEAVY_WAIT` and `waited=` | PASS | smoke "026: a seat that waits for the lock logs HEAVY_WAIT"; real trial 1 (`waited=16s`) |
+| No observer pass while no task is open | PASS | smoke "026: no observer pass while every dispatched task is merged"; not tried on a real team |
+| `test/smoke.sh` passes | PASS | 851 passed, 0 failed; CI green |

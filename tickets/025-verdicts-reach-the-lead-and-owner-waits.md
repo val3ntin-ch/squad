@@ -1,5 +1,5 @@
 # 025 · A verdict reaches the lead, and a wait for the owner is a known state
-Status: Approved (V!, 21 Nov 2026: "make all the fixes and improvements asap")
+Status: Done — awaiting PR review
 Size: M (≤ 1 day)
 
 ## Goal
@@ -45,3 +45,15 @@ One smoke test per "Done when" item.
 ## Assumptions & open questions
 - Report decisions 1, 2, 4, 5 and 6: the recommended options are built, as settings of
   `team.conf` where they change behaviour. V! can change each one.
+- Technical choices, to be confirmed by V!: after V! was told, a notice is re-sent to the lead 3 more times and then stops; the lead ends a notice with the new command `squad seen <task>` (a reviewer found that a notice could be re-sent for ever when the lead answered in another way).
+
+## Verification
+Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).
+
+| Item | Result | Evidence |
+|---|---|---|
+| A notice is kept, re-sent every `notice_redeliver_minutes`, V! told after `notice_owner_minutes` | PASS | smoke "025: a notice to the lead is kept…"; real trials 1, 2 and 4 |
+| `squad wait-owner` | PASS | smoke "025: squad wait-owner writes the wait…"; real trial 1 (check H) |
+| A notification repeats every 30 min, 3 times at most | PASS | smoke "025: … repeated 3 times at most" |
+| `notify_os` | PASS | smoke "025: with notify_os on…"; real trial 1 (osascript called once) |
+| `test/smoke.sh` passes | PASS | 851 passed, 0 failed; CI green |

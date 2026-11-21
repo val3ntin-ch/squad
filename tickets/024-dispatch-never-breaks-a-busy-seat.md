@@ -1,5 +1,5 @@
 # 024 · A dispatch never interrupts a busy seat, and a dev is never idle for long
-Status: Approved (V!, 21 Nov 2026: "make all the fixes and improvements asap")
+Status: Done — awaiting PR review
 Size: M (≤ 1 day)
 
 ## Goal
@@ -42,3 +42,14 @@ One smoke test per "Done when" item.
 
 ## Assumptions & open questions
 - The `plan --help` defect is from the lead's log, not yet reproduced.
+
+## Verification
+Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).
+
+| Item | Result | Evidence |
+|---|---|---|
+| A busy seat's dispatch stays queued, nothing cleared | PASS | smoke "024: a dispatch to a seat that waits in the heavy lock queue…"; real trial 1 (check F) |
+| No STALLED and no IDLE alarm for it | PASS | smoke "024: … is not stalled", "… gets no IDLE alarm" |
+| `-h` and `--help` print help, change no file | PASS | smoke "024: -h and --help print the help on every command"; real trial 1 (check A) |
+| A dev idle 30 min with open tasks: one notification to V! | PASS | smoke "024: at 30 min the owner gets one notification…", "trial 26: …" |
+| `test/smoke.sh` passes | PASS | 851 passed, 0 failed; CI green |

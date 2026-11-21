@@ -1,5 +1,5 @@
 # 023 · The team keeps running without the owner watching
-Status: Approved (V!, 21 Nov 2026: "make all the fixes and improvements asap")
+Status: Done — awaiting PR review
 Size: M (≤ 1 day)
 
 ## Goal
@@ -54,3 +54,14 @@ One smoke test per "Done when" item, each failing before the change.
 - V!'s notification is herdr's toast (already enabled, 17 Nov).
 - Squad never answers a seat's question or permission prompt itself; it only tells V!.
 - V!, 21 Nov 2026: the automatic restart ships switched off (`seat_restart off`); squad tells V! and types nothing.
+
+## Verification
+Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).
+
+| Item | Result | Evidence |
+|---|---|---|
+| A seat blocked 5 min tells V! (seat, task, question) | PASS | smoke "023: a seat blocked for 5 min…"; real trials 1 to 4: the hook tells V! at once |
+| A seat gone or without options: V! is told; restarted with `seat_restart on` (default off), limited | PASS | smoke "seat_restart off…", "023: … at most once in 10 min", "… after 3 restarts…"; real trial 1 (checks I, J) |
+| One stuck seat is reported while others work | PASS | smoke "023: one stalled seat is told to the owner while other seats work" |
+| A running watch picks up a new `bin/squad` | PASS | smoke "023: a long-running squad watch runs the new bin/squad…"; real trial 1 (check M) |
+| `test/smoke.sh` passes | PASS | 851 passed, 0 failed (bash 5 and bash 3.2); CI green |

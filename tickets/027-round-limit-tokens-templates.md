@@ -1,5 +1,5 @@
 # 027 · The round limit is in code, tokens are measured per seat and task, hive's practices are in the templates
-Status: Approved (V!, 21 Nov 2026: "make all the fixes and improvements asap")
+Status: Done — awaiting PR review
 Size: M (≤ 1 day)
 
 ## Goal
@@ -45,3 +45,14 @@ One smoke test per "Done when" item; the token test uses a fixture session file.
 - Report decisions 9, 10 and 12: the recommended options. Decision 15 (which other hive
   practices move into the templates) stays open: V! approves them item by item.
 - V!, 21 Nov 2026: an approved task passes the limit (its candidate failed).
+
+## Verification
+Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).
+
+| Item | Result | Evidence |
+|---|---|---|
+| Round `limit + 1` refused, `ROUND_LIMIT`, one notification; an approved task passes | PASS | smoke "027: a dispatch of round 6 is refused…"; real trial 1 (check L) |
+| `squad tokens` | PASS | smoke "027: tokens shows…"; real trial 1 (real numbers for a seat and a task) |
+| `squad report` shows the tokens | PASS | smoke "027: the report shows the tokens of a merged task" |
+| Templates | PASS | smoke: five "027: …" template checks |
+| `test/smoke.sh` passes | PASS | 851 passed, 0 failed; CI green |
