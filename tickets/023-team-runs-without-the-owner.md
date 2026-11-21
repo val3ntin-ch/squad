@@ -22,7 +22,7 @@ stop for hours and nobody acts. Seen in hive:
       the seat, its task and the first line of its question; one notification per wait.
 - [ ] A seat that runs without its squad options (no `--append-system-prompt-file`
       `.team/seats/<seat>.md` in its process) or is gone is restarted with its full
-      options by `squad watch`, at most once per 10 min per seat, with an event line (after 3 restarts of a seat in
+      options by `squad watch` with `seat_restart on` (default `off`: squad only tells V!), at most once per 10 min per seat, with an event line (after 3 restarts of a seat in
       one hour squad stops and notifies V!);
       a lead or dev with an open task gets its task re-sent after the restart.
 - [ ] One stuck seat (blocked, stalled or dead) is reported while other seats work.
@@ -53,3 +53,4 @@ One smoke test per "Done when" item, each failing before the change.
 ## Assumptions & open questions
 - V!'s notification is herdr's toast (already enabled, 17 Nov).
 - Squad never answers a seat's question or permission prompt itself; it only tells V!.
+- V!, 21 Nov 2026: the automatic restart ships switched off (`seat_restart off`); squad tells V! and types nothing.

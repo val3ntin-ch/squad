@@ -113,6 +113,7 @@ NOTICE_REDELIVER_MINUTES=15  # team.conf "notice_redeliver_minutes": a notice th
 NOTICE_OWNER_MINUTES=30      # team.conf "notice_owner_minutes": a notice the lead has not acted on for this long: tell the owner once
 OWNER_REMINDER_HOURS=4       # team.conf "owner_reminder_hours": squad wait-owner reminds the owner this often
 NOTIFY_OS=on                 # team.conf "notify_os off": only herdr's notification, none from the operating system
+SEAT_RESTART=off             # team.conf "seat_restart on": squad watch starts a seat again that is gone or runs without its squad options; off: it only tells the owner
 CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
 SESSION_NAME=""         # herdr session of this team (default: the repository's name)
 
@@ -155,6 +156,7 @@ load_conf() {
               rest=$((10#$rest))
               case "$kw" in notice_redeliver_minutes) NOTICE_REDELIVER_MINUTES=$rest ;; notice_owner_minutes) NOTICE_OWNER_MINUTES=$rest ;; *) OWNER_REMINDER_HOURS=$rest ;; esac ;;
       notify_os) case "$rest" in on|off) NOTIFY_OS=$rest ;; *) die "team.conf line $line_no: 'notify_os' is on or off." ;; esac ;;
+      seat_restart) case "$rest" in on|off) SEAT_RESTART=$rest ;; *) die "team.conf line $line_no: 'seat_restart' is on or off." ;; esac ;;
       consult) [ -n "$rest" ] || die "team.conf line $line_no: 'consult' needs a command, e.g. consult codex --search exec -m gpt-6.1-sol"
                CONSULT_CMD=$rest ;;
       session) [[ "$rest" =~ ^[A-Za-z0-9._-]+$ ]] || die "team.conf line $line_no: 'session' is a herdr session name (letters, digits, . _ -)."
@@ -422,7 +424,7 @@ heavy_owner() { readlink "$HEAVY_DIR/lock" 2>/dev/null || true; }
 
 # A seat is busy, whatever state herdr shows (ticket 024): its own heavy run is alive (a fresh
 # heartbeat, or it owns the lock), it waits in the heavy queue, or its last turn ended with
-# background work still running (the Stop hook: squad seat-stop). A busy seat gets no dispatch
+# background work still running (the Stop hook: squad seat-hook Stop). A busy seat gets no dispatch
 # and no STALLED or IDLE alarm.
 BUSY_HOOK_MINUTES=60   # the hook's reading counts this long: a seat that ends no further turn is not busy for ever
 seat_busy() { # <seat>
@@ -809,6 +811,15 @@ has_menu() { # a dialog, or a picker whose selected row is numbered ("❯ 1. Def
   printf '%s\n' "$1" | grep -qiE "$MENU_RE" || printf '%s\n' "$1" | grep -qE '^[[:space:]│]*(❯|›)[[:space:]]*[0-9]+\.'
 }
 
+# squad never answers a seat's question or permission prompt, so it types nothing into a seat that shows a
+# dialog. herdr reads its state from the screen and can be wrong: the pane is read too.
+seat_dialog() { # <seat>: herdr shows it blocked, or its pane shows a menu
+  [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$1")" = blocked ] || has_menu "$(pane_tail "$1" 12)"
+}
+tell_lead() { # <text>: squad's own message to the lead. False: not sent (the lead shows a dialog, or is not reachable); the caller sends it at a later tick
+  ! seat_dialog "$LEAD" && herdr_team agent prompt "$LEAD" "$1" >/dev/null 2>&1
+}
+
 wait_ready() { # <seat> <kind> <seconds>: the pane shows the agent's ready prompt and no menu
   local seat=$1 kind=$2 end text mark
   case "$kind" in claude) mark='❯' ;; codex) mark='›' ;; *) return 0 ;; esac
@@ -1019,14 +1030,14 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
             if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
             case "$st" in idle|done) ;; *) rm -f "$lockd"; sleep "${SQUAD_QUEUE_POLL:-15}"; continue ;; esac
             if SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@"; then exit 0; fi
-            herdr_team agent prompt "$LEAD" "[squad] the queued dispatch of $task to $seat failed: $log" >/dev/null 2>&1 || true
+            tell_lead "[squad] the queued dispatch of $task to $seat failed: $log" || keep=1   # not told: the request stays, and the watch tells the lead (report_lost_requests)
             exit 1
           fi ;;
       esac   # working, blocked (a prompt or a question), off: wait
       sleep "${SQUAD_QUEUE_POLL:-15}"
     done
     log_event "$seat" "$task" DISPATCH_FAILED "still busy after $((DISPATCH_QUEUE_WAIT / 60)) min in the queue"
-    herdr_team agent prompt "$LEAD" "[squad] $task waited $((DISPATCH_QUEUE_WAIT / 60)) min for $seat and was not sent." >/dev/null 2>&1 || true
+    tell_lead "[squad] $task waited $((DISPATCH_QUEUE_WAIT / 60)) min for $seat and was not sent." || keep=1
   ) >>"$log" 2>&1 </dev/null &
   disown $! 2>/dev/null || true
   say "$seat is busy: $task waits and is sent when $seat is free (queued; log: ${log#"$REPO"/})."
@@ -1051,11 +1062,11 @@ report_lost_requests() { # a queued request whose waiter is gone (a restart): th
          else if ($5 ~ /^DISPATCH_(NOT_STARTED|FAILED)$/ && k == c) ok = 0 } END { exit !ok }' "$TEAM_DIR/events.log" 2>/dev/null; then
       rm -f "$c"; continue
     fi
-    if herdr_team agent prompt "$LEAD" "[squad] ${args[1]} waited for ${args[0]} and was not sent when squad checked (its waiter stopped, for example at a herdr restart). Check the seat first; if it does not have the task, send it again: squad dispatch ${args[*]:0:2}$( [ "$kc" = 1 ] && printf ' --contract' ). (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
+    if tell_lead "[squad] ${args[1]} waited for ${args[0]} and was not sent when squad checked (its waiter stopped, for example at a herdr restart). Check the seat first; if it does not have the task, send it again: squad dispatch ${args[*]:0:2}$( [ "$kc" = 1 ] && printf ' --contract' ). (Notification: first finish what you were doing.)"; then
       log_event "${args[0]}" "${args[1]}" DISPATCH_LOST "its waiter stopped (a restart); the lead was told"
       rm -f "$c"
     else
-      mv "$c" "$f" 2>/dev/null || true   # the lead is not reachable yet: the next tick tells it
+      mv "$c" "$f" 2>/dev/null || true   # the lead is not reachable yet, or shows a dialog: the next tick tells it
     fi
   done
 }
@@ -1174,13 +1185,15 @@ open_tasks() { # -> "seat task" for each seat whose last dispatch has no answer 
 cmd_notify() {
   find_repo; load_conf
   [ $# -ge 2 ] || die "usage: squad notify \"<file and section>\" \"<the new rule in one sentence>\""
-  local where=$1 rule=$2 seat task n=0
+  local where=$1 rule=$2 seat task n=0 skipped=""
   while read -r seat task; do
     [ -n "$seat" ] || continue
+    if seat_dialog "$seat"; then skipped="$skipped $seat"; continue; fi   # nothing is typed into a seat that shows a dialog
     herdr_team agent prompt "$seat" "[squad] Rule changed at $(date +%H:%M) in $where: $rule (Finish your current step, then follow it.)" >/dev/null && n=$((n + 1))
   done < <(open_tasks)
   log_event "$LEAD" - RULE "$where: $rule"
   say "told $n seat(s) at work."
+  [ -z "$skipped" ] || say "not told (a dialog or a question in the pane):$skipped. Send the rule again when they are free: squad notify."
 }
 
 # ---- squad consult: a second, independent brain for a real issue ---------------
@@ -1918,13 +1931,16 @@ alert_trouble() { # <index> <trouble> <task>: once per seat and kind
   local name=${S_NAME[$1]} kind=$2 task=$3 f hint
   f="$TEAM_DIR/observer/.alerted/$name"
   mkdir -p "$(dirname "$f")"
-  [ "$(cat "$f" 2>/dev/null)" = "$kind" ] && return 0
-  echo "$kind" >"$f"
-  # the watch's own finding, never the seat's report: SEAT_BLOCKED is not the BLOCKED a seat reports with squad done
-  log_event "$name" "${task:--}" "SEAT_$(echo "$kind" | tr '[:lower:]' '[:upper:]')"
+  if [ "$(cat "$f" 2>/dev/null)" = "$kind" ]; then
+    [ -e "$f.untold" ] || return 0   # logged, and the lead could not be told yet (it showed a dialog): only the message, again
+  else
+    echo "$kind" >"$f"; rm -f "$f.untold"
+    # the watch's own finding, never the seat's report: SEAT_BLOCKED is not the BLOCKED a seat reports with squad done
+    log_event "$name" "${task:--}" "SEAT_$(echo "$kind" | tr '[:lower:]' '[:upper:]')"
+  fi
   hint=$(trouble_hint "$kind" "$name")
   [ "$name" = "$LEAD" ] && return 0
-  herdr_team agent prompt "$LEAD" "[squad] $name is $kind${task:+ on $task}: $hint. (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+  if tell_lead "[squad] $name is $kind${task:+ on $task}: $hint. (Notification: first finish what you were doing.)"; then rm -f "$f.untold"; else : >"$f.untold"; fi
 }
 
 idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP: work on the hook gets run)
@@ -1935,10 +1951,10 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
   mkdir -p "$(dirname "$f")"; now=$(date +%s)
   [ -f "$f" ] || echo "$now" >"$f"
   since=$(cat "$f")
-  if [ $((now - since)) -ge $((IDLE_MINUTES * 60)) ] && [ ! -f "$a" ]; then
-    : >"$a"
+  if [ $((now - since)) -ge $((IDLE_MINUTES * 60)) ] && [ ! -f "$a" ] \
+     && tell_lead "[squad] $name has had no task for $(( (now - since) / 60 )) min: write its next brief and dispatch it (squad dispatch $name <ID>). (Notification: first finish what you were doing.)"; then
+    : >"$a"   # told; a lead that shows a dialog is told at a later tick
     log_event "$name" - IDLE "no task for $(( (now - since) / 60 )) min"
-    herdr_team agent prompt "$LEAD" "[squad] $name has had no task for $(( (now - since) / 60 )) min: write its next brief and dispatch it (squad dispatch $name <ID>). (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
   fi
   # the lead was told and nothing happened: after IDLE_OWNER_MINUTES the owner is told once, when tasks are open (ticket 024)
   if [ $((now - since)) -ge $((IDLE_OWNER_MINUTES * 60)) ] && [ -f "$a" ] && [ ! -f "$a.owner" ]; then
@@ -2213,8 +2229,8 @@ pane_shell() { # <pane> -> "shell" when its foreground is only a bare shell (the
   herdr_team pane process-info --pane "$1" 2>/dev/null | jq -r '.result.process_info.foreground_processes | if length > 0 and all(.cmdline | test("^-?([^ ]*/)?(zsh|bash|sh|fish)$")) then "shell" else empty end' 2>/dev/null || true
 }
 
-seat_restart() { # <index> <state the tick saw> <open task> <why>: start the seat again with its full options (start_seat, as 'squad up' does); true when it runs again
-  local i=$1 task=$3 why=$4 name=${S_NAME[$1]} mk="$TEAM_DIR/observer/.watchdog" f now n ws pane round quit agents st last hold=""
+seat_restart() { # <index> <open task> <why>: start the seat again with its full options (start_seat, as 'squad up' does); true when it runs again
+  local i=$1 task=$2 why=$3 name=${S_NAME[$1]} mk="$TEAM_DIR/observer/.watchdog" f now n ws pane round quit agents st last hold=""
   f=$(readlink "$TEAM_DIR/up.lock" 2>/dev/null || true)
   [ -z "$f" ] || ! kill -0 "$f" 2>/dev/null || return 1   # 'squad up' runs: it starts the seats itself
   f="$mk/restart-$name"; now=$(date +%s)
@@ -2308,19 +2324,32 @@ seats_tick() { # <agents json>
       *) owner_alert_end "stuck-$name" ;;
     esac
     # c. its agent is gone with a task open (the lead: always), or it runs without its squad options (herdr resumed
-    #    it bare): start it again. A seat at work or at a prompt is left alone until it is idle.
+    #    it bare). seat_restart off (the default; the owner, 21 Nov 2026): the watch ends and starts no seat; it logs
+    #    the case and tells the owner. seat_restart on: start it again; a seat at work or at a prompt is left alone
+    #    until it is idle.
     why=""
     if [ "$st" = off ]; then { [ -z "$task" ] && [ "$name" != "$LEAD" ]; } || why="its agent was gone"
     elif { [ "$st" = idle ] || [ "$st" = "done" ]; } && loads_role "${S_KIND[$i]}"; then
       opt=$(seat_options "$agents" "$i")
-      if [ "$opt" = yes ]; then rm -f "$TEAM_DIR/seats/$name.no-options" "$mk/bare-$name"; owner_alert_end "bare-$name"
+      if [ "$opt" = yes ]; then rm -f "$TEAM_DIR/seats/$name.no-options" "$mk/bare-$name"; owner_alert_end "bare-$name"; owner_alert_end "options-$name"
       elif [ "$opt" = no ] || [ -f "$TEAM_DIR/seats/$name.no-options" ]; then why=$bare; fi
     fi
-    if [ "$why" = "$bare" ] && [ -e "$mk/bare-$name" ]; then
+    if [ "$SEAT_RESTART" != on ]; then
+      case "$why" in
+        "") owner_alert_end "gone-$name" ;;
+        "$bare")
+          owner_alert_end "gone-$name"
+          [ -e "$mk/held-options-$name" ] || log_event "$name" "${task:--}" SEAT_NO_OPTIONS "it runs without its squad options: $OWNER_NAME is told"
+          owner_alert "options-$name" "squad: $name runs without its squad options" "$name runs without its squad options: run squad up." ;;
+        *)
+          [ -e "$mk/held-gone-$name" ] || log_event "$name" "${task:--}" SEAT_GONE "its agent is gone: $OWNER_NAME is told"
+          owner_alert "gone-$name" "squad: $name is gone${task:+ ($task)}" "$name is gone: run squad up." ;;
+      esac
+    elif [ "$why" = "$bare" ] && [ -e "$mk/bare-$name" ]; then
       # squad started it with its options and they still do not show: the check cannot be trusted here; never restart in a loop
       owner_alert "bare-$name" "squad: check $name's options" "squad started $name again and still cannot see its squad options in its process. Read its pane."
     elif [ -n "$why" ]; then
-      if seat_restart "$i" "$st" "$task" "$why" && [ "$why" = "$bare" ]; then : >"$mk/bare-$name"; rm -f "$TEAM_DIR/seats/$name.no-options"; fi
+      if seat_restart "$i" "$task" "$why" && [ "$why" = "$bare" ]; then : >"$mk/bare-$name"; rm -f "$TEAM_DIR/seats/$name.no-options"; fi
     else   # nothing to start: a seat that runs is healthy again, so a stop of its restarts ends
       owner_alert_end "restart-$name"; rm -f "$mk/defer-$name"; [ "$st" = off ] || rm -f "$mk/restart-$name.stopped"
     fi
@@ -2442,9 +2471,9 @@ watchdog_tick() {
           for (t in e) if (e[t] ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES)$/ && !(e[t] == "APPROVE" && held > at[t])) printf "%s %s ", t, e[t] }' "$TEAM_DIR/events.log" 2>/dev/null)
       key="$mk/stall-$last"
       if [ -n "$wait" ] && [ ! -e "$key" ]; then
-        : >"$key"
-        log_event "$LEAD" - STALLED "no event for $(( (now - last) / 60 )) min while waiting: $wait"
-        herdr_team agent prompt "$LEAD" "[squad] No event for $(( (now - last) / 60 )) min, and these wait for you: $wait. Read their newest report or review and act (dispatch the next round, merge, or put it in a candidate). (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+        [ -e "$key.logged" ] || { : >"$key.logged"; log_event "$LEAD" - STALLED "no event for $(( (now - last) / 60 )) min while waiting: $wait"; }
+        # a lead that shows a dialog gets the line at a later tick (the owner is told below at once)
+        ! tell_lead "[squad] No event for $(( (now - last) / 60 )) min, and these wait for you: $wait. Read their newest report or review and act (dispatch the next round, merge, or put it in a candidate). (Notification: first finish what you were doing.)" || : >"$key"
       fi
       if [ -n "$wait" ]; then owner_alert "stall-$last" "squad: $(basename "$REPO") stalled" "No event for $(( (now - last) / 60 )) min; waiting for the lead: $wait"; fi
     fi
@@ -2463,7 +2492,10 @@ watchdog_tick() {
       : >"$mk/limit-$name"; log_event "$name" - LIMIT "${resets:-usage limit}"
     fi
     [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] || owner_alert "limit-$name" "squad: $name at its usage limit" "${resets:-usage limit}. It waits for you: answer its pane, or set limit_fallback <model> in team.conf."
-    if [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] && [ ! -e "$mk/fallback-$name" ]; then
+    if [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] && [ ! -e "$mk/fallback-$name" ] && seat_dialog "$name"; then
+      # a dialog: no key and no /model goes to it (squad never answers one); only the owner is told
+      owner_alert "limit-$name" "squad: $name at its usage limit" "${resets:-usage limit}. It shows a dialog, so squad does not switch it to $LIMIT_FALLBACK: answer its pane."
+    elif [ -n "$LIMIT_FALLBACK" ] && [ "${S_KIND[$i]}" = claude ] && [ ! -e "$mk/fallback-$name" ]; then
       herdr_team agent send-keys "$name" Escape >/dev/null 2>&1 || true; sleep 2
       if herdr_team agent prompt "$name" "/model $LIMIT_FALLBACK" >/dev/null 2>&1; then
         : >"$mk/fallback-$name"
@@ -2525,7 +2557,7 @@ watch_once() {
     if [ "$up" = 1 ]; then
       task=$(awk -v s="${S_NAME[$i]}" '$1 == s { print $2; exit }' <<<"$opens")
       trouble=$(seat_trouble "$agents_json" "$i" "$task")
-      if [ -n "$trouble" ]; then alert_trouble "$i" "$trouble" "$task"; else rm -f "$TEAM_DIR/observer/.alerted/${S_NAME[$i]}"; fi
+      if [ -n "$trouble" ]; then alert_trouble "$i" "$trouble" "$task"; else rm -f "$TEAM_DIR/observer/.alerted/${S_NAME[$i]}" "$TEAM_DIR/observer/.alerted/${S_NAME[$i]}.untold"; fi
     fi
     [ "$up" = 1 ] && [ "${S_ROLE[$i]}" = dev ] && idle_dev_check "$i" "$state" "$task"
     case "$state" in working) mark="●" ;; blocked) mark="!" ;; idle|done) mark="○" ;; *) mark="·" ;; esac
@@ -3409,17 +3441,17 @@ seat_hook() {
       w=fail; [ "$err" != rate_limit ] || w=limit   # a usage limit: the key of the watchdog's own alert, so one notification
       [ -e "$TEAM_DIR/observer/.watchdog/held-$w-$seat" ] || log_event "$seat" "${task:--}" SEAT_STOPPED "$err"
       if [ "$err" = rate_limit ]; then
-        [ -n "$LIMIT_FALLBACK" ] || owner_alert "limit-$seat" "squad: $seat at its usage limit" "Its turn stopped (rate_limit). It waits for you: answer its pane, or set limit_fallback <model> in team.conf."
+        [ -n "$LIMIT_FALLBACK" ] || detached owner_alert "limit-$seat" "squad: $seat at its usage limit" "Its turn stopped (rate_limit). It waits for you: answer its pane, or set limit_fallback <model> in team.conf."
       else   # told once until the seat works again (seats_tick ends it)
-        owner_alert "fail-$seat" "squad: $seat stopped: $err" "Its turn ended on an error${task:+ with $task open}. Read its pane$([ "$err" != authentication_failed ] || printf ' and run /login there')."
+        detached owner_alert "fail-$seat" "squad: $seat stopped: $err" "Its turn ended on an error${task:+ with $task open}. Read its pane$([ "$err" != authentication_failed ] || printf ' and run /login there')."
       fi ;;
-    SessionStart)   # started or resumed without squad's options (herdr resumed it bare): squad watch starts it again
+    SessionStart)   # started or resumed without squad's options (herdr resumed it bare)
       src=$(jq -r '.source // empty' <<<"$json" 2>/dev/null || true)
       case "$src" in startup|resume) ;; *) return 0 ;; esac
-      case "$args" in *"$TEAM_DIR/seats/$seat.md"*) rm -f "$TEAM_DIR/seats/$seat.no-options"; return 0 ;; esac
+      case "$args" in *"$TEAM_DIR/seats/$seat.md"*) rm -f "$TEAM_DIR/seats/$seat.no-options"; owner_alert_end "options-$seat"; return 0 ;; esac
       if [ ! -f "$TEAM_DIR/seats/$seat.no-options" ]; then   # once per seat; the owner is told here too: the watch may not run (after a herdr restart its pane is only a shell)
-        log_event "$seat" - SEAT_NO_OPTIONS "source=$src: it runs without its squad options; squad watch starts it again"
-        detached v_notify "squad: $seat runs without its squad options" "$seat runs without its squad options: run squad up."
+        log_event "$seat" - SEAT_NO_OPTIONS "source=$src: it runs without its squad options"
+        detached owner_alert "options-$seat" "squad: $seat runs without its squad options" "$seat runs without its squad options: run squad up."   # the watch's key: one notification
       fi
       : >"$TEAM_DIR/seats/$seat.no-options" ;;
     Stop)   # the turn ended: how many background tasks the seat still waits for (0: free), and when; seat_busy reads it (ticket 024)
@@ -3439,10 +3471,6 @@ session_id() {
   # a new or cleared session waits for no background work; a compaction keeps the session and what it waits for
   case "$(jq -r '.source // empty' <<<"$json")" in startup|resume|clear) rm -f "$TEAM_DIR/seats/$seat.background" ;; esac
 }
-
-# squad seat-stop <seat> — the Stop hook in a seat's settings from before the hook moved to 'squad seat-hook Stop'
-# (a seat that still runs with them). The same record; it prints nothing and never fails.
-cmd_seat_stop() { ( TEAM_ROLE=${1:-${TEAM_ROLE:-}}; seat_hook Stop ) >/dev/null 2>&1 || true; return 0; }
 
 record_sessions() { # <agents json>: herdr knows each running seat's conversation; keep it for resume
   local i n id; n=$(seat_count)
@@ -3849,7 +3877,6 @@ case "$cmd" in
   seat-hook) cmd_seat_hook "$@" ;;
   wait-owner) cmd_wait_owner "$@" ;;
   seen) cmd_seen "$@" ;;
-  seat-stop) cmd_seat_stop "$@" ;;
   permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;
   -h|--help|help) usage ;;
