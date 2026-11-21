@@ -63,6 +63,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad brief` | Starts the lead again with one short line. |
 | `squad watch` | The live board in the team tab: usage, tasks, seats and their trouble. `--once` prints it once. |
 | `squad usage` | One line of plan usage: the 5-hour and 7-day windows, and when a nearly used-up window comes back. |
+| `squad tokens` | Per seat and per task: the model calls and the input, cache-read, cache-write and output tokens, read from the agents' own session files (numbers only). A task's part of a seat is what the seat used from its dispatch to its report. A seat or a part with no session file shows `not measured`, never 0. The report's Cost tab shows the same numbers per task. |
 | `squad status` | Shows the seats, the spec status, the task table and the agent states. |
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
@@ -111,7 +112,7 @@ setup pnpm install --frozen-lockfile
 - **arguments** after the fourth column go to the agent's own CLI unchanged. That is how you choose the model and the effort.
 - **role** is `lead`, `dev`, `tester`, `reviewer` or `observer`. There is exactly one lead. Without a `reviewer` seat the lead reviews; without an `observer` nobody watches.
 - **base** is the branch finished tasks are merged into.
-- **rounds** is how many review rounds a task may take before the lead brings it to you.
+- **rounds** (or **round_limit**, the same number; 5) is how many review rounds a task may take before the lead brings it to you. `squad dispatch` refuses the next round, logs `ROUND_LIMIT` and sends you one notification that names the task and its review files.
 - **escalate_model** is the model a fix runs on from round 4 (`squad dispatch --escalate`).
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.

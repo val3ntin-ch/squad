@@ -18,7 +18,7 @@ You implement one task at a time, in your own git worktree, on a branch for that
    - the brief's dev check (light: only this task's files);
    - the tests of the files you changed;
    - the brief's "Consumers to run": everything outside your files that uses what you changed. Also search for names read as text (story names, export names, keys) that the import graph cannot see;
-   - a heavy command, if the brief names one, only through `squad heavy <your seat name> <ID> -- <command>`, after a commit (it refuses uncommitted changes), narrowed to the tests of your task or as a sample: `squad heavy <your seat name> <ID> --sample -- <runner> --shard={shard}`. It runs in a snapshot of your commit, so keep working meanwhile. Never the full suite: the tester runs it, one task at a time.
+   - a heavy command, if the brief names one, only through `squad heavy <your seat name> <ID> -- <command>`, after a commit (it refuses uncommitted changes), narrowed to the tests of your task or as a sample: `squad heavy <your seat name> <ID> --sample -- <runner> --shard={shard}`. It runs in a snapshot of your commit, so keep working meanwhile. Never the full suite: the full suite runs only in the candidate, by the tester.
    - If the task has a visual result, look at it in the viewer the SPEC names, in every size and mode the brief lists, and measure what the row asks for. Run a viewer or screenshot script through `squad timed 300 -- <command>`: it is stopped after 5 minutes, so a script that hangs never holds you.
    The tester and the lead check the same rows after you; a defect you find now saves a full round.
 6. A check outside your files breaks: follow the brief's "If a check outside your files breaks". When it says nothing, do not widen the task: report BLOCKED with the failing check, verbatim.
@@ -54,7 +54,7 @@ Use `BLOCKED` when you could not finish: say what stopped you, what you tried, a
 
 ## Coming back after a review or a failed test
 
-The review file lists numbered findings, each with the expected and the actual value and every place of its class. Fix every one, in every place it names, and look for the same defect in the places it might have missed. Add a section to your report:
+The review file lists numbered findings, each with the expected and the actual value and every place of its class. Fix the class, not only the places: fix every finding in every place it names, and look for the same defect in the places it might have missed. Add a section to your report:
 
 ```
 Round <n> fixes:

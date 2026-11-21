@@ -6,7 +6,7 @@ Your seat name (for example `lead`, `dev-a` or `tester`) is at the top of this p
 
 - Team directory: `$TEAM_DIR`. It lives outside your worktree, so always use this absolute path.
 - Integration branch: `$TEAM_BASE`. Finished tasks get merged into it.
-- Review rounds before a task goes to the human: $REVIEW_ROUNDS.
+- Review rounds before a task goes to the human: $REVIEW_ROUNDS. `squad dispatch` refuses a later round and tells the human.
 - git: anything that changes the repository — `git switch …`, `git add …`, `git commit …`, `git merge …`, `git rebase …`, `git restore …`, `git stash …` — run exactly as written here (these files spell out the full command). Read-only git (status, diff, log, show) runs as plain `git`. The lead pushes only the integration branch, with `squad git push` (no arguments). Never force or delete branches.
 - herdr: always call it as `herdr agent …` exactly as written in these files (they spell out the full command). It is bound to this team's herdr session; plain `herdr` from your shell may reach another one.
 - squad: the team's own commands (`squad done`, `squad heavy`, and for the lead `squad dispatch`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`) are spelled out with their full path in these files. Run them as written.
@@ -72,7 +72,7 @@ Every seat runs on the same computer. A full check run (the whole test suite, a 
 - Every heavy run goes through the lock: `squad heavy <your seat name> <ID> -- <command>`. A dev commits first (a WIP commit is fine): `squad heavy` refuses a dev worktree with uncommitted changes, and every run names the commit it proved. A dev's run happens in a snapshot of that commit (`<repo>-team/.runs/<seat>`), so you can keep working while it runs; use paths relative to your worktree, never an absolute path into it. A diagnostic variant is a commit or a separate test file, never an edit made and undone inside the run.
 - A dev runs a sample, not the suite: `squad heavy <your seat name> <ID> --sample -- <runner> --shard={shard}` runs one fixed share of the tests (vitest, jest and playwright take `--shard=k/n`), or a filter on the tests of the task. The whole suite is the tester's. For a command with `&&` or a pipe: `squad heavy <your seat name> <ID> -- bash -c '<command>'`. It waits its turn (first come, first served), names you as the owner, and stops a run after its time limit ($HEAVY_TIMEOUT minutes; a dev's run is shorter, `heavy_timeout_dev`). Never build your own lock or wait loop.
 - `squad heavy --status` shows who holds the lock and who waits. The lock is one for the whole machine: teams of other repositories on this computer wait in the same queue.
-- A dev runs only the checks of its own task: the tests of the files it changed, the consumers the brief names, and the task's dev check. Never the full suite.
+- A dev runs only the checks of its own task: the tests of the files it changed (or the sample), the consumers the brief names, and the task's dev check. Never the full suite: the full suite runs only in the candidate.
 - The full suite belongs to the tester, and the tester runs one thing at a time.
 - Never start a run while another run of yours is still going. Never start a second run because the first is slow.
 - Never put a long-running process (a viewer, a dev server, a watch mode) inside the lock.
