@@ -828,23 +828,56 @@ wait_for_state() { # <seat> <seconds> <state...>: true once herdr shows one of t
 }
 
 pane_tail() { herdr_team agent read "$1" --source visible 2>/dev/null | tail -"${2:-15}" || true; }
+pane_text() { herdr_team agent read "$1" --source visible 2>/dev/null || true; }   # <seat>: its whole visible screen
 
 MENU_RE='enter to submit|esc to cancel|press enter to confirm|Do you want to|\[y/n\]|Allow the |trust this folder|Update available'
 
 # the agent's input line: the last prompt-marked line, only among the last lines of the pane
 input_line() { printf '%s\n' "$1" | tail -6 | grep -E '^[[:space:]│]*(❯|›)' | tail -1 || true; }
 
-has_menu() { # a dialog, or a picker whose selected row is numbered ("❯ 1. Default")
-  printf '%s\n' "$1" | grep -qiE "$MENU_RE" || printf '%s\n' "$1" | grep -qE '^[[:space:]│]*(❯|›)[[:space:]]*[0-9]+\.'
+# <screen text>: it shows a dialog, or a picker whose selected row is numbered ("❯ 1. Default"). The numbered row counts
+# anywhere on the screen: a long question has it far above the bottom (22 lines in the trial of 21 Nov 2026). A dialog's
+# words count only in the last 12 lines (the transcript above may hold them), joined: a narrow pane wraps "Esc to / cancel".
+has_menu() {
+  printf '%s\n' "$1" | grep -qE '^[[:space:]│]*(❯|›)[[:space:]]*[0-9]+\.' \
+    || printf '%s\n' "$1" | tail -12 | sed 's/│/ /g' | tr -s '[:space:]' ' ' | grep -qiE "$MENU_RE"
 }
 
 # squad never answers a seat's question or permission prompt, so it types nothing into a seat that shows a
-# dialog. herdr reads its state from the screen and can be wrong: the pane is read too.
-seat_dialog() { # <seat>: herdr shows it blocked, or its pane shows a menu
-  [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$1")" = blocked ] || has_menu "$(pane_tail "$1" 12)"
+# dialog. No single sign is enough (the trial of 21 Nov 2026): herdr shows a seat with a question as idle, and
+# a pane can hide a dialog. A seat shows a dialog when any of the three says so.
+OWNER_WAIT_BOUND=120   # seconds: a younger record of the hook always counts
+owner_wait_open() { # <seat>: its hook recorded a dialog (seats/<seat>.owner-wait) and nothing the seat did later says it is over
+  local w="$TEAM_DIR/seats/$1.owner-wait" at nr bat
+  [ -f "$w" ] || return 1
+  { read -r at _ nr <"$w"; } 2>/dev/null || true
+  [[ "${at:-}" =~ ^[0-9]+$ ]] || at=0
+  [ $(( $(date +%s) - at )) -ge "$OWNER_WAIT_BOUND" ] || return 0
+  # an old record: a later turn end of the seat (its Stop hook), or a later report of its own, says the dialog is over
+  { read -r _ bat <"$TEAM_DIR/seats/$1.background"; } 2>/dev/null || true
+  if [[ "${bat:-}" =~ ^[0-9]+$ ]] && [ "$bat" -gt "$at" ]; then return 1; fi
+  [[ "${nr:-}" =~ ^[0-9]+$ ]] || return 0
+  ! awk -v n="$nr" -v s="$1" 'NR > n && $3 == s && $5 ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES|BLOCKED|CONTRACT|SEEN|WAIT_OWNER|MERGE|CANDIDATE|RULE|CONSULT)$/ { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null
+}
+seat_dialog() { # <seat>: herdr shows it blocked, or its hook recorded a dialog that is still open, or its screen shows a menu
+  [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$1")" = blocked ] || owner_wait_open "$1" || has_menu "$(pane_text "$1")"
 }
 tell_lead() { # <text>: squad's own message to the lead. False: not sent (the lead shows a dialog, or is not reachable); the caller sends it at a later tick
   ! seat_dialog "$LEAD" && herdr_team agent prompt "$LEAD" "$1" >/dev/null 2>&1
+}
+lead_line() { # <text>: tell the lead now; a line that is not sent is kept, and the watch sends it when the lead is free (lead_lines_tick). False: kept
+  local d="$TEAM_DIR/observer/.lead-lines"
+  tell_lead "$1" && return 0
+  mkdir -p "$d" && put "$d/$(date +%s)-$$-$RANDOM" "$1"
+  return 1
+}
+lead_lines_tick() { # the kept lines, oldest first; the first that is not sent ends the tick
+  local f
+  for f in "$TEAM_DIR/observer/.lead-lines"/*; do
+    [ -f "$f" ] || continue
+    tell_lead "$(cat "$f")" || return 0
+    rm -f "$f"
+  done
 }
 
 wait_ready() { # <seat> <kind> <seconds>: the pane shows the agent's ready prompt and no menu
@@ -852,7 +885,7 @@ wait_ready() { # <seat> <kind> <seconds>: the pane shows the agent's ready promp
   case "$kind" in claude) mark='❯' ;; codex) mark='›' ;; *) return 0 ;; esac
   end=$(( $(date +%s) + $3 ))
   while :; do
-    text=$(pane_tail "$seat" 12)
+    text=$(pane_text "$seat")
     # ready: the input line is empty, or holds only the agent's grey hint text; never a leftover "/clear"
     local cur; cur=$(input_line "$text")
     if ! has_menu "$text" && printf '%s' "$cur" | grep -qE "^[[:space:]│]*$mark" \
@@ -868,9 +901,10 @@ wait_started() { # <seat> <task text> <seconds>
   [ -n "$key" ] || key="(empty)"
   end=$(( $(date +%s) + $3 )); half=$(( $(date +%s) + $3 / 2 ))
   while :; do
-    text=$(pane_tail "$seat" 15)
-    printf '%s\n' "$text" | grep -qi 'esc to interrupt' && return 0
+    text=$(pane_text "$seat")
     has_menu "$text" && return 0   # it started and now asks: the watcher reports it as blocked; never press Enter on a menu
+    text=$(printf '%s\n' "$text" | tail -15)
+    printf '%s\n' "$text" | grep -qi 'esc to interrupt' && return 0
     local cur; cur=$(input_line "$text")
     # submitted: the task text is in the transcript, not in the input line (also a turn that already ended)
     if ! printf '%s' "$cur" | grep -qF -- "$key" && printf '%s\n' "$text" | grep -qF -- "$key"; then return 0; fi
@@ -960,6 +994,14 @@ cmd_dispatch() {
     SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
     return 0
   fi
+  # a seat that shows a dialog gets nothing typed, not the clear and not the task (the trial of 21 Nov 2026: a "/clear"
+  # answered a seat's question): the task waits in the queue; a queued delivery goes back to its waiter (exit 75)
+  held() {
+    seat_dialog "$seat" || return 1
+    [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] || exit 75
+    SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
+  }
+  if held; then return 0; fi
   clear=$(clear_cmd "$kind")
   if [ "$clear" != "-" ]; then
     herdr_team agent prompt "$seat" "$clear" >/dev/null || die "could not reach $seat."
@@ -974,6 +1016,7 @@ cmd_dispatch() {
     elif [ "$escalate" = 1 ]; then say "squad dispatch: no --escalate for $seat (no escalate_model, or no --model in its seat line)."
     elif [ -f "$mark" ]; then model=$(seat_model_arg "$i"); rm -f "$mark"; fi
     if [ -n "$model" ]; then
+      if held; then return 0; fi
       herdr_team agent prompt "$seat" "/model $model" >/dev/null || true
       sleep 2; wait_for_state "$seat" "$DISPATCH_WAIT" idle "done" || true
     fi
@@ -986,6 +1029,7 @@ cmd_dispatch() {
   [ "$ready" = 1 ] || wait_ready "$seat" "$kind" 5 || { log_event "$seat" "$task" DISPATCH_FAILED "not at its prompt"; die "$seat is not at its prompt (a menu, a dialog or its start screen). Read its pane: squad herdr agent read $seat --source visible"; }
   # logged before the task is sent: a fast seat's report can never come before its dispatch
   [ "$started" = 1 ] || plan_gate "$task"   # again: the plan may have changed during the waits above
+  if held; then return 0; fi
   log_event "$seat" "$task" DISPATCH "$([ "${CONTRACT_TEXT:-0}" = 1 ] && printf 'contract=1 ')round=$round${model:+ model=$model} $(usage_tag)"
   herdr_team agent prompt "$seat" "$text" >/dev/null || { log_event "$seat" "$task" DISPATCH_FAILED "could not send"; die "could not send the task to $seat."; }
   # started = the pane shows a running turn, or the task left the input line (Gas Town: submit_verify.go)
@@ -1002,7 +1046,7 @@ cmd_dispatch() {
     if [ -f "$TEAM_DIR/reports/$task-contract.md" ] || awk -v s="$tq" -v t="$task" '$3 == s && $4 == t { if ($5 == "DISPATCH_QUEUED") q = 1; else if ($5 == "DISPATCH" || $5 == "DISPATCH_DROPPED" || $5 == "DISPATCH_FAILED") q = 0 } END { exit !q }' "$TEAM_DIR/events.log" 2>/dev/null; then :
     elif ! ( SQUAD_DISPATCH_QUEUED=0 SQUAD_CONTRACT_DEFERRED=0 "$SQUAD_HOME/bin/squad" dispatch "$(first_role tester)" "$task" --contract ) >/dev/null 2>&1; then
       say "squad dispatch: the contract for $task could not be sent to $(first_role tester); send it: squad dispatch $(first_role tester) $task --contract"
-      herdr_team agent prompt "$LEAD" "[squad] the contract for $task was not sent to $(first_role tester): send it again (squad dispatch $(first_role tester) $task --contract)." >/dev/null 2>&1 || true
+      lead_line "[squad] the contract for $task was not sent to $(first_role tester): send it again (squad dispatch $(first_role tester) $task --contract)." || true
     fi
   fi
 }
@@ -1059,6 +1103,7 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
       if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
       st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
       ! seat_busy "$seat" || st=working   # its own heavy run, the heavy queue, or background work (ticket 024)
+      case "$st" in idle|done) ! seat_dialog "$seat" || st=blocked ;; esac   # a question: herdr shows the seat idle for the whole dialog
       case "$st" in
         idle|done)   # free, my turn (no earlier waiter), the delivery lock taken in one step
           if ! queue_pending "$seat" "$mine" && ! queue_lock_held "$seat" && ln -s "$me" "$lockd" 2>/dev/null; then
@@ -1066,7 +1111,9 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
             ! seat_busy "$seat" || st=working
             if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
             case "$st" in idle|done) ;; *) rm -f "$lockd"; sleep "${SQUAD_QUEUE_POLL:-15}"; continue ;; esac
-            if SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@"; then exit 0; fi
+            rc=0; SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@" || rc=$?
+            [ "$rc" != 0 ] || exit 0
+            if [ "$rc" = 75 ]; then rm -f "$lockd"; sleep "${SQUAD_QUEUE_POLL:-15}"; continue; fi   # the seat showed a dialog: nothing was typed, the task waits on
             tell_lead "[squad] the queued dispatch of $task to $seat failed: $log" || keep=1   # not told: the request stays, and the watch tells the lead (report_lost_requests)
             exit 1
           fi ;;
@@ -1144,7 +1191,7 @@ cmd_merge() { # squad merge CANDIDATE-<n>: the tested candidate becomes the inte
   # compare and swap: the branch moves only if it is still at the base the candidate was built on
   # one transaction: the branch moves only if it is still at the base and every task is still at its approved commit
   { printf 'start\n'; sed -n 's/^task=\([^:]*\):\(.*\)/verify refs\/heads\/task\/\1 \2/p' "$rec"
-    printf 'update refs/heads/%s %s %s\nprepare\ncommit\n' "$TEAM_BASE" "$sha" "$base"; } | git -C "$I" update-ref --stdin 2>/dev/null \
+    printf 'update refs/heads/%s %s %s\nprepare\ncommit\n' "$TEAM_BASE" "$sha" "$base"; } | git -C "$I" update-ref --stdin >/dev/null \
     || die "merge refused: $TEAM_BASE or a task branch moved since $cand was built: build a new candidate."
   git -C "$I" read-tree -m -u "$base" "$sha" || die "$TEAM_BASE is now ${sha:0:12}, but the integration worktree files could not follow (above): fix that worktree by hand; nothing is logged as merged."
   while IFS= read -r line; do log_event "$LEAD" "${line%%:*}" MERGE "$sha"; done < <(sed -n 's/^task=//p' "$rec")
@@ -1279,10 +1326,10 @@ cmd_consult() {
       { printf '# Consult %s\n\n- Question: %s\n- Asked: %s\n- Model: %s\n\n' "$n" "$question" "$(date '+%Y-%m-%d %H:%M')" "$CONSULT_CMD"; cat "$out.tmp"; } >"$out"
       rm -f "$out.tmp"
       log_event "$LEAD" - CONSULT_READY "n=$n"
-      [ "$wait" = 1 ] || herdr_team agent prompt "$LEAD" "[squad] consult $n is ready: $out. Compare it with your own options, then decide and write the decision block. (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+      [ "$wait" = 1 ] || lead_line "[squad] consult $n is ready: $out. Compare it with your own options, then decide and write the decision block. (Notification: first finish what you were doing.)" || true
     else
       log_event "$LEAD" - CONSULT_FAILED "n=$n rc=$rc"
-      [ "$wait" = 1 ] || herdr_team agent prompt "$LEAD" "[squad] consult $n failed (exit $rc): $log. Decide without it and write 'GPT: consult failed' in the decision." >/dev/null 2>&1 || true
+      [ "$wait" = 1 ] || lead_line "[squad] consult $n failed (exit $rc): $log. Decide without it and write 'GPT: consult failed' in the decision." || true
       return 1
     fi
   }
@@ -1417,6 +1464,7 @@ cmd_plan() {
       [ -f "$plan" ] || die "no plan: $plan"
       local critic; critic=$(first_role critic)
       if [ -n "$critic" ]; then
+        ! seat_dialog "$critic" || die "the critic seat ($critic) shows a dialog: nothing was sent. Answer it in its pane, then run squad plan --critique again."
         rm -f "$crit"
         herdr_team agent prompt "$critic" "[squad] Critique the plan $plan (proofs in $TEAM_DIR/plan/proofs/). Write $crit by your role file ($(role_file critic)): one '- [ ] <id>: <problem>' line per problem, then 'ITEMS: <n>'. Then tell $(first_role planner)." >/dev/null 2>&1 \
           || die "the critic seat ($critic) did not take the prompt: is the team up?"
@@ -1465,6 +1513,7 @@ cmd_plan() {
         feature="F-$n"
       fi
       plan=$(plan_file "$feature")
+      ! seat_dialog "$planner" || die "the planner seat ($planner) shows a dialog: nothing was sent. Answer it in its pane, then run squad plan again."
       if [ -f "$plan" ] && grep -q '(the goal: squad plan' "$plan" && grep -qx 'Status: draft' "$plan"; then
         SUBST_N=1 SUBST_F1="{{GOAL}}" SUBST_T1="$goal" subst "$TEMPLATES/PLAN.md" >"$plan"   # the draft from init gets its goal
       elif [ -f "$plan" ]; then say "the plan exists: ${plan#"$REPO"/} (the planner goes on with it; an edit voids an approval)"
@@ -1932,10 +1981,10 @@ cmd_feedback() {
   printf '\n## F-%s · %s\n\n%s\n\n- Status: open\n' "$n" "$(date '+%Y-%m-%d %H:%M')" "$text" >>"$TEAM_DIR/FEEDBACK.md"
   rmdir "$TEAM_DIR/.feedback.lock"
   log_event owner - FEEDBACK "F-$n $(printf '%s' "$text" | head -1 | cut -c1-80)"
-  if herdr_team agent prompt "$LEAD" "[squad] Feedback F-$n from $OWNER_NAME in $TEAM_DIR/FEEDBACK.md: $(printf '%s' "$text" | head -1 | cut -c1-120). Turn it into a brief or a decision, then mark F-$n done with its id. (Notification: first finish what you were doing.)" >/dev/null 2>&1; then
+  if lead_line "[squad] Feedback F-$n from $OWNER_NAME in $TEAM_DIR/FEEDBACK.md: $(printf '%s' "$text" | head -1 | cut -c1-120). Turn it into a brief or a decision, then mark F-$n done with its id. (Notification: first finish what you were doing.)"; then
     say "F-$n saved and sent to $LEAD."
   else
-    say "F-$n saved in .team/FEEDBACK.md; the lead could not be reached now and will read it at its next start."
+    say "F-$n saved in .team/FEEDBACK.md and held: $LEAD shows a dialog or cannot be reached now. squad watch sends it when $LEAD is free."
   fi
 }
 
@@ -2087,6 +2136,9 @@ alert_trouble() { # <index> <trouble> <task>: once per seat and kind
   fi
   hint=$(trouble_hint "$kind" "$name")
   [ "$name" = "$LEAD" ] && return 0
+  # seat_restart on: the watch starts a gone seat again itself (seats_tick), so "run 'squad up'" is not typed into the
+  # lead. The line is kept back, and goes out only when squad has stopped restarting the seat.
+  if [ "$kind" = dead ] && [ "$SEAT_RESTART" = on ] && [ ! -e "$TEAM_DIR/observer/.watchdog/restart-$name.stopped" ]; then : >"$f.untold"; return 0; fi
   if tell_lead "[squad] $name is $kind${task:+ on $task}: $hint. (Notification: first finish what you were doing.)"; then rm -f "$f.untold"; else : >"$f.untold"; fi
 }
 
@@ -2405,7 +2457,7 @@ seat_restart() { # <index> <open task> <why>: start the seat again with its full
     idle|"done")
       if seat_busy "$name"; then hold="it has a run, a place in the heavy queue or background work"
       elif queue_lock_held "$name"; then hold="a dispatch is being delivered to it"
-      elif ! wait_ready "$name" "${S_KIND[$i]}" 0; then hold="it is not at an empty prompt (a dialog or a menu)"; fi ;;
+      elif seat_dialog "$name" || ! wait_ready "$name" "${S_KIND[$i]}" 0; then hold="it is not at an empty prompt (a dialog or a menu)"; fi ;;
     off)   # as 'squad up': an agent herdr sees in the pane without a name is not gone; anything but a bare shell is not typed into
       if [ -n "$(jq -r --arg p "$pane" '.result.agents[] | select(.pane_id == $p and .name == null) | .pane_id' <<<"$agents" 2>/dev/null)" ]; then hold="an agent without a name runs in its pane"
       elif [ "$(pane_shell "$pane")" != shell ]; then hold="its pane does not show a bare shell"; fi ;;
@@ -2435,6 +2487,7 @@ seat_restart() { # <index> <open task> <why>: start the seat again with its full
   log_event "$name" "${task:--}" SEAT_RESTART "$why"
   # a lead or a dev goes on with its open task (ticket 023); other seats wait for the lead's next dispatch
   case "${S_ROLE[$i]}" in lead|dev) ;; *) return 0 ;; esac
+  ! seat_dialog "$name" || return 0   # it started into a dialog: nothing is typed
   if [ -n "$task" ]; then
     round=$(awk -v s="$name" -v t="$task" '$3 == s && $4 == t && $5 == "DISPATCH" { r = 1; for (k = 6; k <= NF; k++) if ($k ~ /^round=[0-9]+$/) r = substr($k, 7) } END { print r + 0 }' "$TEAM_DIR/events.log" 2>/dev/null || echo 1)
     [ "$round" -ge 1 ] 2>/dev/null || round=1
@@ -2460,7 +2513,9 @@ seats_tick() { # <agents json>
         q=$(sed -n '2p' "$w" 2>/dev/null || true); [ -n "$q" ] || q=$(seat_question "$name")
         owner_alert "wait-$name" "squad: $name waits for you${task:+ ($task)}" "${q:-It shows a prompt or a question.}"
       fi
-    elif [ -f "$w" ] && [ $((now - $(num_in "$w"))) -lt 120 ]; then :   # the hook was first; herdr's state follows it
+    elif owner_wait_open "$name"; then   # the hook's record: herdr shows a seat with a question as idle for the whole dialog
+      q=$(sed -n '2p' "$w" 2>/dev/null || true)
+      owner_alert "wait-$name" "squad: $name waits for you${task:+ ($task)}" "${q:-It shows a prompt or a question.}"
     else rm -f "$mk/blocked-$name" "$w"; owner_alert_end "wait-$name"; fi
     [ "$st" != working ] || owner_alert_end "fail-$name"
     # b. it is stuck (watch_once found it): the lead was told; the owner is told too, also while other seats work
@@ -2509,7 +2564,7 @@ seats_tick() { # <agents json>
 notice_keep() { # <seat> <task> <status> <the line sent to the lead>
   local d="$TEAM_DIR/observer/.notices"; mkdir -p "$d"
   put "$d/$2.$1" "$(date +%s) $(wc -l <"$TEAM_DIR/events.log" | tr -d ' ') $1 $3 $2" "$4"
-  rm -f "$d/.sent-$2.$1" "$d/.owner-$2.$1"
+  rm -f "$d/.sent-$2.$1" "$d/.owner-$2.$1" "$d/.unsent-$2.$1"
 }
 
 notices_tick() {
@@ -2536,12 +2591,15 @@ notices_tick() {
          $3 == l && $5 == "CANDIDATE" { x = $0; sub(/tasks=/, " ", x); if (index(x " ", " " t " ")) f = 1 }
          st == "BLOCKED" && $3 == l && $5 == "WAIT_OWNER" { f = 1 }
          END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null; then
-      rm -f "$f" "$d/.sent-$b" "$d/.owner-$b"; continue
+      rm -f "$f" "$d/.sent-$b" "$d/.owner-$b" "$d/.unsent-$b"; continue
     fi
     sent=$(num_in "$d/.sent-$b"); [ "$sent" -gt 0 ] || sent=$at
-    if [ $((now - sent)) -ge $((NOTICE_REDELIVER_MINUTES * 60)) ]; then
+    if [ -e "$d/.unsent-$b" ]; then   # its first send was held (the lead showed a dialog): it goes out as soon as the lead is free
+      [ -n "$lead" ] || { lead=free; ! seat_dialog "$LEAD" || lead=dialog; }
+      if [ "$lead" = free ] && herdr_team agent prompt "$LEAD" "$line" >/dev/null 2>&1; then put "$d/.sent-$b" "$now"; rm -f "$d/.unsent-$b"; fi
+    elif [ $((now - sent)) -ge $((NOTICE_REDELIVER_MINUTES * 60)) ]; then
       # nothing is typed into a lead that shows a dialog (squad never answers one): the line goes out at a later tick
-      [ -n "$lead" ] || { lead=free; [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$LEAD")" != blocked ] && ! has_menu "$(pane_tail "$LEAD" 12)" || lead=dialog; }
+      [ -n "$lead" ] || { lead=free; ! seat_dialog "$LEAD" || lead=dialog; }
       if [ "$lead" = dialog ]; then :
       elif [ -e "$d/.owner-$b" ] && [ "$(num_in "$d/.owner-$b")" -ge "$NOTICE_RESENDS" ]; then :   # the owner knows: no line for ever
       elif herdr_team agent prompt "$LEAD" "$line (Sent again: no event of yours for $task since $(fmt_hm "$at"). When it needs no action: squad seen $task)" >/dev/null 2>&1; then
@@ -2662,6 +2720,7 @@ watchdog_tick() {
   # 4. each seat by itself (ticket 023); 5. notices the lead has not acted on, the lead's wait for the owner (ticket 025)
   seats_tick "$agents" || true
   notices_tick || true
+  lead_lines_tick || true
   owner_wait_tick || true
   return 0
 }
@@ -2777,6 +2836,7 @@ observe_tick() {
   mkdir -p "$dir"
   state=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$name")
   case "$state" in idle|"done") ;; *) return 0 ;; esac
+  ! seat_dialog "$name" || return 0   # nothing is typed into a seat that shows a dialog
   now=$(date +%s)
   last=$(cat "$dir/.last-pass" 2>/dev/null || echo 0)
   # no pass while no task is open (ticket 026); the timer starts again at the first event that opens work
@@ -2819,9 +2879,9 @@ herdr_team() { # herdr bound to this team's session
 
 cmd_watch() {
   find_repo; load_conf
-  local once=0 observe=0 a self="$SQUAD_HOME/bin/squad" sum
+  local once=0 observe=0 a self="$SQUAD_HOME/bin/squad" sum csum
   for a in "$@"; do case "$a" in --once) once=1 ;; --observe) observe=1 ;; esac; done
-  sum=$(cksum <"$self" 2>/dev/null || true)
+  sum=$(cksum <"$self" 2>/dev/null || true); csum=$(cksum <"$TEAM_DIR/team.conf" 2>/dev/null || true)
   [ "$observe" = 1 ] || ui_reset   # a new strip (squad up, a herdr restart): send herdr everything again
   while :; do
     watch_once
@@ -2831,6 +2891,8 @@ cmd_watch() {
     sleep "${SQUAD_WATCH_POLL:-20}"
     # a new bin/squad on disk (an update): run it, so a long watch never keeps old code; a file that does not parse is not run
     if [ -n "$sum" ] && [ "$(cksum <"$self" 2>/dev/null || true)" != "$sum" ] && bash -n "$self" 2>/dev/null; then exec "$self" watch "$@"; fi
+    # a changed team.conf (seat_restart on, a new limit): the same new start, so every setting is read again; a file that does not load is not used
+    if [ "$(cksum <"$TEAM_DIR/team.conf" 2>/dev/null || true)" != "$csum" ] && ( load_conf ) >/dev/null 2>&1 && bash -n "$self" 2>/dev/null; then exec "$self" watch "$@"; fi
   done
 }
 
@@ -2940,6 +3002,11 @@ cmd_done() {
   # would drop the unfinished step; told to finish first, it does (tested).
   local msg="[squad] $seat finished $task: $status${report:+ — report: $report}${DONE_NOTE:+ ($DONE_NOTE)}. (Notification: first finish what you were doing, then handle this.)"
   notice_keep "$seat" "$task" "$status" "$msg"
+  if seat_dialog "$LEAD"; then   # nothing is typed into a lead that shows a dialog: the watch sends the kept notice when it is free (notices_tick)
+    : >"$TEAM_DIR/observer/.notices/.unsent-$task.$seat"
+    say "held: $LEAD shows a dialog. The event is logged, and squad watch sends your notice when $LEAD is free: $msg"
+    return 0
+  fi
   herdr_team agent prompt "$LEAD" "$msg" >/dev/null || die "could not reach the lead; the event is in $TEAM_DIR/events.log"
   say "told $LEAD: $msg"
 }
@@ -3264,7 +3331,7 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
     wanted "$name" || continue
     # role already loaded as a system prompt: nothing to type, nothing to wait for
     if loads_role "${S_KIND[$i]}"; then mark_briefed "$name"; continue; fi
-    if herdr agent prompt "$name" \
+    if ! seat_dialog "$name" && herdr agent prompt "$name" \
       "You are '$name' on an agent team. Read $TEAM_DIR/PROTOCOL.md and $(role_file "${S_ROLE[$i]}") now. Do not start any work yet. Reply with the single word READY." \
       --wait --timeout 180000 >/dev/null; then
       say "  briefed $name"; mark_briefed "$name"
@@ -3290,7 +3357,7 @@ brief() { # [seat names...] — none: every seat. The lead goes last.
       && lead_msg="Resume after a restart: read SPEC.md (approved), TASKS.md, reports/ and events.log, tell me where things stand, then continue Phase 3."
   fi
   case " ${RESUMED[*]:-} " in *" $LEAD "*) lead_msg=$(restart_note) ;; esac
-  if herdr agent prompt "$LEAD" "$lead_msg" >/dev/null; then
+  if ! seat_dialog "$LEAD" && herdr agent prompt "$LEAD" "$lead_msg" >/dev/null; then
     say "  briefed $LEAD"; mark_briefed "$LEAD"
   else
     say "  could not brief $LEAD (open its pane and check it)"
@@ -3535,6 +3602,8 @@ seat_hooks() { # -> the hooks every Claude seat gets, as JSON: one event a line 
     + {SessionStart: h("SessionStart")}
     + {PermissionRequest: h("PermissionRequest")}
     + {PreToolUse: (h("AskUserQuestion") | map({matcher: "AskUserQuestion"} + .))}
+    + {PostToolUse: h("PostToolUse")}
+    + {UserPromptSubmit: h("UserPromptSubmit")}
     + {StopFailure: h("StopFailure")}
     + {Stop: h("Stop")}'
 }
@@ -3585,18 +3654,30 @@ hook_seat() { # <hook json> <ancestors' arguments> -> the seat this session is: 
 seat_hook() {
   local ev=${1:-} json seat task q err src args w n now; now=$(date +%s)
   json=$(cat)
-  find_repo; load_conf
+  find_repo
+  # PostToolUse runs after every tool of every seat: it ends at once when no seat has an open wait
+  [ "$ev" != PostToolUse ] || compgen -G "$TEAM_DIR/seats/*.owner-wait" >/dev/null || return 0
+  load_conf
   args=$(hook_args)
   seat=$(hook_seat "$json" "$args") || return 0
+  w="$TEAM_DIR/seats/$seat.owner-wait"
+  # the dialog is over, so its record ends: the tool it asked for ran (PostToolUse of that tool), the turn ended (Stop),
+  # a prompt was submitted (UserPromptSubmit), or the session started again (SessionStart)
+  case "$ev" in
+    PostToolUse) [ -f "$w" ] && [ "$(jq -r '.tool_name // empty' <<<"$json" 2>/dev/null)" = "$(sed -n '1p' "$w" | cut -d' ' -f2)" ] || return 0 ;;
+  esac
+  case "$ev" in PostToolUse|Stop|UserPromptSubmit|SessionStart) [ ! -f "$w" ] || { rm -f "$w"; owner_alert_end "wait-$seat"; } ;; esac
+  case "$ev" in PostToolUse|UserPromptSubmit) return 0 ;; esac
   task=$(open_tasks | awk -v s="$seat" '$1 == s { print $2; exit }')
   case "$ev" in
     PermissionRequest|AskUserQuestion)   # the seat stops and waits for the owner: the state file, and the owner is told at once
-      w="$TEAM_DIR/seats/$seat.owner-wait"
       [ ! -f "$w" ] || [ $((now - $(num_in "$w"))) -ge 10 ] || return 0   # the same wait, reported twice
       if [ "$ev" = AskUserQuestion ]; then q=$(jq -r '.tool_input.questions[0].question // .tool_input.question // empty' <<<"$json" 2>/dev/null || true)
       else q=$(jq -r '"permission for \(.tool_name // "a tool"): \(.tool_input | (.command // .file_path // .url // tostring))"' <<<"$json" 2>/dev/null || true); fi
       q=$(clip 200 "$(printf '%s\n' "$q" | head -1)")
-      mkdir -p "$TEAM_DIR/seats"; put "$w" "$now" "$q"
+      # line 1: when, the tool the dialog is for, the length of events.log then (owner_wait_open reads them)
+      n=AskUserQuestion; [ "$ev" = AskUserQuestion ] || n=$(jq -r '.tool_name // "-" | gsub("[^A-Za-z0-9_.-]"; "_")' <<<"$json" 2>/dev/null || echo -)
+      mkdir -p "$TEAM_DIR/seats"; put "$w" "$now ${n:--} $(wc -l <"$TEAM_DIR/events.log" 2>/dev/null | tr -d ' ')" "$q"
       owner_alert_end "wait-$seat"
       # in the background: the seat's dialog does not wait for the notification commands
       detached owner_alert "wait-$seat" "squad: $seat waits for you${task:+ ($task)}" "${q:-It shows a prompt or a question.}" ;;
@@ -3928,7 +4009,7 @@ cmd_up() {
     log_event squad - RESTART "resumed: ${RESUMED[*]}"
     for ((i = 0; i < n; i++)); do
       [ "${S_ROLE[$i]}" = observer ] || continue
-      case " ${RESUMED[*]} " in *" ${S_NAME[$i]} "*) herdr agent prompt "${S_NAME[$i]}" "$(restart_note) Write that as your next pass." >/dev/null || true ;; esac
+      case " ${RESUMED[*]} " in *" ${S_NAME[$i]} "*) seat_dialog "${S_NAME[$i]}" || herdr agent prompt "${S_NAME[$i]}" "$(restart_note) Write that as your next pass." >/dev/null || true ;; esac
     done
   fi
 
