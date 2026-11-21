@@ -2102,6 +2102,25 @@ ago 600 >.team/observer/.idle/dev-b; asks dev-b; sleep 1; i0=$(grep -c ' dev-b -
 MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1
 check "trial 9: a dev with no task that shows a dialog gets no IDLE alarm" sh -c "! grep -q 'dev-b has had no task' '$MOCK_LOG' && [ \"\$(grep -c ' dev-b - IDLE ' .team/events.log)\" = '$i0' ] && test ! -e .team/observer/.idle/dev-b"
 hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'
+# 11: the stall clock starts again when the seat showed a dialog or did something (real trial 3: SEAT_STALLED 31 s after Escape)
+t_work='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
+rm -rf .team/observer/.alerted .team/observer/.seen "$SW"; mkdir -p "$SW" .team/observer/.seen
+ev dev-b T-970 DISPATCH round=1; ago 3600 >.team/observer/.seen/dev-b
+asks dev-b; sleep 1
+MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
+check "trial 11: a seat that shows a dialog loses its stall clock" test ! -e .team/observer/.seen/dev-b
+hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'
+for e11 in Stop UserPromptSubmit SessionStart; do
+  ago 3600 >.team/observer/.seen/dev-b; hook dev-b "$e11" '{"background_tasks":[],"source":"clear","session_id":"s11"}'
+  check "trial 11: the seat's $e11 hook starts its stall clock again" test ! -e .team/observer/.seen/dev-b
+done
+rm -rf .team/observer/.alerted; reset_log; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1
+check "trial 11: a seat that was just active is not stalled at the next tick" sh -c "! grep -q ' dev-b T-970 SEAT_STALLED' .team/events.log && ! grep -q 'notification show squad: dev-b stalled' '$MOCK_LOG'"
+# the free-prompt proof does not count while herdr shows the seat at work (a working screen keeps an empty prompt line)
+asks dev-b; sleep 1; age "$W" 1 60; seen 30
+MOCK_AGENTS=$t_work MOCK_PANE_TEXT=$esc watch1
+check "trial 11: the screen does not end a hook record while herdr shows the seat at work" test -f "$W"
+hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'; ev dev-b T-970 DONE
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

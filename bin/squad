@@ -861,6 +861,7 @@ owner_wait_open() { # <seat>: its hook recorded a dialog (seats/<seat>.owner-wai
   # (wait_ready: the prompt line at the bottom, no menu on the screen), seen twice in a row; the first sighting is kept
   # in <record>.free with the record's time. A pane that cannot be read, or shows anything else, keeps the record.
   if [ $((now - at)) -ge "$OWNER_WAIT_SCREEN" ] && i=$(seat_index "$1") \
+     && [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$1")" != working ] \
      && case "${S_KIND[$i]}" in claude|codex) wait_ready "$1" "${S_KIND[$i]}" 0 ;; *) false ;; esac; then
     { read -r fat ft <"$w.free"; } 2>/dev/null || true
     if [ "$fat" != "$at" ] || ! [[ "$ft" =~ ^[0-9]+$ ]]; then put "$w.free" "$at $now"
@@ -2121,7 +2122,7 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -12 || true)
   case "$text" in *"Please run /login"*|*"API Error: 401"*|*"API Error: 403"*|*"OAuth token has expired"*|*"Invalid API key"*) echo login; return 0 ;; esac
   # a seat that shows a dialog is blocked, never stalled: in a narrow pane herdr shows a seat with a question as idle
-  if [ "$state" = blocked ] || seat_dialog "$name"; then echo blocked; return 0; fi
+  if [ "$state" = blocked ] || seat_dialog "$name"; then rm -f "$f"; echo blocked; return 0; fi   # and its stall clock starts again after the dialog
   [ -n "$task" ] || { rm -f "$f"; return 0; }
   # busy, not stalled: the seat's own heavy run is alive, or it waits in the heavy queue or on background work
   if seat_busy "$name"; then rm -f "$f"; return 0; fi
@@ -3686,6 +3687,7 @@ seat_hook() {
     PostToolUse) [ -f "$w" ] && [ "$(jq -r '.tool_name // empty' <<<"$json" 2>/dev/null)" = "$(sed -n '1p' "$w" | cut -d' ' -f2)" ] || return 0 ;;
   esac
   case "$ev" in PostToolUse|Stop|UserPromptSubmit|SessionStart) [ ! -f "$w" ] || { rm -f "$w"; owner_alert_end "wait-$seat"; } ;; esac
+  case "$ev" in Stop|UserPromptSubmit|SessionStart) rm -f "$TEAM_DIR/observer/.seen/$seat" ;; esac   # the seat did something: its stall clock starts again
   case "$ev" in PostToolUse|UserPromptSubmit) return 0 ;; esac
   task=$(open_tasks | awk -v s="$seat" '$1 == s { print $2; exit }')
   case "$ev" in
