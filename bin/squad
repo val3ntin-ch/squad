@@ -101,6 +101,7 @@ OWNER_MODE=all          # visual: the human tests what can be seen and gives fee
 VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (the owner's global Stop hook skips them)
 STALL_MINUTES=15        # a seat with an open task and no work for this long is stalled
 OBSERVE_MINUTES=20      # the longest gap between two observer passes
+FLAKE_RERUN=1           # team.conf "flake_rerun 0|1": a failed batch step runs once more alone; a pass then is a flake (0: off)
 ESCALATE_MODEL=""       # model for a fix round from round 4 on (claude seats)
 OBSERVER_DEEP_MODEL=""  # model for an observer pass that found a large loss
 OWNER_NAME="the owner"  # team.conf "owner_name <name>": how the agents and messages name the human who owns the project
@@ -131,6 +132,7 @@ load_conf() {
               [[ "$rest" =~ ^[1-9][0-9]{0,2}$ ]] || die "team.conf line $line_no: '$kw' needs a number of minutes (1 to 999)."
               rest=$((10#$rest))
               case "$kw" in heavy_timeout) HEAVY_TIMEOUT=$rest ;; heavy_timeout_dev) HEAVY_TIMEOUT_DEV=$rest ;; stall_minutes) STALL_MINUTES=$rest ;; *) OBSERVE_MINUTES=$rest ;; esac ;;
+      flake_rerun) case "$rest" in 0|1) FLAKE_RERUN=$rest ;; *) die "team.conf line $line_no: 'flake_rerun' is 0 or 1." ;; esac ;;
       verify_hook) case "$rest" in on|off) VERIFY_HOOK=$rest ;; *) die "team.conf line $line_no: 'verify_hook' is on or off." ;; esac ;;
       name|notify|step) ;;   # Squad Deck lines (reverted 16 Nov 2026): a team.conf that has them still loads
       # read by update_conf from the file itself; here it is only checked
@@ -548,7 +550,8 @@ cmd_heavy() {
   local snap_name="" limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
   local nsteps=1; [ -z "$batch" ] || nsteps=${#batchv[@]}
 
-  local q="$HEAVY_DIR/queue" waited=0 start rc
+  local q="$HEAVY_DIR/queue" waited=0 start rc wait0 wsecs=""
+  wait0=$(date +%s)
   mkdir -p "$q" "$TEAM_DIR/heavy"
   HV_LOCK="$HEAVY_DIR/lock"
   # arrival order; the pid in the name lets the next caller clear a dead waiter
@@ -562,11 +565,12 @@ cmd_heavy() {
     # a waiter whose queue entry is gone would wait forever (hive observer, pass 64): stop and say so
     [ -e "$HV_ME" ] || { HV_ME=""; die "your place in the heavy queue was removed (by a stale-lock cleanup or by hand); nothing ran. Run the command again."; }
     if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && ln -s "$HV_VAL" "$HV_LOCK" 2>/dev/null; then break; fi
-    [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; }
+    [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; log_event "$seat" "$task" HEAVY_WAIT "$(heavy_status | tr '\n' ' ')"; }
     sleep "$HEAVY_POLL"
     HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$((limit * nsteps))"
   done
   rm -f "$HV_ME"; HV_ME=""
+  [ "$waited" = 0 ] || wsecs=$(( $(date +%s) - wait0 ))   # the wait is on record (ticket 026)
   if [ "${S_ROLE[$si]}" != dev ] && [ -z "$crec" ]; then   # the commit the command really sees, read after the wait
     full=$(git -C "$run_dir" rev-parse HEAD 2>/dev/null || echo "?"); sha=${full:0:7}
   fi
@@ -589,11 +593,16 @@ cmd_heavy() {
     [ -d "$run_dir" ] || run_dir=$snap
     snap_name=${snap#"$WT_ROOT"/}
   fi
-  local step=0 worst=0 rcs="" changed=0
+  local step=0 worst=0 rcs="" changed=0 retried=0 flakes="" ldir=""
+  if [ -n "$crec" ]; then   # a candidate keeps each step's output beside its receipt (ticket 026); a new run starts clean
+    ldir="$TEAM_DIR/receipts/$task"; [ -d "$ldir" ] || rm -f "$ldir"
+    mkdir -p "$ldir"; rm -f "$ldir"/step-*.log "$ldir/receipt"
+  fi
   while :; do
     printf '@%s (%s min): %s\n' "$sha" "$minutes" "${cmdv[*]}" >"$HEAVY_DIR/lock.cmd"
     start=$(date +%s)
-    log_event "$seat" "$task" HEAVY_START "sha=$full limit=${minutes}m${shard:+ sample=$shard}${snap_name:+ in=$snap_name}${batch:+ step=$((step + 1))/$nsteps} ${cmdv[*]}"
+    log_event "$seat" "$task" HEAVY_START "sha=$full limit=${minutes}m${wsecs:+ waited=${wsecs}s}${shard:+ sample=$shard}${snap_name:+ in=$snap_name}${batch:+ step=$((step + 1))/$nsteps} ${cmdv[*]}"
+    wsecs=""   # the wait belongs to the first start of the run
     rm -f "$HEAVY_DIR/stopped.$$"
     HV_LOG="$HEAVY_DIR/run.$$.log"; : >"$HV_LOG"; HV_POS=0
     ( export SQUAD_SHARD="$shard"; run_in_group "$run_dir" "${cmdv[@]}" ) >"$HV_LOG" 2>&1 & HV_CPID=$!
@@ -611,24 +620,38 @@ cmd_heavy() {
     # the leader ended; anything left in its group (a child that ignored TERM, a stray background job)
     # ends too, and only then the last output is read, so nothing it writes on the way out is lost
     if group_alive "$HV_PGID"; then stop_group "$HV_PGID"; fi
-    heavy_stream "$HV_LOG" || true; rm -f "$HV_LOG"
+    heavy_stream "$HV_LOG" || true
+    if [ -n "$ldir" ]; then mv "$HV_LOG" "$ldir/step-$((step + 1)).log"; HV_LOG=""; else rm -f "$HV_LOG"; fi
     # a run that was stopped never counts as passed, whatever its exit code
     if [ -f "$HEAVY_DIR/stopped.$$" ] || [ $(( $(date +%s) - start )) -ge "$limit" ]; then rc=124; fi
     rm -f "$HEAVY_DIR/stopped.$$"
     log_event "$seat" "$task" HEAVY_END "rc=$rc $(( ($(date +%s) - start + 30) / 60 ))m${batch:+ step=$((step + 1))/$nsteps}"
-    [ "$rc" = 0 ] || [ "$worst" != 0 ] || worst=$rc
-    step=$((step + 1)); rcs="$rcs step$step=$rc"
     # a candidate step leaves its commit as it found it: a check that edits a tracked file proves nothing
     if [ -n "$crec" ] && { [ "$(git -C "$wt" rev-parse HEAD)" != "$full" ] || [ -n "$(wt_changes "$wt")" ]; }; then changed=1; fi
+    # the flake rule (ticket 026): a failed batch step runs once more alone; a pass then is a flake, on record.
+    # A stopped step (124) is not run again: it ends the batch.
+    if [ -n "$batch" ] && [ "$FLAKE_RERUN" = 1 ] && [ "$retried" = 0 ] && [ "$rc" != 0 ] && [ "$rc" != 124 ]; then
+      retried=$rc
+      [ -z "$ldir" ] || mv "$ldir/step-$((step + 1)).log" "$ldir/step-$((step + 1)).first.log"
+      say "squad heavy: step $((step + 1))/$nsteps failed (exit $rc); it runs once more alone (flake_rerun)."
+      continue
+    fi
+    if [ "$retried" != 0 ] && [ "$rc" = 0 ]; then
+      flakes="$flakes $((step + 1))"
+      log_event "$seat" "$task" FLAKE "step=$((step + 1))/$nsteps rc=$retried then rc=0: ${batchv[$step]}"
+      printf '%s %s %s step=%s/%s sha=%s rc=%s then rc=0: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$seat" "$task" "$((step + 1))" "$nsteps" "$full" "$retried" "${batchv[$step]}" >>"$TEAM_DIR/flakes.log"
+    fi
+    retried=0
+    [ "$rc" = 0 ] || [ "$worst" != 0 ] || worst=$rc
+    step=$((step + 1)); rcs="$rcs step$step=$rc"
     [ -n "$batch" ] && [ "$step" -lt "$nsteps" ] || break
     [ "$rc" != 124 ] || break   # a hung or timed-out step ends the batch: the lock goes to the next in line
     cmdv=(bash -c "${batchv[$step]}")
   done
   if [ -n "$crec" ]; then   # the runner's receipt: written by this run, never by the seat that reports PASS
     if [ "$changed" = 0 ] && [ "$(git -C "$wt" rev-parse HEAD)" = "$full" ] && [ -z "$(wt_changes "$wt")" ] && [ "$(plan_hash "$crec" 2>/dev/null)" = "$cbuild" ]; then
-      mkdir -p "$TEAM_DIR/receipts"
-      { echo "build=$cbuild"; echo "sha=$full"; echo "checks=$cchecks"; echo "steps=$step"; printf '%s\n' $rcs; } >"$TEAM_DIR/receipts/$task.tmp" \
-        && mv "$TEAM_DIR/receipts/$task.tmp" "$TEAM_DIR/receipts/$task"
+      { echo "build=$cbuild"; echo "sha=$full"; echo "checks=$cchecks"; echo "steps=$step"; printf '%s\n' $rcs; echo "flakes=${flakes# }"; } >"$ldir/receipt.tmp" \
+        && mv "$ldir/receipt.tmp" "$ldir/receipt"
     else
       say "squad heavy: the tester's worktree or $task's build changed during the run; no receipt for $task." >&2; [ "$worst" != 0 ] || worst=1
     fi
@@ -1073,7 +1096,8 @@ lead_verdict() { # <task> -> "APPROVE <head>" or "CHANGES <head>": the lead's ne
 }
 
 candidate_check() { # <CANDIDATE-n>: its record, the runner's receipt and today's brief and check list agree; prints why not
-  local c=$1 rec="$TEAM_DIR/candidates/$1" rcp="$TEAM_DIR/receipts/$1" n k r want
+  local c=$1 rec="$TEAM_DIR/candidates/$1" rcp="$TEAM_DIR/receipts/$1/receipt" n k r want
+  [ -d "$TEAM_DIR/receipts/$1" ] || rcp="$TEAM_DIR/receipts/$1"   # a receipt from before ticket 026 is the file itself
   [ -f "$rec" ] || { echo "$c was not built with 'squad candidate' (no record)."; return 1; }
   [ -f "$rcp" ] || { echo "no receipt for $c: the tester's 'squad heavy <tester> $c --batch .team/tasks/$c.checks' writes it."; return 1; }
   kv() { sed -n "s/^$1=//p" "$2" | head -1; }
@@ -1089,12 +1113,21 @@ candidate_check() { # <CANDIDATE-n>: its record, the runner's receipt and today'
   return 0
 }
 
+candidate_next() { # -> the first number above every candidate record, receipt and candidate branch
+  { ls "$TEAM_DIR/candidates" "$TEAM_DIR/receipts" 2>/dev/null || true; git -C "$REPO" for-each-ref --format='%(refname:short)' refs/heads/candidate/ 2>/dev/null || true; } \
+    | sed -n 's/^\(candidate\/\)\{0,1\}CANDIDATE-\([0-9][0-9]*\)$/\2/p' | sort -n | tail -1 | awk '{ print $1 + 1 }'
+}
+
 cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the base and the lead's approved task commits
   find_repo; load_conf
   local cand=${1:-} t h v tmp base sha brief checks I="$WT_ROOT/integration"
   [[ "$cand" =~ ^CANDIDATE-[0-9]+$ ]] && [ $# -ge 2 ] || die "usage: squad candidate CANDIDATE-<n> <task> [<task>...]"
   shift
   mutex "$TEAM_DIR/.candidate.lock"; trap 'rmdir "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT   # builds and promotions one at a time
+  # one number is one commit (ticket 026): a number with a record, a receipt or a branch is used; checked before any git change
+  if [ -e "$TEAM_DIR/candidates/$cand" ] || [ -e "$TEAM_DIR/receipts/$cand" ] || git -C "$REPO" rev-parse -q --verify "refs/heads/candidate/$cand" >/dev/null; then
+    die "$cand is used already (one number is one commit): the next free number is CANDIDATE-$(candidate_next)."
+  fi
   brief="$TEAM_DIR/tasks/$cand.md"; checks="$TEAM_DIR/tasks/$cand.checks"
   [ -n "$(acceptance_rows "$brief" 2>/dev/null)" ] || die "write the candidate's brief first, with its acceptance rows: $brief"
   grep -qvE '^[[:space:]]*(#|$)' "$checks" 2>/dev/null || die "write the candidate's check list first: $checks (one command a line)."
@@ -1119,7 +1152,7 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
   done
   sha=$(git -C "$tmp" rev-parse HEAD); git -C "$REPO" worktree remove --force "$tmp" >/dev/null 2>&1 || true
   git -C "$REPO" branch -f "candidate/$cand" "$sha" >/dev/null
-  mkdir -p "$TEAM_DIR/candidates"; rm -f "$TEAM_DIR/receipts/$cand"   # a receipt of an older build does not count
+  mkdir -p "$TEAM_DIR/candidates"
   { echo "base=$base"; echo "sha=$sha"; echo "brief=$(plan_hash "$brief")"; echo "checks=$(plan_hash "$checks")"; printf 'task=%s\n' "${heads[@]}"; } >"$TEAM_DIR/candidates/$cand"
   log_event "$LEAD" "$cand" CANDIDATE "sha=$sha base=$base tasks=$*"
   say "$cand is ${sha:0:12} (candidate/$cand). The tester runs: squad heavy <tester> $cand --batch .team/tasks/$cand.checks"
@@ -2269,6 +2302,17 @@ watch_once() {
 # pass on observer_deep_model.
 observer_index() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = observer ] && { echo "$i"; return 0; }; done; return 1; }
 
+team_has_work() { # a task is open (a dispatch with no merge or withdrawal after it), or a candidate run holds the lock
+  local lock=0; [ ! -L "$HEAVY_DIR/lock" ] || lock=1
+  awk -v lock="$lock" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ {
+      if ($5 == "HEAVY_START") { run[$3] = ($4 ~ /^CANDIDATE-/); next }
+      if ($5 == "HEAVY_END") { run[$3] = 0; next }
+      if ($4 ~ /^CANDIDATE-/) next
+      if ($5 == "DISPATCH") open[$4] = 1
+      else if ($5 == "MERGE" || $5 == "WITHDRAWN") delete open[$4] }
+    END { for (t in open) exit 0; if (lock) for (s in run) if (run[s]) exit 0; exit 1 }' "$TEAM_DIR/events.log" 2>/dev/null
+}
+
 observe_tick() {
   local i name dir="$TEAM_DIR/observer" now last marks prev due="" pass state loss
   i=$(observer_index) || return 0
@@ -2278,6 +2322,8 @@ observe_tick() {
   case "$state" in idle|"done") ;; *) return 0 ;; esac
   now=$(date +%s)
   last=$(cat "$dir/.last-pass" 2>/dev/null || echo 0)
+  # no pass while no task is open (ticket 026); the timer starts again at the first event that opens work
+  if ! team_has_work; then [ "$last" = 0 ] || echo "$now" >"$dir/.last-pass"; return 0; fi
   marks=$(grep -cE ' (MERGE|STALLED|DEAD|LOGIN|BLOCKED|RESTART|FAIL)( |$)' "$TEAM_DIR/events.log" 2>/dev/null || true)
   prev=$(cat "$dir/.last-marks" 2>/dev/null || echo 0)
   if [ "$last" = 0 ]; then due="first pass"

@@ -121,7 +121,8 @@ setup pnpm install --frozen-lockfile
 - **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by the owner`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you. Your name in squad's messages and the agents' role files is "the owner"; set `owner_name <name>` in `.team/team.conf` (for example `owner_name Alice`) to have them use your name.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
-- **observe_minutes** is the longest gap between two observer passes.
+- **observe_minutes** is the longest gap between two observer passes. The observer gets no pass while no task is open (every dispatched task is merged or withdrawn, and no candidate run is in progress); the first event that opens work starts the timer again.
+- **flake_rerun** (1): a step of a `squad heavy --batch` run that fails is run once more alone. When it passes then, the batch goes on, and the flake is on record: a `FLAKE` event, one line in `.team/flakes.log`, and `flakes=<step>` in the candidate's receipt. `flake_rerun 0`: any failure fails the batch.
 - **verify_hook off** writes `.agents-verify-off` into every team worktree, so a global Stop hook that runs the whole repository's verify at every turn end skips them. The tester's runs are the gate.
 - **session** is the herdr session name (default: the repository's name).
 - **setup** runs once in every new worktree, so each agent can build and test.
@@ -195,6 +196,8 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 | `tasks/<ID>.md` | One complete brief per task: goal, files, acceptance table, dev check, check command, consumers, what to do when a check outside breaks, red run for bugs, visual check, references. |
 | `reports/` | The contract, the dev's, the tester's and the review reports, each with the acceptance table and its evidence. Screenshots in `reports/<ID>-shots/`. |
 | `events.log` | One line per dispatch, report, heavy run, merge, decision, consult, trouble and restart, with date and time. |
+| `receipts/CANDIDATE-<n>/` | The runner's `receipt` of a candidate run (the commit, each step's exit code, the flaky steps) and one log per step (`step-<i>.log`; `step-<i>.first.log` is the failed first run of a flaky step). Kept after a failure too. |
+| `flakes.log` | One line per batch step that failed once and passed when run again alone. |
 | `observer/NOW.md`, `observer/SUGGESTIONS.md` | What is wrong now and what it costs; ranked changes with their evidence and status. |
 | `LESSONS.md` | At the end: each finding that came back, and the cheapest change that stops it next time. |
 | `READY.md` | The lead's final summary: what to look at, rows not verified, decisions open for you. |
@@ -254,7 +257,8 @@ Claude asks once whether to trust a new repository. `squad up` starts one seat, 
 | A seat shows `login` on the board | Its session lost its sign-in. Open its pane and run `/login`. |
 | A seat shows `stalled` | It has an open task and does nothing. The lead was told; read its pane (`squad herdr agent read <seat> --source visible`). |
 | "an agent named … is already running" | Another team runs in this herdr session. Each repository needs its own: run `squad up` from outside herdr. |
-| `squad heavy` waits a long time | `squad heavy --status` names the owner and the queue. A lock whose process is gone is cleared by the next caller. |
+| `squad heavy` waits a long time | `squad heavy --status` names the owner and the queue. A lock whose process is gone is cleared by the next caller. Each wait is in `events.log`: `HEAVY_WAIT` when it starts, and `waited=<seconds>s` in the run's `HEAVY_START`. |
+| `squad candidate` says the number is used | One number is one commit. Build the candidate again with the next free number, which the message names. |
 | An agent lost track | Tell it to read `.team/PROTOCOL.md` and its role file again. |
 | A seat rejects `--effort` | Check the levels your Claude Code accepts with `claude --help`, and change the seat line. |
 
