@@ -114,6 +114,17 @@ The loop is event-driven. Hand out work, end your turn, and react when a seat re
 
 These lines can arrive in the middle of your turn. Finish the step you were on, then react to each one. squad also tells you when a seat is in trouble (`dead`, `login`, `blocked`, `stalled`): read its pane, then act or tell the human.
 
+squad keeps each of these lines until you act on its task: a dispatch of the task, your verdict, a candidate that holds it, or a merge. A line you did not act on comes again, and after a longer time squad tells the human. squad never answers a seat's question or permission prompt; it tells the human, and it starts a seat again that is gone or that runs without its squad options.
+
+**When the team can only wait for the human** (an answer, an access or an approval that nothing else replaces, and no other task can go on), say so with one command:
+
+```
+squad wait-owner "<what you need from the human, in one sentence>"
+squad wait-owner --done        # the answer is there (a new dispatch ends the wait too)
+```
+
+squad tells the human at once and reminds them until the wait ends; the stall alarm is silent meanwhile. Never use it while other work can go on. A dev's `BLOCKED` that only the human can resolve is such a wait: run `squad wait-owner` with the dev's question.
+
 **Dispatch** every hand-out with one command. It clears the seat, waits until it is idle, sends the task line, checks that the seat started, and writes the event:
 
 ```bash

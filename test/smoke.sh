@@ -24,8 +24,11 @@ case "$1 $2" in
   # idle, a task makes it work; MOCK_NEVER_WORK=1: it never starts)
   "agent list") if [ "${MOCK_DYNAMIC:-}" = 1 ]; then st=$(cat "$(dirname "$MOCK_LOG")/state" 2>/dev/null || echo idle)
                   echo "{\"result\":{\"agents\":[{\"name\":\"dev-a\",\"agent_status\":\"$st\"},{\"name\":\"observer\",\"agent_status\":\"idle\"},{\"name\":\"lead\",\"agent_status\":\"working\"},{\"name\":\"tester\",\"agent_status\":\"${MOCK_TESTER:-idle}\"}]}}"
+                # MOCK_AGENTS_GONE: the list once a seat was told to exit (/exit or /quit)
+                elif [ -n "${MOCK_AGENTS_GONE:-}" ] && [ -e "$(dirname "$MOCK_LOG")/exited" ]; then echo "$MOCK_AGENTS_GONE"
                 elif [ -n "${MOCK_AGENTS:-}" ]; then echo "$MOCK_AGENTS"; else echo '{"result":{"agents":[]}}'; fi ;;
   "agent prompt") if [ "$3" = "${MOCK_FAIL_PROMPT:-}" ]; then echo '{"error":"agent_not_found"}' >&2; exit 1; fi
+                case "$4" in /exit|/quit) : >"$(dirname "$MOCK_LOG")/exited" ;; esac
                 if [ "${MOCK_DYNAMIC:-}" = 1 ] && [ "$3" = dev-a ]; then
                     case "$4" in /*) echo idle ;; *) if [ "${MOCK_NEVER_WORK:-}" = 1 ]; then echo idle; else echo working; fi ;; esac >"$(dirname "$MOCK_LOG")/state"; fi
                   echo '{}' ;;
@@ -35,7 +38,9 @@ case "$1 $2" in
                 fi ;;
   "agent send-keys") echo '{}' ;;
   # MOCK_BUSY_PANES: panes whose program runs; any other pane has only its shell
-  "pane process-info") case " ${MOCK_BUSY_PANES:-} " in *" $4 "*) echo "{\"result\":{\"process_info\":{\"foreground_processes\":[{\"cmdline\":\"-zsh -c /x/check.sh\"}]}}}" ;;
+  # MOCK_CMDLINE: the command line of the program in every pane
+  "pane process-info") if [ -n "${MOCK_CMDLINE:-}" ]; then echo "{\"result\":{\"process_info\":{\"foreground_processes\":[{\"cmdline\":\"$MOCK_CMDLINE\"}]}}}"; exit 0; fi
+                       case " ${MOCK_BUSY_PANES:-} " in *" $4 "*) echo "{\"result\":{\"process_info\":{\"foreground_processes\":[{\"cmdline\":\"-zsh -c /x/check.sh\"}]}}}" ;;
                          *) echo '{"result":{"process_info":{"foreground_processes":[{"cmdline":"-zsh"}]}}}' ;; esac ;;
   "config check") if [ "${MOCK_BAD_CONFIG:-}" = 1 ]; then echo '{"error":"bad config"}'; exit 1; fi; echo '{}' ;;
   "notification show") if [ -n "${MOCK_NOTIFY:-}" ]; then echo "$MOCK_NOTIFY"; else echo '{}'; fi ;;
@@ -58,6 +63,8 @@ esac
 EOF
 chmod +x "$tmp/bin/herdr"
 for a in claude codex opencode lazygit; do printf '#!/bin/sh\n' >"$tmp/bin/$a"; chmod +x "$tmp/bin/$a"; done
+# the operating system's notification (notify_os): a stand-in that only records the call
+printf '#!/bin/sh\necho "osascript $*" >>"$MOCK_LOG"\n' >"$tmp/bin/osascript"; chmod +x "$tmp/bin/osascript"
 
 export PATH="$tmp/bin:$PATH" HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" MOCK_LOG="$tmp/log"
 # never touch the real caches/configs: shells often export these explicitly
@@ -1284,6 +1291,192 @@ check "018: a command's text cannot add a forged line to events.log" refuses gre
 hrc=0; hout=$(cd "$DB" && "$squad" heavy tester T-914 -- git rev-parse HEAD 2>/dev/null) || hrc=$?
 seen=$(printf '%s\n' "$hout" | grep -E '^[0-9a-f]{40}$' | head -1 || true)
 check "018: a tester task run logs the commit its command saw" sh -c "[ $hrc = 0 ] && [ -n '$seen' ] && grep -q ' tester T-914 HEAVY_START sha=$seen ' .team/events.log"
+# ---- 023 · the team keeps running without the owner; 025 · a verdict reaches the lead ----
+cd "$tmp"; "$squad" new sup >/dev/null 2>&1; cd sup; reset_log
+"$squad" up >/dev/null 2>&1 || true
+SW=.team/observer/.watchdog; NT=.team/observer/.notices; mkdir -p "$SW"
+ev() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>.team/events.log; }   # <seat> <task> <EVENT...>
+ago() { echo $(( $(date +%s) - $1 )); }                                              # <seconds> -> that time as an epoch
+age() { awk -v t="$(ago "$3")" -v k="$2" 'NR == 1 { $k = t } { print }' "$1" >"$tmp/aged" && mv "$tmp/aged" "$1"; }   # <file> <field of line 1> <seconds>
+watch1() { "$squad" watch --once >/dev/null 2>&1 || true; }
+ws_s='{"result":{"workspaces":[{"workspace_id":"w2","label":"sup team"}]}}'
+panes_s='{"result":{"panes":[{"pane_id":"w2:p1","label":"lead"},{"pane_id":"w2:p2","label":"dev-a"},{"pane_id":"w2:p3","label":"dev-b"},{"pane_id":"w2:p4","label":"dev-c"},{"pane_id":"w2:p5","label":"tester"}]}}'
+export MOCK_WS=$ws_s MOCK_PANES=$panes_s
+# 023: the seat hooks, in the --settings file and in the worktree's own settings
+hk='(.hooks.PermissionRequest[0].hooks[0].command | contains("seat-hook PermissionRequest")) and .hooks.PreToolUse[0].matcher == "AskUserQuestion" and (.hooks.PreToolUse[0].hooks[0].command | contains("seat-hook AskUserQuestion")) and (.hooks.StopFailure[0].hooks[0].command | contains("seat-hook StopFailure")) and ([.hooks.SessionStart[].hooks[].command | select(contains("seat-hook SessionStart"))] | length == 1)'
+check "023: a Claude seat's settings carry the hooks for a permission request, a question, a failed stop and a start" jq -e "$hk" .team/seats/dev-a.settings.json
+check "023: the settings still record the session id" jq -e '.hooks.SessionStart[0].hooks[0].command | contains("session-id")' .team/seats/dev-a.settings.json
+check "023: the same hooks are in the worktree's .claude/settings.local.json" jq -e "$hk" "$tmp/sup-team/dev-a/.claude/settings.local.json"
+check "023: that file is not a change for git" test -z "$(git -C "$tmp/sup-team/dev-a" status --porcelain)"
+echo '{"permissions":{"allow":["Bash(ls)"]},"hooks":{"Stop":[{"hooks":[{"type":"command","command":"mine"}]}]}}' >"$tmp/sup-team/tester/.claude/settings.local.json"
+"$squad" up >/dev/null 2>&1 || true
+check "023: other content of the worktree's settings is kept, and the hooks are there once" jq -e "$hk"' and .permissions.allow == ["Bash(ls)"] and .hooks.Stop[0].hooks[0].command == "mine" and (.hooks.PermissionRequest | length == 1)' "$tmp/sup-team/tester/.claude/settings.local.json"
+# 023: a blocked seat is told to the owner after 5 min, once per wait, while other seats work
+ev dev-a T-500 DISPATCH round=1
+a_blk='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"blocked","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
+ask=$(printf '│ Which database should the migration use?\n│ ❯ 1. Postgres\n│   2. SQLite')
+reset_log; MOCK_AGENTS=$a_blk MOCK_PANE_TEXT=$ask watch1
+check "023: a seat blocked for less than 5 min is not told to the owner yet" refuses log_has "notification show squad: dev-a waits for you"
+ago 400 >"$SW/blocked-dev-a"
+reset_log; MOCK_AGENTS=$a_blk MOCK_PANE_TEXT=$ask watch1
+check "023: a seat blocked for 5 min: the owner's notification names the seat, its task and the first line of its question (other seats work)" log_has "notification show squad: dev-a waits for you (T-500) --body Which database should the migration use? --sound request"
+reset_log; MOCK_AGENTS=$a_blk MOCK_PANE_TEXT=$ask watch1
+check "023: one notification per wait" refuses log_has "notification show squad: dev-a waits for you"
+# 025: a condition that still holds is repeated every 30 min, 3 times at most, and stops when it ends
+echo "1 $(ago 1900)" >"$SW/held-wait-dev-a"
+reset_log; MOCK_AGENTS=$a_blk MOCK_PANE_TEXT=$ask watch1
+check "025: a notification for a condition that still holds is repeated after 30 min" log_has "notification show squad: dev-a waits for you (T-500) --body Which database should the migration use? (reminder 1 of 3)"
+echo "4 $(ago 1900)" >"$SW/held-wait-dev-a"
+reset_log; MOCK_AGENTS=$a_blk MOCK_PANE_TEXT=$ask watch1
+check "025: it is repeated 3 times at most" refuses log_has "notification show squad: dev-a waits for you"
+a_wrk='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
+MOCK_AGENTS=$a_wrk watch1
+check "025: the repeat stops when the condition ends" test ! -e "$SW/held-wait-dev-a" -a ! -e "$SW/blocked-dev-a"
+# 023: one stalled seat is told to the owner while other seats work
+ev dev-c T-501 DISPATCH round=1; mkdir -p .team/observer/.seen; ago 3600 >.team/observer/.seen/dev-c
+a_st='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"},{"name":"dev-c","agent_status":"idle","pane_id":"w2:p4"}]}}'
+reset_log; MOCK_AGENTS=$a_st watch1
+check "023: one stalled seat is told to the owner while other seats work" log_has "notification show squad: dev-c stalled on T-501 --body it has an open task and has not worked for"
+ev dev-c T-501 DONE
+# 023: a seat that is gone with a task open is started again, at most once per 10 min, 3 times an hour
+a_dead='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
+reset_log; MOCK_AGENTS=$a_dead watch1
+check "023: a seat that is gone with a task open is started again with its full options, while other seats work" grep -qE "^herdr agent start dev-a --kind claude --pane w2:p2 .* --append-system-prompt-file $tmp/sup/.team/seats/dev-a.md --settings $tmp/sup/.team/seats/dev-a.settings.json" "$MOCK_LOG"
+check "023: the restart is an event line" grep -q ' dev-a T-500 SEAT_RESTART its agent was gone' .team/events.log
+check "023: a dev with an open task gets its task again after the restart" grep -q "agent prompt dev-a \[squad\] squad started you again at .* Your open task: Task T-500 is yours" "$MOCK_LOG"
+reset_log; MOCK_AGENTS=$a_dead watch1
+check "023: a seat is restarted at most once in 10 min" refuses log_has "agent start dev-a"
+printf '%s\n%s\n%s\n' "$(ago 3000)" "$(ago 2000)" "$(ago 700)" >"$SW/restart-dev-a"
+reset_log; MOCK_AGENTS=$a_dead watch1
+check "023: after 3 restarts of a seat in one hour squad stops and tells the owner" sh -c "! grep -q 'agent start dev-a' '$MOCK_LOG' && grep -q 'notification show squad: dev-a does not stay up' '$MOCK_LOG' && grep -q ' dev-a T-500 SEAT_RESTART_STOPPED 3 restarts in one hour' .team/events.log"
+ev dev-a T-500 DONE; rm -f "$SW"/restart-* "$SW"/held-*
+a_nolead='{"result":{"agents":[{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
+ln -s $$ .team/up.lock; reset_log; MOCK_AGENTS=$a_nolead watch1; rm -f .team/up.lock
+check "023: while squad up runs, the watch starts no seat" refuses log_has "agent start lead"
+reset_log; MOCK_AGENTS=$a_nolead watch1
+check "023: a lead that is gone is started again and told to go on from the files" sh -c "grep -q '^herdr agent start lead --kind claude --pane w2:p1 ' '$MOCK_LOG' && grep -q 'agent prompt lead squad restarted the team at' '$MOCK_LOG' && grep -q ' lead - SEAT_RESTART its agent was gone' .team/events.log"
+rm -f "$SW"/restart-*; reset_log; MOCK_AGENTS=$a_nolead MOCK_PANES='{"result":{"panes":[]}}' watch1
+check "023: a seat whose pane is closed is not started: the owner is told to run squad up" sh -c "! grep -q 'agent start' '$MOCK_LOG' && grep -q 'notification show squad: lead is gone' '$MOCK_LOG'"
+rm -f "$SW"/restart-* "$SW"/held-*
+# 023: a seat that runs without its squad options is started again with them, when it is idle
+a_bare='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-b","agent_status":"idle","pane_id":"w2:p3"}]}}'
+a_gone='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"}]}}'
+ev dev-b T-502 DISPATCH round=2; rm -rf .team/observer/.seen
+reset_log; rm -f "$tmp/exited"; MOCK_AGENTS=$a_bare MOCK_AGENTS_GONE=$a_gone MOCK_CMDLINE="claude --resume 1234" SQUAD_EXIT_WAIT=3 watch1
+check "023: a seat that runs without its squad options is ended at its own prompt and started again with them" sh -c "grep -q 'agent prompt dev-b /exit' '$MOCK_LOG' && grep -qE '^herdr agent start dev-b --kind claude --pane w2:p3 .* --append-system-prompt-file $tmp/sup/.team/seats/dev-b.md' '$MOCK_LOG' && grep -q ' dev-b T-502 SEAT_RESTART it ran without its squad options' .team/events.log"
+check "023: its open task is sent again, as the round it was" grep -q "agent prompt dev-b \[squad\] squad started you again at .* Your open task: T-502 needs changes" "$MOCK_LOG"
+rm -f "$tmp/exited" "$SW"/restart-*
+reset_log; MOCK_AGENTS=$a_bare MOCK_AGENTS_GONE=$a_gone MOCK_CMDLINE="claude --resume 1234" SQUAD_EXIT_WAIT=3 watch1
+check "023: when the options still do not show after squad's restart, it does not restart again: the owner is told" sh -c "! grep -q 'agent prompt dev-b /exit' '$MOCK_LOG' && grep -q \"notification show squad: check dev-b's options\" '$MOCK_LOG'"
+rm -f "$SW"/bare-* "$SW"/held-*
+reset_log; MOCK_AGENTS=$a_bare MOCK_AGENTS_GONE=$a_gone MOCK_CMDLINE="claude --resume 1234 --append-system-prompt-file $tmp/sup/.team/seats/dev-b.md" watch1
+check "023: a seat that runs with its squad options is left alone" refuses log_has "agent prompt dev-b /exit"
+a_bwork='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
+reset_log; MOCK_AGENTS=$a_bwork MOCK_CMDLINE="claude --resume 1234" watch1
+check "023: a seat at work is not restarted" refuses log_has "agent prompt dev-b /exit"
+# 023: the hooks are the first signal; they print nothing and answer nothing
+perm='{"session_id":"s1","permission_mode":"default","tool_name":"Bash","tool_input":{"command":"rm -rf build"}}'
+reset_log; hout=$(printf '%s' "$perm" | TEAM_ROLE=dev-b "$squad" seat-hook PermissionRequest 2>&1)
+check "023: a permission request tells the owner at once, with the tool and its input" log_has "notification show squad: dev-b waits for you (T-502) --body permission for Bash: rm -rf build --sound request"
+check "023: the hook prints nothing (squad never answers for the seat)" test -z "$hout"
+check "023: the wait is in the seat's state file" grep -q 'permission for Bash: rm -rf build' .team/seats/dev-b.owner-wait
+a_bblk='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-b","agent_status":"blocked","pane_id":"w2:p3"}]}}'
+reset_log; MOCK_AGENTS=$a_bblk watch1
+check "023: the watch does not tell the owner a second time for the wait the hook reported" refuses log_has "notification show squad: dev-b waits for you"
+rm -f .team/seats/dev-b.owner-wait
+reset_log; printf '%s' '{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Which plan do you want?"}]}}' | TEAM_ROLE=dev-b "$squad" seat-hook AskUserQuestion
+check "023: a question to the owner (AskUserQuestion) tells the owner its text" log_has "notification show squad: dev-b waits for you (T-502) --body Which plan do you want? --sound request"
+reset_log; printf '%s' '{"error":"authentication_failed"}' | TEAM_ROLE=dev-b "$squad" seat-hook StopFailure
+check "023: a turn that ends on a sign-in error is told to the owner at once" sh -c "grep -q 'notification show squad: dev-b stopped: authentication_failed' '$MOCK_LOG' && grep -q ' dev-b T-502 SEAT_STOPPED authentication_failed' .team/events.log"
+printf '%s' '{"error":"authentication_failed"}' | TEAM_ROLE=dev-b "$squad" seat-hook StopFailure
+check "023: the same failure reported twice is told once" test "$(grep -c 'notification show squad: dev-b stopped' "$MOCK_LOG")" = 1
+reset_log; printf '%s' '{"error":"rate_limit"}' | TEAM_ROLE=dev-b "$squad" seat-hook StopFailure
+check "023: a turn that ends on a usage limit is told to the owner at once" log_has "notification show squad: dev-b at its usage limit"
+printf '%s' '{"session_id":"s9","source":"resume"}' | TEAM_ROLE=tester "$squad" seat-hook SessionStart
+check "023: a seat resumed without its squad options reports it at its start" sh -c "grep -q ' tester - SEAT_NO_OPTIONS source=resume' .team/events.log && test -f .team/seats/tester.no-options"
+sh -c "printf '%s' '{\"session_id\":\"s9\",\"source\":\"resume\"}' | TEAM_ROLE=dev-a '$squad' seat-hook SessionStart; true" hook --append-system-prompt-file "$tmp/sup/.team/seats/dev-a.md"
+check "023: a seat started with its squad options reports nothing" refuses grep -q ' dev-a - SEAT_NO_OPTIONS' .team/events.log
+echo s77 >.team/seats/dev-c.session
+printf '%s' '{"session_id":"s77","source":"resume"}' | "$squad" seat-hook SessionStart
+check "023: without TEAM_ROLE the seat is known by its recorded conversation" grep -q ' dev-c - SEAT_NO_OPTIONS source=resume' .team/events.log
+cp .team/events.log "$tmp/ev.before"; printf '%s' '{"session_id":"nobody","source":"resume"}' | "$squad" seat-hook SessionStart
+check "023: a Claude session that is no seat is ignored, and the hook never fails" sh -c "cmp -s .team/events.log '$tmp/ev.before' && echo 'not json' | '$squad' seat-hook PermissionRequest"
+a_tst='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"tester","agent_status":"idle","pane_id":"w2:p5"}]}}'
+reset_log; rm -f "$tmp/exited" .team/seats/dev-c.no-options "$SW"/held-*; MOCK_AGENTS=$a_tst MOCK_AGENTS_GONE=$a_gone SQUAD_EXIT_WAIT=3 watch1
+check "023: the watch starts the seat that reported no options again" sh -c "grep -q '^herdr agent start tester --kind claude --pane w2:p5 ' '$MOCK_LOG' && test ! -e .team/seats/tester.no-options"
+rm -f "$tmp/exited" "$SW"/restart-* "$SW"/bare-* "$SW"/held-*
+# 023: a long-running watch runs the new bin/squad when the file changes
+mkdir -p "$tmp/sq2"; cp -R "$here/../bin" "$here/../templates" "$here/../presets" "$tmp/sq2/"
+SQUAD_WATCH_POLL=1 MOCK_WS='' MOCK_PANES='' "$tmp/sq2/bin/squad" watch >/dev/null 2>&1 & wpid=$!
+sleep 3
+printf '#!/bin/sh\necho "new squad $*" >"%s/reloaded"\n' "$tmp" >"$tmp/sq2/squad.new"; chmod +x "$tmp/sq2/squad.new"; mv "$tmp/sq2/squad.new" "$tmp/sq2/bin/squad"
+k=0; while [ ! -f "$tmp/reloaded" ] && [ "$k" -lt 30 ]; do k=$((k + 1)); sleep 1; done
+check "023: a long-running squad watch runs the new bin/squad when the file changes" grep -qx 'new squad watch' "$tmp/reloaded"
+kill "$wpid" 2>/dev/null || true; wait "$wpid" 2>/dev/null || true
+
+# 025: a notice to the lead stays pending until the lead acts on the task
+rm -rf "$NT" "$SW"; mkdir -p "$SW"; unset MOCK_WS MOCK_PANES
+reset_log; "$squad" "done" dev-a T-510 BLOCKED >/dev/null 2>&1
+check "025: a notice to the lead is kept as a pending record" grep -q 'dev-a finished T-510: BLOCKED' "$NT/T-510.dev-a"
+reset_log; watch1
+check "025: a fresh notice is not sent again" refuses log_has "agent prompt lead [squad] dev-a finished T-510"
+age "$NT/T-510.dev-a" 1 1000
+reset_log; watch1
+check "025: after notice_redeliver_minutes the notice line is sent to the lead again" grep -q 'agent prompt lead \[squad\] dev-a finished T-510: BLOCKED.*(Sent again: no event of yours for T-510 since ' "$MOCK_LOG"
+check "025: the owner is not told before notice_owner_minutes" refuses log_has "notification show squad: T-510 BLOCKED waits for the lead"
+reset_log; watch1
+check "025: the notice is sent again only every notice_redeliver_minutes" refuses log_has "agent prompt lead [squad] dev-a finished T-510"
+age "$NT/T-510.dev-a" 1 2000
+reset_log; watch1; watch1
+check "025: after notice_owner_minutes the owner is told, once" test "$(grep -c 'notification show squad: T-510 BLOCKED waits for the lead' "$MOCK_LOG")" = 1
+ev lead T-510 CHANGES; watch1
+check "025: an event of the lead for the task ends the pending notice" test ! -e "$NT/T-510.dev-a"
+"$squad" "done" rev-gpt T-511 CHANGES >/dev/null 2>&1; age "$NT/T-511.rev-gpt" 1 2000
+ev dev-a T-511 DISPATCH round=2
+reset_log; watch1
+check "025: a new dispatch of the task ends a reviewer's pending verdict, and nothing is sent" sh -c "test ! -e '$NT/T-511.rev-gpt' && ! grep -q 'T-511' '$MOCK_LOG'"
+ev dev-a T-511 DONE
+cp .team/team.conf "$tmp/sup.conf"; printf 'notice_redeliver_minutes 1\nnotice_owner_minutes 2\n' >>.team/team.conf
+"$squad" "done" tester T-512 FAIL >/dev/null 2>&1; age "$NT/T-512.tester" 1 150
+reset_log; watch1
+check "025: notice_redeliver_minutes and notice_owner_minutes of team.conf are used" sh -c "grep -q 'agent prompt lead \[squad\] tester finished T-512: FAIL' '$MOCK_LOG' && grep -q 'notification show squad: T-512 FAIL waits for the lead' '$MOCK_LOG'"
+cp "$tmp/sup.conf" .team/team.conf; rm -rf "$NT"
+# 025: squad wait-owner: a chosen wait for the owner
+reset_log
+check "025: squad wait-owner writes the wait, logs it and tells the owner" sh -c "'$squad' wait-owner 'T-520: which payment provider?' >/dev/null && test -f .team/owner-wait && grep -q ' lead - WAIT_OWNER T-520: which payment provider?' .team/events.log && grep -q 'notification show squad: sup waits for you --body T-520: which payment provider? --sound request' '$MOCK_LOG'"
+check "025: with notify_os on (the default) the owner also gets an operating-system notification" grep -q '^osascript .*end run squad: sup waits for you T-520: which payment provider?' "$MOCK_LOG"
+reset_log; watch1
+check "025: no reminder before owner_reminder_hours" refuses log_has "still waits for you"
+age .team/owner-wait 3 15000
+reset_log; watch1; watch1
+check "025: the owner is reminded every owner_reminder_hours, once each time" test "$(grep -c 'notification show squad: sup still waits for you --body T-520: which payment provider?' "$MOCK_LOG")" = 1
+cp .team/events.log "$tmp/ev.keep"; printf '2026-01-01 10:00:00 rev-gpt T-530 CHANGES review=1\n' >.team/events.log
+reset_log; watch1
+check "025: while the wait is set the team-wide stall alarm is silent" refuses log_has "notification show squad: sup stalled"
+rm -f .team/owner-wait
+reset_log; watch1
+check "025: without the wait the same stall is told to the owner" log_has "notification show squad: sup stalled"
+for f in "$SW"/held-stall-*; do echo "1 $(ago 1900)" >"$f"; done
+reset_log; watch1
+check "025: a stall that still holds is told again after 30 min" grep -q 'notification show squad: sup stalled .*(reminder 1 of 3)' "$MOCK_LOG"
+cp "$tmp/ev.keep" .team/events.log; ev lead T-530 APPROVE; watch1
+check "025: the stall's repeat stops when the team moves again" sh -c "! ls '$SW' | grep -q '^held-stall-'"
+"$squad" wait-owner "T-521: the logo" >/dev/null 2>&1
+check "025: squad wait-owner --done ends the wait" sh -c "'$squad' wait-owner --done >/dev/null && test ! -e .team/owner-wait && grep -q ' lead - WAIT_OWNER_DONE' .team/events.log"
+"$squad" wait-owner "T-522: the price" >/dev/null 2>&1; ev dev-a T-540 DISPATCH round=1; watch1
+check "025: a new dispatch ends the wait" sh -c "test ! -e .team/owner-wait && grep -q ' lead - WAIT_OWNER_DONE a new dispatch' .team/events.log"
+"$squad" "done" dev-b T-541 BLOCKED >/dev/null 2>&1; age "$NT/T-541.dev-b" 1 2000; "$squad" wait-owner "T-541: dev-b's question" >/dev/null 2>&1
+reset_log; watch1
+check "025: a BLOCKED the lead answered with squad wait-owner is not sent again" sh -c "test ! -e '$NT/T-541.dev-b' && ! grep -q 'finished T-541' '$MOCK_LOG'"
+"$squad" wait-owner --done >/dev/null 2>&1
+# 025: notify_os off keeps herdr's notification only
+printf 'notify_os off\n' >>.team/team.conf
+reset_log; "$squad" wait-owner "os off" >/dev/null 2>&1; "$squad" wait-owner --done >/dev/null 2>&1
+check "025: notify_os off keeps herdr's notification only" sh -c "grep -q 'notification show squad: sup waits for you --body os off' '$MOCK_LOG' && ! grep -q '^osascript' '$MOCK_LOG'"
+printf 'notify_os maybe\n' >>.team/team.conf
+check "025: notify_os is on or off" refuses "$squad" status
+cp "$tmp/sup.conf" .team/team.conf
+check "025: the lead's role file says when to run squad wait-owner" grep -qF "$squad_abs wait-owner" .team/roles/lead.md
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
