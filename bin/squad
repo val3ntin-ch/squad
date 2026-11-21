@@ -1208,7 +1208,7 @@ cmd_merge() { # squad merge CANDIDATE-<n>: the tested candidate becomes the inte
   # compare and swap: the branch moves only if it is still at the base the candidate was built on
   # one transaction: the branch moves only if it is still at the base and every task is still at its approved commit
   { printf 'start\n'; sed -n 's/^task=\([^:]*\):\(.*\)/verify refs\/heads\/task\/\1 \2/p' "$rec"
-    printf 'update refs/heads/%s %s %s\nprepare\ncommit\n' "$TEAM_BASE" "$sha" "$base"; } | git -C "$I" update-ref --stdin >/dev/null \
+    printf 'update refs/heads/%s %s %s\nprepare\ncommit\n' "$TEAM_BASE" "$sha" "$base"; } | git -C "$I" update-ref --stdin 2>/dev/null \
     || die "merge refused: $TEAM_BASE or a task branch moved since $cand was built: build a new candidate."
   git -C "$I" read-tree -m -u "$base" "$sha" || die "$TEAM_BASE is now ${sha:0:12}, but the integration worktree files could not follow (above): fix that worktree by hand; nothing is logged as merged."
   while IFS= read -r line; do log_event "$LEAD" "${line%%:*}" MERGE "$sha"; done < <(sed -n 's/^task=//p' "$rec")

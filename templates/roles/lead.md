@@ -120,7 +120,7 @@ squad keeps each of these lines until you act on its task: a dispatch of the tas
 squad seen <ID>
 ```
 
-Only you set the team's wait for the human and run `squad seen`; squad refuses both from another seat. squad never answers a seat's question or permission prompt; it tells the human, and it starts a seat again that is gone or that runs without its squad options.
+Only you set the team's wait for the human and run `squad seen`; squad refuses both from another seat. squad never answers a seat's question or permission prompt; it tells the human. For a seat that is gone or that runs without its squad options it tells the human to run `squad up`; with `seat_restart on` in `team.conf` it starts that seat again itself.
 
 **When the team can only wait for the human** (an answer, an access or an approval that nothing else replaces, and no other task can go on), say so with one command:
 

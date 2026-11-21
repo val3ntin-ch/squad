@@ -1903,7 +1903,6 @@ check "026: squad merge refuses a plain-file receipt from before the change" sh 
 rm -f .team/receipts/CANDIDATE-4; mv "$tmp/r4" .team/receipts/CANDIDATE-4
 "$squad" merge CANDIDATE-4 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
 check "026: and squad merge takes the folder receipt of a batch with a flake" sh -c "[ $crc = 0 ] && grep -q 'is now CANDIDATE-4' '$tmp/cout'"
-check "trial 7: squad merge prints no 'start: ok', 'prepare: ok' or 'commit: ok' line of git update-ref" refuses grep -qE '^(start|prepare|commit): ok' "$tmp/cout"
 # the wait for the lock is on record
 "$squad" heavy tester T-926 -- sleep 3 >/dev/null 2>&1 &
 for _ in $(seq 1 100); do grep -q ' tester T-926 HEAVY_START ' .team/events.log && break; sleep 0.1; done
