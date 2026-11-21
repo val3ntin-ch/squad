@@ -29,7 +29,7 @@ task exists (report ranks 8, 10 and 11).
 - [ ] The templates say: a review finding names the class of the defect and the places,
       and the dev fixes the class; the reviewer checks correctness against the brief and
       skips style; a brief lists the consumers of a changed part; a dev runs the tests of
-      the changed files (or the sample) and the full suite runs only in the candidate.
+      the changed files (or the sample) and never the full suite (it is the tester's).
 - [ ] `test/smoke.sh` passes, with a test for each item above that fails before the change.
 
 ## Plan

@@ -525,7 +525,7 @@ check "027: a review finding names the class of the defect and the places (revie
 check "027: the dev fixes the class, not only the places named" grep -q 'Fix the class' "$T27/roles/dev.md"
 check "027: the reviewer checks correctness against the brief and skips style" grep -q 'correctness against the brief.*[Ss]kip style' "$T27/roles/reviewer.md"
 check "027: a brief lists the consumers of a changed part" grep -q 'Consumers' "$T27/roles/lead.md"
-check "027: a dev runs the tests of the changed files; the full suite runs only in the candidate" sh -c "grep -q 'tests of the files you changed' '$T27/roles/dev.md' && grep -q 'full suite runs only in the candidate' '$T27/roles/dev.md' && grep -q 'Never the full suite\.' '$T27/PROTOCOL.md'"
+check "027: a dev runs the tests of the changed files; never the full suite" sh -c "grep -q 'tests of the files you changed' '$T27/roles/dev.md' && grep -q 'full suite is the tester' '$T27/roles/dev.md' && grep -q 'Never the full suite\.' '$T27/PROTOCOL.md'"
 check "027: the round limit is named in the protocol as enforced by squad dispatch" grep -q 'squad dispatch. refuses a later round' "$T27/PROTOCOL.md"
 
 # 001 · squad merge and the ledger
