@@ -114,7 +114,13 @@ The loop is event-driven. Hand out work, end your turn, and react when a seat re
 
 These lines can arrive in the middle of your turn. Finish the step you were on, then react to each one. squad also tells you when a seat is in trouble (`dead`, `login`, `blocked`, `stalled`): read its pane, then act or tell the human.
 
-squad keeps each of these lines until you act on its task: a dispatch of the task, your verdict, a candidate that holds it, or a merge. A line you did not act on comes again, and after a longer time squad tells the human. squad never answers a seat's question or permission prompt; it tells the human, and it starts a seat again that is gone or that runs without its squad options.
+squad keeps each of these lines until you act on its task: a dispatch of the task, your verdict, a candidate that holds it, or a merge. A candidate's `PASS` ends with `squad merge` or a newer candidate; a candidate's `FAIL` ends with a dispatch of one of its tasks or a newer candidate. A line you did not act on comes again, and after a longer time squad tells the human. When a line needs none of these actions (a `BLOCKED` you answered in the dev's pane, a `CONTRACT` you answered with `squad notify`, a line you only had to read), say so, and it does not come again:
+
+```
+squad seen <ID>
+```
+
+Only you set the team's wait for the human and run `squad seen`; squad refuses both from another seat. squad never answers a seat's question or permission prompt; it tells the human, and it starts a seat again that is gone or that runs without its squad options.
 
 **When the team can only wait for the human** (an answer, an access or an approval that nothing else replaces, and no other task can go on), say so with one command:
 
