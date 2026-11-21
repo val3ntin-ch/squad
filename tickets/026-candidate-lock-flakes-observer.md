@@ -11,8 +11,8 @@ observer passes ran while the team had no work (report ranks 4, 5, 6 and 9).
 ## Scope
 - In: `squad candidate`, `squad heavy` (the lock, `--batch`), the candidate receipt, the
   observer timer in `squad watch`, the smoke tests, README, `templates/PROTOCOL.md`.
-- Out: `squad merge` and the conditions it checks (unchanged; the receipt's place and two
-  messages changed: V!, 21 Nov 2026); a second test lane; any change to which checks a
+- Out: `squad merge` and the conditions it checks (unchanged; the receipt's place and three
+  messages changed, the third is the refusal of an old plain-file receipt: V!, 21 Nov 2026); a second test lane; any change to which checks a
   team runs.
 
 ## Done when
