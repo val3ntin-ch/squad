@@ -97,6 +97,7 @@ HEAVY_TIMEOUT_DEV=""    # minutes for a dev seat's run (default: heavy_timeout)
 SAMPLE_PERCENT=10       # squad heavy --sample: the share of the tests one dev run takes
 HEAVY_SILENT_MINUTES=5  # a heavy run with no new output and no CPU for this long is hung (0: off)
 IDLE_MINUTES=5          # a dev idle with no task for this long: the lead is told once (0: off)
+IDLE_OWNER_MINUTES=30   # still no task after this long, with tasks open: the owner gets one notification
 OWNER_MODE=all          # visual: the human tests what can be seen and gives feedback; the lead decides the rest
 VERIFY_HOOK=on          # off: team worktrees get .agents-verify-off (the owner's global Stop hook skips them)
 STALL_MINUTES=15        # a seat with an open task and no work for this long is stalled
@@ -407,6 +408,27 @@ mutex() { # <dir>: a short critical section; a mutex older than a minute is left
 }
 
 heavy_owner() { readlink "$HEAVY_DIR/lock" 2>/dev/null || true; }
+
+# A seat is busy, whatever state herdr shows (ticket 024): its own heavy run is alive (a fresh
+# heartbeat, or it owns the lock), it waits in the heavy queue, or its last turn ended with
+# background work still running (the Stop hook: squad seat-stop). A busy seat gets no dispatch
+# and no STALLED or IDLE alarm.
+BUSY_HOOK_MINUTES=60   # the hook's reading counts this long: a seat that ends no further turn is not busy for ever
+seat_busy() { # <seat>
+  local name=$1 me now hb ow f p bg at
+  me="$name@$(basename "$REPO")"; now=$(date +%s)
+  hb=$(cat "$TEAM_DIR/seats/$name.heartbeat" 2>/dev/null || echo 0)
+  [ $((now - ${hb:-0})) -lt 180 ] && return 0
+  ow=$(heavy_owner)
+  case "$ow" in "$me:"*) p=$(printf '%s' "$ow" | cut -d: -f2); kill -0 "$p" 2>/dev/null && return 0 ;; esac
+  for f in "$HEAVY_DIR"/queue/*; do   # <arrival>-<pid>-<seat>@<repo>, written by squad heavy while it waits
+    [ -f "$f" ] && [ "$(basename "$f" | cut -d- -f3-)" = "$me" ] || continue
+    p=$(basename "$f" | cut -d- -f2); kill -0 "$p" 2>/dev/null && return 0
+  done
+  [ -f "$TEAM_DIR/seats/$name.background" ] || return 1
+  read -r bg at <"$TEAM_DIR/seats/$name.background" || true
+  [[ "${bg:-}" =~ ^[1-9][0-9]*$ ]] && [[ "${at:-}" =~ ^[0-9]+$ ]] && [ $((now - at)) -lt $((BUSY_HOOK_MINUTES * 60)) ]
+}
 
 heavy_clear_stale() {
   local q="$HEAVY_DIR/queue" f pid val seat since
@@ -873,7 +895,7 @@ cmd_dispatch() {
   fi
   [ "$deferred" = 0 ] || text="$text The contract is not written yet: the tester is in a run. Start on the brief; the tester's contract notes come to you as a RULE line."
   # a busy seat: the task waits for it and is sent when it is free (observer S-39); the call returns at once
-  if [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] && { [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ] || queue_lock_held "$seat" || queue_pending "$seat"; }; then
+  if [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] && { [ "$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat")" = working ] || seat_busy "$seat" || queue_lock_held "$seat" || queue_pending "$seat"; }; then
     SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
     return 0
   fi
@@ -975,10 +997,12 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
       [ -d "$TEAM_DIR" ] || exit 0   # the team is gone (deleted, or a test's folder): nothing to send to
       if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
       st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
+      ! seat_busy "$seat" || st=working   # its own heavy run, the heavy queue, or background work (ticket 024)
       case "$st" in
         idle|done)   # free, my turn (no earlier waiter), the delivery lock taken in one step
           if ! queue_pending "$seat" "$mine" && ! queue_lock_held "$seat" && ln -s "$me" "$lockd" 2>/dev/null; then
             st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
+            ! seat_busy "$seat" || st=working
             if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
             case "$st" in idle|done) ;; *) rm -f "$lockd"; sleep "${SQUAD_QUEUE_POLL:-15}"; continue ;; esac
             if SQUAD_DISPATCH_QUEUED=1 "$SQUAD_HOME/bin/squad" dispatch "$@"; then exit 0; fi
@@ -1302,6 +1326,7 @@ cmd_plan() {
   for a in "$@"; do
     case "$a" in
       --check) mode=check ;; --approve) mode=approve ;; --critique) mode=critique ;; --feature) feature=new ;;
+      -*) die "squad plan: unknown option '$a' (a goal does not start with '-'; squad plan --help)." ;;
       *) if [[ "$a" =~ ^F-[0-9]+$ ]]; then feature=$a; else goal=${goal:+$goal }$a; fi ;;
     esac
   done
@@ -1858,13 +1883,8 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   case "$text" in *"Please run /login"*|*"API Error: 401"*|*"API Error: 403"*|*"OAuth token has expired"*|*"Invalid API key"*) echo login; return 0 ;; esac
   [ "$state" = blocked ] && { echo blocked; return 0; }
   [ -n "$task" ] || { rm -f "$f"; return 0; }
-  # busy, not stalled: the seat's own heavy run is alive (fresh heartbeat, or it owns the lock)
-  local hb; hb=$(cat "$TEAM_DIR/seats/$name.heartbeat" 2>/dev/null || echo 0)
-  local ow op; ow=$(heavy_owner); op=""
-  case "$ow" in "$name@$(basename "$REPO"):"*) op=$(printf '%s' "$ow" | cut -d: -f2) ;; esac
-  if [ $((now - ${hb:-0})) -lt 180 ] || { [ -n "$op" ] && kill -0 "$op" 2>/dev/null; }; then
-    rm -f "$f"; return 0
-  fi
+  # busy, not stalled: the seat's own heavy run is alive, or it waits in the heavy queue or on background work
+  if seat_busy "$name"; then rm -f "$f"; return 0; fi
   mkdir -p "$(dirname "$f")"
   [ -f "$f" ] || echo "$now" >"$f"
   since=$(cat "$f")
@@ -1897,7 +1917,7 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
   local name=${S_NAME[$1]} f a now since
   f="$TEAM_DIR/observer/.idle/$name"; a="$TEAM_DIR/observer/.idle/$name.told"
   [ "$IDLE_MINUTES" -gt 0 ] || return 0
-  if [ -n "$3" ] || [ "$2" = working ] || [ "$2" = off ]; then rm -f "$f" "$a"; return 0; fi
+  if [ -n "$3" ] || [ "$2" = working ] || [ "$2" = off ] || seat_busy "$name"; then rm -f "$f" "$a" "$a.owner"; return 0; fi
   mkdir -p "$(dirname "$f")"; now=$(date +%s)
   [ -f "$f" ] || echo "$now" >"$f"
   since=$(cat "$f")
@@ -1905,6 +1925,14 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
     : >"$a"
     log_event "$name" - IDLE "no task for $(( (now - since) / 60 )) min"
     herdr_team agent prompt "$LEAD" "[squad] $name has had no task for $(( (now - since) / 60 )) min: write its next brief and dispatch it (squad dispatch $name <ID>). (Notification: first finish what you were doing.)" >/dev/null 2>&1 || true
+  fi
+  # the lead was told and nothing happened: after IDLE_OWNER_MINUTES the owner is told once, when tasks are open (ticket 024)
+  if [ $((now - since)) -ge $((IDLE_OWNER_MINUTES * 60)) ] && [ -f "$a" ] && [ ! -f "$a.owner" ]; then
+    local open; open=$(awk -F'|' '/^\| *T-[0-9]/ { st = $5; gsub(/^ +| +$/, "", st); if (st != "merged") n++ } END { print n + 0 }' "$TEAM_DIR/TASKS.md" 2>/dev/null || echo 0)
+    [ "$open" -gt 0 ] || return 0
+    : >"$a.owner"
+    log_event "$name" - IDLE "no task for $(( (now - since) / 60 )) min, $open open task(s): $OWNER_NAME is told"
+    v_notify "squad: $name has no task" "$name has had no task for $(( (now - since) / 60 )) min; $open open task(s) in TASKS.md."
   fi
 }
 
@@ -3017,6 +3045,8 @@ write_seat_settings() { # <index> -> settings file with the SessionStart hook th
   fi
   jq -n --arg c "'$SQUAD_HOME/bin/squad' session-id '${S_NAME[$1]}'" --argjson allow "$allow" \
     '{hooks: {SessionStart: [{hooks: [{type: "command", command: $c}]}]}} + (if ($allow | length) > 0 then {permissions: {allow: $allow}} else {} end)' >"$f"
+  # the Stop hook records whether the seat still waits for its own background work (ticket 024)
+  jq --arg c "'$SQUAD_HOME/bin/squad' seat-stop '${S_NAME[$1]}'" '.hooks.Stop = [{hooks: [{type: "command", command: $c}]}]' "$f" >"$f.tmp" && mv "$f.tmp" "$f"
   echo "$f"
 }
 
@@ -3027,6 +3057,18 @@ cmd_session_id() {
   id=$(jq -r '.session_id // empty' 2>/dev/null) || true
   [ -n "$seat" ] && [ -n "$id" ] || return 0
   { find_repo && mkdir -p "$TEAM_DIR/seats" && printf '%s\n' "$id" >"$TEAM_DIR/seats/$seat.session"; } 2>/dev/null || true
+  [ -z "${TEAM_DIR:-}" ] || rm -f "$TEAM_DIR/seats/$seat.background" 2>/dev/null || true   # a new or cleared session waits for no background work
+  return 0
+}
+
+# squad seat-stop <seat> — the Stop hook of a Claude seat (stdin: the hook's JSON, which has
+# background_tasks on Claude Code 2.1.323). It records how many background tasks the seat still
+# waits for when its turn ends (0: free) and the time; seat_busy reads it. Never fails.
+cmd_seat_stop() {
+  local seat=${1:-} n
+  n=$(jq -r '(.background_tasks // []) | length' 2>/dev/null) || true
+  [ -n "$seat" ] && [ -n "$n" ] || return 0
+  { find_repo && mkdir -p "$TEAM_DIR/seats" && printf '%s %s\n' "$n" "$(date +%s)" >"$TEAM_DIR/seats/$seat.background"; } 2>/dev/null || true
   return 0
 }
 
@@ -3393,6 +3435,9 @@ cmd_clean() {
 # ---- main --------------------------------------------------------------------
 
 cmd=${1:-help}; [ $# -gt 0 ] && shift
+# -h or --help as a command's first argument: the help and nothing else (ticket 024: 'squad plan --help'
+# wrote a plan with the goal "--help"); 'squad herdr' passes it on to herdr
+case "$cmd:${1:-}" in herdr:*) ;; *:-h|*:--help) usage; exit 0 ;; esac
 case "$cmd" in
   new)     cmd_new "$@" ;;
   init)    cmd_init "$@" ;;
@@ -3427,6 +3472,7 @@ case "$cmd" in
   _owner-filter) OWNER_MODE=${1:-visual}; owner_filter ;;   # internal: tests
   report)  cmd_report "$@" ;;
   session-id) cmd_session_id "$@" ;;
+  seat-stop) cmd_seat_stop "$@" ;;
   permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;
   -h|--help|help) usage ;;

@@ -125,7 +125,7 @@ squad dispatch dev-a T-001                 # a fix round: the line points the de
 squad dispatch dev-a T-001 --escalate      # a fix round from round 4: the seat runs the stronger model
 ```
 
-A busy seat is no reason to wait: `squad dispatch` to a seat at work answers "queued" and sends the task by itself when the seat is free. Do not dispatch the same task twice. While the tester is in a run (a candidate), a dev starts on the brief without its contract; squad queues the contract for the tester. When that contract arrives, send its notes to the dev: `squad notify "<task>" "<the contract notes>"`.
+A busy seat is no reason to wait: `squad dispatch` to a seat at work answers "queued" and sends the task by itself when the seat is free. A seat that waits for its own heavy run, in the heavy queue, or for its own background work is at work too, even when it looks idle. Do not dispatch the same task twice. While the tester is in a run (a candidate), a dev starts on the brief without its contract; squad queues the contract for the tester. When that contract arrives, send its notes to the dev: `squad notify "<task>" "<the contract notes>"`.
 
 If `squad dispatch` fails, read the seat's pane: `herdr agent read <seat> --source visible`.
 
