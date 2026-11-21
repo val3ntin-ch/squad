@@ -67,6 +67,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
+| `squad wait-owner "<what>"` | The lead's command when the team can only wait for you: you get a notification now and a reminder every `owner_reminder_hours`; the stall alarm is silent meanwhile. `squad wait-owner --done` or a new dispatch ends the wait. |
 | `squad feedback "<text>"` | Your feedback after testing: saved in `.team/FEEDBACK.md`, logged, sent to the lead, who turns it into a task or a decision. |
 | `squad update-conf` | Adds the settings and seats a new squad version needs to `.team/team.conf` and says what it added. `squad up` and `squad init` run it; a file that has everything is left alone. |
 | `squad presets` | Lists the built-in teams. |
@@ -122,6 +123,9 @@ setup pnpm install --frozen-lockfile
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
 - **observe_minutes** is the longest gap between two observer passes.
+- **notice_redeliver_minutes** (15): a `DONE`, a verdict or a `BLOCKED` that the lead has not acted on is sent to the lead again this often. **notice_owner_minutes** (30): after this long without an action of the lead, you get one notification.
+- **owner_reminder_hours** (4): how often `squad wait-owner` reminds you while the team waits for you.
+- **notify_os** (on): a notification to you is also an operating-system notification (macOS, through `osascript`). **notify_os off** keeps herdr's notification only.
 - **verify_hook off** writes `.agents-verify-off` into every team worktree, so a global Stop hook that runs the whole repository's verify at every turn end skips them. The tester's runs are the gate.
 - **session** is the herdr session name (default: the repository's name).
 - **setup** runs once in every new worktree, so each agent can build and test.
@@ -161,6 +165,16 @@ Switch tabs with herdr's `prefix 1`…`9` (or `prefix n` / `prefix p`); `prefix 
 ```
 
 Every seat shows ● working, ○ idle, ! blocked or · off, and its trouble in red (a seat whose own heavy run is alive is busy, never stalled): `dead` (its agent is gone), `login` (a sign-in error), `blocked` (a prompt or a question), `stalled` (an open task and no work for `stall_minutes`). Each trouble is written to `events.log` and told to the lead once.
+
+The watch also acts on each seat by itself, also while other seats work. squad never answers a seat's question or permission prompt; it only tells you (a herdr notification, and an operating-system notification with `notify_os on`):
+
+- **A seat waits for you.** A Claude seat's hooks report a permission request or a question at once; any seat that herdr shows `blocked` for 5 minutes is reported from its screen. The notification names the seat, its task and the first line of the question. A turn that ends on a usage limit or a sign-in error is reported at once.
+- **A seat is stuck.** A `stalled` seat or a seat with a sign-in error is told to you, not only to the lead.
+- **A seat is gone or runs without its squad options** (after a herdr restart, a seat can come back without its role, its settings and its permission mode). The watch starts it again with its full options, as `squad up` does: a seat that is gone when it has an open task (the lead always), a seat without options when it is idle. `events.log` gets a `SEAT_RESTART` line. A lead or a dev with an open task gets the task again. A seat is restarted at most once in 10 minutes; after 3 restarts in one hour squad stops and tells you. A seat whose pane is closed is not started: you are told to run `squad up`.
+- **A notice waits for the lead.** Each `DONE`, verdict and `BLOCKED` is kept until the lead acts on the task (its own event for the task, or a new dispatch of it). Until then the line is sent to the lead again every `notice_redeliver_minutes`, and you are told once after `notice_owner_minutes`.
+- **The team waits for you** (`squad wait-owner`): you are reminded every `owner_reminder_hours`, and the team-wide stall alarm is silent.
+
+A notification for a condition that still holds comes again every 30 minutes, at most 3 times, and stops when the condition ends. The Claude seat hooks are also written to each team worktree's `.claude/settings.local.json` (kept out of git through `.git/info/exclude`), so a seat that herdr resumed without options still reports. A running `squad watch` starts the new `bin/squad` by itself when the file changes (an update).
 
 ## How the team works
 
@@ -252,7 +266,9 @@ Claude asks once whether to trust a new repository. `squad up` starts one seat, 
 | "this herdr session is not '…'" | Each repository has its own session. Run `squad up` from a terminal outside herdr, or `herdr session attach <name>` and `squad up` there. |
 | A seat "did not become ready" | herdr's error is printed above it. Usually the agent shows a first-run dialog (trust this folder, sign in): open its pane, answer it, then `squad up` again. |
 | A seat shows `login` on the board | Its session lost its sign-in. Open its pane and run `/login`. |
-| A seat shows `stalled` | It has an open task and does nothing. The lead was told; read its pane (`squad herdr agent read <seat> --source visible`). |
+| A seat shows `stalled` | It has an open task and does nothing. The lead and you were told; read its pane (`squad herdr agent read <seat> --source visible`). |
+| "squad: <seat> does not stay up" | squad restarted the seat 3 times in one hour and stopped. Read its pane, fix the cause, then run `squad up`. |
+| "squad: check <seat>'s options" | squad restarted the seat and still cannot see its squad options in its process. Read its pane; `squad up` after you close its agent starts it with its options. |
 | "an agent named … is already running" | Another team runs in this herdr session. Each repository needs its own: run `squad up` from outside herdr. |
 | `squad heavy` waits a long time | `squad heavy --status` names the owner and the queue. A lock whose process is gone is cleared by the next caller. |
 | An agent lost track | Tell it to read `.team/PROTOCOL.md` and its role file again. |
