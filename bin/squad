@@ -844,15 +844,31 @@ has_menu() {
 }
 
 # squad never answers a seat's question or permission prompt, so it types nothing into a seat that shows a
-# dialog. No single sign is enough (the trial of 21 Nov 2026): herdr shows a seat with a question as idle, and
-# a pane can hide a dialog. A seat shows a dialog when any of the three says so.
+# dialog. No single sign is enough (the trials of 21 Nov 2026): herdr shows a seat with a question as idle in a
+# narrow pane (45 columns) and as blocked in a wide one (120 columns), and a pane can hide a dialog. A seat shows a
+# dialog when any of the three says so.
 OWNER_WAIT_BOUND=120   # seconds: a younger record of the hook always counts
+OWNER_WAIT_SCREEN=20   # seconds: from this age on the seat's screen can end the record
+OWNER_WAIT_AGAIN=10    # seconds: between the two sightings of a free prompt that end it
+# The caller asks only when herdr does not show the seat blocked.
 owner_wait_open() { # <seat>: its hook recorded a dialog (seats/<seat>.owner-wait) and nothing the seat did later says it is over
-  local w="$TEAM_DIR/seats/$1.owner-wait" at nr bat
+  local w="$TEAM_DIR/seats/$1.owner-wait" at nr bat now i fat="" ft=""
   [ -f "$w" ] || return 1
   { read -r at _ nr <"$w"; } 2>/dev/null || true
   [[ "${at:-}" =~ ^[0-9]+$ ]] || at=0
-  [ $(( $(date +%s) - at )) -ge "$OWNER_WAIT_BOUND" ] || return 0
+  now=$(date +%s)
+  # The screen refutes the record: Escape closes a dialog and no hook fires (Claude Code 2.1.323). The proof is positive
+  # (wait_ready: the prompt line at the bottom, no menu on the screen), seen twice in a row; the first sighting is kept
+  # in <record>.free with the record's time. A pane that cannot be read, or shows anything else, keeps the record.
+  if [ $((now - at)) -ge "$OWNER_WAIT_SCREEN" ] && i=$(seat_index "$1") \
+     && case "${S_KIND[$i]}" in claude|codex) wait_ready "$1" "${S_KIND[$i]}" 0 ;; *) false ;; esac; then
+    { read -r fat ft <"$w.free"; } 2>/dev/null || true
+    if [ "$fat" != "$at" ] || ! [[ "$ft" =~ ^[0-9]+$ ]]; then put "$w.free" "$at $now"
+    elif [ $((now - ft)) -ge "$OWNER_WAIT_AGAIN" ] && [ "$(num_in "$w")" = "$at" ]; then
+      rm -f "$w" "$w.free"; owner_alert_end "wait-$1"; return 1
+    fi
+  else rm -f "$w.free"; fi
+  [ $((now - at)) -ge "$OWNER_WAIT_BOUND" ] || return 0
   # an old record: a later turn end of the seat (its Stop hook), or a later report of its own, says the dialog is over
   { read -r _ bat <"$TEAM_DIR/seats/$1.background"; } 2>/dev/null || true
   if [[ "${bat:-}" =~ ^[0-9]+$ ]] && [ "$bat" -gt "$at" ]; then return 1; fi
@@ -999,7 +1015,7 @@ cmd_dispatch() {
   held() {
     seat_dialog "$seat" || return 1
     [ "${SQUAD_DISPATCH_QUEUED:-0}" != 1 ] || exit 75
-    SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
+    SQUAD_QUEUE_DIALOG=1 SQUAD_CONTRACT_DEFERRED=$deferred dispatch_queue "$seat" "$task" "${orig[@]}"
   }
   if held; then return 0; fi
   clear=$(clear_cmd "$kind")
@@ -1103,7 +1119,7 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
       if sent; then log_event "$seat" "$task" DISPATCH_DROPPED "already sent or done"; exit 0; fi
       st=$(seat_state "$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')" "$seat" 2>/dev/null) || st=off
       ! seat_busy "$seat" || st=working   # its own heavy run, the heavy queue, or background work (ticket 024)
-      case "$st" in idle|done) ! seat_dialog "$seat" || st=blocked ;; esac   # a question: herdr shows the seat idle for the whole dialog
+      case "$st" in idle|done) ! seat_dialog "$seat" || st=blocked ;; esac   # a question: in a narrow pane herdr shows the seat idle for the whole dialog
       case "$st" in
         idle|done)   # free, my turn (no earlier waiter), the delivery lock taken in one step
           if ! queue_pending "$seat" "$mine" && ! queue_lock_held "$seat" && ln -s "$me" "$lockd" 2>/dev/null; then
@@ -1124,7 +1140,8 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
     tell_lead "[squad] $task waited $((DISPATCH_QUEUE_WAIT / 60)) min for $seat and was not sent." || keep=1
   ) >>"$log" 2>&1 </dev/null &
   disown $! 2>/dev/null || true
-  say "$seat is busy: $task waits and is sent when $seat is free (queued; log: ${log#"$REPO"/})."
+  if [ "${SQUAD_QUEUE_DIALOG:-0}" = 1 ]; then say "$seat shows a dialog or a question: $task waits and is sent when it is answered (queued; log: ${log#"$REPO"/})."
+  else say "$seat is busy: $task waits and is sent when $seat is free (queued; log: ${log#"$REPO"/})."; fi
 }
 
 report_lost_requests() { # a queued request whose waiter is gone (a restart): the lead is told, squad sends nothing itself (the owner, 18 Nov 2026)
@@ -2103,7 +2120,8 @@ seat_trouble() { # <agents json> <index> <open task or ""> -> dead|login|blocked
   if [ "$state" = off ]; then [ -n "$task" ] && echo dead; return 0; fi
   text=$(herdr_team agent read "$name" --source visible 2>/dev/null | tail -12 || true)
   case "$text" in *"Please run /login"*|*"API Error: 401"*|*"API Error: 403"*|*"OAuth token has expired"*|*"Invalid API key"*) echo login; return 0 ;; esac
-  [ "$state" = blocked ] && { echo blocked; return 0; }
+  # a seat that shows a dialog is blocked, never stalled: in a narrow pane herdr shows a seat with a question as idle
+  if [ "$state" = blocked ] || seat_dialog "$name"; then echo blocked; return 0; fi
   [ -n "$task" ] || { rm -f "$f"; return 0; }
   # busy, not stalled: the seat's own heavy run is alive, or it waits in the heavy queue or on background work
   if seat_busy "$name"; then rm -f "$f"; return 0; fi
@@ -2118,7 +2136,7 @@ trouble_hint() { # <kind> <seat>
   case "$1" in
     dead) echo "its agent is gone (closed pane or crash): run 'squad up' to start it again" ;;
     login) echo "it shows a sign-in error: $OWNER_NAME must run /login in its pane" ;;
-    blocked) echo "it waits on a prompt or a question: read it with squad herdr agent read $2 --source visible" ;;
+    blocked) echo "it shows a prompt or a question and waits for $OWNER_NAME's answer: squad queues any dispatch to it and sends it after the answer (read it with squad herdr agent read $2 --source visible)" ;;
     stalled) echo "it has an open task and has not worked for $STALL_MINUTES min: read its pane, then re-send or re-dispatch" ;;
   esac
 }
@@ -2146,7 +2164,7 @@ idle_dev_check() { # <index> <state> <open task>: a dev with nothing to do (GUPP
   local name=${S_NAME[$1]} f a now since
   f="$TEAM_DIR/observer/.idle/$name"; a="$TEAM_DIR/observer/.idle/$name.told"
   [ "$IDLE_MINUTES" -gt 0 ] || return 0
-  if [ -n "$3" ] || [ "$2" = working ] || [ "$2" = off ] || seat_busy "$name"; then rm -f "$f" "$a" "$a.owner"; return 0; fi
+  if [ -n "$3" ] || [ "$2" = working ] || [ "$2" = off ] || seat_busy "$name" || seat_dialog "$name"; then rm -f "$f" "$a" "$a.owner"; return 0; fi
   mkdir -p "$(dirname "$f")"; now=$(date +%s)
   [ -f "$f" ] || echo "$now" >"$f"
   since=$(cat "$f")
@@ -2506,14 +2524,15 @@ seats_tick() { # <agents json>
   for ((i = 0; i < n; i++)); do
     name=${S_NAME[$i]}; st=$(seat_state "$agents" "$name"); task=$(awk -v s="$name" '$1 == s { print $2; exit }' <<<"$opens")
     # a. it waits for the owner: its hook said so (seats/<seat>.owner-wait), or herdr shows it blocked for BLOCKED_MINUTES
+    #    (a seat with no record that herdr shows idle while its screen shows a menu counts as blocked)
     w="$TEAM_DIR/seats/$name.owner-wait"
-    if [ "$st" = blocked ]; then
+    if [ "$st" = blocked ] || { [ ! -f "$w" ] && { [ "$st" = idle ] || [ "$st" = "done" ]; } && has_menu "$(pane_text "$name")"; }; then
       [ -f "$mk/blocked-$name" ] || put "$mk/blocked-$name" "$now"
       if [ -f "$w" ] || [ $((now - $(num_in "$mk/blocked-$name"))) -ge $((BLOCKED_MINUTES * 60)) ]; then
         q=$(sed -n '2p' "$w" 2>/dev/null || true); [ -n "$q" ] || q=$(seat_question "$name")
         owner_alert "wait-$name" "squad: $name waits for you${task:+ ($task)}" "${q:-It shows a prompt or a question.}"
       fi
-    elif owner_wait_open "$name"; then   # the hook's record: herdr shows a seat with a question as idle for the whole dialog
+    elif owner_wait_open "$name"; then   # the hook's record: in a narrow pane herdr shows a seat with a question as idle for the whole dialog
       q=$(sed -n '2p' "$w" 2>/dev/null || true)
       owner_alert "wait-$name" "squad: $name waits for you${task:+ ($task)}" "${q:-It shows a prompt or a question.}"
     else rm -f "$mk/blocked-$name" "$w"; owner_alert_end "wait-$name"; fi

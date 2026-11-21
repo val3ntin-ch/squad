@@ -35,7 +35,9 @@ case "$1 $2" in
                     case "$4" in /*) echo idle ;; *) if [ "${MOCK_NEVER_WORK:-}" = 1 ]; then echo idle; else echo working; fi ;; esac >"$(dirname "$MOCK_LOG")/state"; fi
                   echo '{}' ;;
   # MOCK_PANE_FILE: every pane shows this file while it exists (a dialog that goes away during a test)
-  "agent read") if [ -s "${MOCK_PANE_FILE:-}" ]; then cat "$MOCK_PANE_FILE"
+  # MOCK_PANE_ONLY: only this seat's pane shows MOCK_PANE_TEXT; every other pane shows an empty prompt
+  "agent read") if [ -n "${MOCK_PANE_ONLY:-}" ] && [ "$3" != "$MOCK_PANE_ONLY" ]; then printf 'Claude Code\n❯ \n'
+                elif [ -s "${MOCK_PANE_FILE:-}" ]; then cat "$MOCK_PANE_FILE"
                 elif [ -n "${MOCK_PANE_TEXT:-}" ]; then echo "$MOCK_PANE_TEXT"
                 elif [ "${MOCK_DYNAMIC:-}" = 1 ]; then st=$(cat "$(dirname "$MOCK_LOG")/state" 2>/dev/null || echo idle)
                   if [ "$st" = working ]; then printf '✻ Working… (esc to interrupt)\n❯ \n'; else printf 'Claude Code\n❯ \n'; fi
@@ -1817,13 +1819,13 @@ agents_lf='{"result":{"agents":[{"name":"dev-c","agent_status":"idle"},{"name":"
 tick() { MOCK_AGENTS=$1 MOCK_PANE_TEXT=${2:-} "$squad" watch --once >/dev/null 2>&1 || true; }   # <agents> [<every pane's text>]
 no_lead() { ! grep -q 'agent prompt lead' "$MOCK_LOG"; }
 mkdir -p .team/observer/.idle; echo $(( $(date +%s) - 600 )) >.team/observer/.idle/dev-c; i0=$(grep -c ' dev-c - IDLE ' .team/events.log || true)
-reset_log; tick "$agents_lb"; tick "$agents_lf" "$ask"
+reset_log; tick "$agents_lb"; MOCK_PANE_ONLY=lead tick "$agents_lf" "$ask"
 check "2a: an idle dev is not told to a lead that is blocked or shows a menu, and is not marked as told" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && test ! -e .team/observer/.idle/dev-c.told && test \"\$(grep -c ' dev-c - IDLE ' .team/events.log)\" = '$i0'"
 reset_log; tick "$agents_lf" "$rdy"; tick "$agents_lf" "$rdy"
 check "2a: the lead is told when the dialog is gone, once" test "$(grep -c 'agent prompt lead \[squad\] dev-c has had no task' "$MOCK_LOG")" = 1
 printf '%s dev-c T-924 DISPATCH round=1\n' "$(now)" >>.team/events.log
 rm -rf .team/observer/.alerted; mkdir -p .team/observer/.seen; echo $(( $(date +%s) - 3600 )) >.team/observer/.seen/dev-c
-reset_log; tick "$agents_lb"; tick "$agents_lf" "$ask"
+reset_log; tick "$agents_lb"; MOCK_PANE_ONLY=lead tick "$agents_lf" "$ask"
 check "2a: a stalled seat is not told to a lead that shows a dialog" no_lead
 check "2a: its event is logged once" test "$(grep -c ' dev-c T-924 SEAT_STALLED' .team/events.log)" = 1
 reset_log; tick "$agents_lf" "$rdy"; tick "$agents_lf" "$rdy"
@@ -1943,8 +1945,8 @@ cd "$tmp"; "$squad" new trial >/dev/null 2>&1; cd trial; reset_log
 printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat tester claude tester -\nupgrade off\n' >.team/team.conf
 "$squad" up >/dev/null 2>&1 || true
 SW=.team/observer/.watchdog; NT=.team/observer/.notices; mkdir -p "$SW"
-# the screen of a long question in a 45-column pane, rebuilt from what the trial measured (its evidence file holds only
-# the result, no screen text): the selected row is 22 lines above the bottom, and "Esc to cancel" is wrapped onto two lines
+# the screen of a question in a 45-column pane, as the second trial captured it (herdr showed the seat idle): the selected
+# row is 13 lines above the bottom, and "Esc to cancel" is wrapped onto two lines
 longq="$here/fixtures/panes/long-question.txt"
 t_up='{"result":{"agents":[{"name":"lead","agent_status":"working","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"idle","pane_id":"w2:p3"}]}}'
 t_free='{"result":{"agents":[{"name":"lead","agent_status":"idle","pane_id":"w2:p1"},{"name":"dev-a","agent_status":"working","pane_id":"w2:p2"},{"name":"dev-b","agent_status":"working","pane_id":"w2:p3"}]}}'
@@ -1956,7 +1958,7 @@ W=.team/seats/dev-b.owner-wait
 # 2: has_menu reads the whole visible screen and a wrapped footer (seen through squad notify, which skips a seat with a dialog)
 ev dev-a T-960 DISPATCH round=1
 told() { reset_log; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$1 "$squad" notify PROTOCOL.md "a rule" >/dev/null 2>&1 || true; log_has "agent prompt dev-a [squad] Rule changed"; }   # <every pane's text>
-check "trial 2: a long question is a dialog: its selected row is 22 lines above the bottom" refuses told "$(cat "$longq")"
+check "trial 2: a long question is a dialog: its selected row is 13 lines above the bottom, outside the last 12" refuses told "$(cat "$longq")"
 check "trial 2: a dialog footer wrapped onto two lines is a dialog (the selected row is off the screen)" refuses told "$(tail -8 "$longq")"
 check "trial 2: a prompt with '/clear' stranded in its input line is no dialog" told "$(printf 'Claude Code\n❯ /clear')"
 check "trial 2: a dialog's words far above an empty prompt are no dialog" told "$(printf 'I wrote the text: press esc to cancel.\n%s\n❯ ' "$(seq 1 14)")"
@@ -1981,7 +1983,7 @@ check "trial 1: a submitted prompt ends the record (UserPromptSubmit)" test ! -e
 asks dev-b; hook dev-b SessionStart '{"source":"clear"}'
 check "trial 1: a new start of the session ends the record (SessionStart)" test ! -e "$W"
 rm -f .team/seats/dev-b.no-options .team/seats/dev-b.background; sleep 1   # the background notifications ended
-# herdr shows a seat with a question as idle for the whole dialog: the record counts for longer than 2 minutes
+# herdr shows a seat with a question in a narrow pane as idle for the whole dialog: the record counts for longer than 2 minutes
 printf 'x\n' >.team/reports/T-961-contract.md
 asks dev-b; age "$W" 1 300; ev dev-b T-961 SEAT_STALLED; ev dev-b T-961 DISPATCH_QUEUED waits
 MOCK_AGENTS=$t_up watch1
@@ -2049,6 +2051,58 @@ printf 'no_such_setting 1\n' >>.team/team.conf; sleep 3
 check "trial 5: a team.conf that does not load does not end the running watch" kill -0 "$wpid"
 kill "$wpid" 2>/dev/null || true; wait "$wpid" 2>/dev/null || true
 unset MOCK_WS MOCK_PANES
+# ---- the second trial of 21 Nov 2026: Escape closes a dialog and fires no hook; a seat that shows a dialog is not stalled ----
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat tester claude tester -\nupgrade off\n' >.team/team.conf
+rm -rf .team/observer/.alerted .team/observer/.seen .team/observer/.idle "$SW"; mkdir -p "$SW" .team/observer/.seen .team/observer/.idle
+esc=$(cat "$here/fixtures/panes/after-escape.txt")   # the real screen after Escape: the answer was declined, the prompt is empty
+FR=$W.free; HW=$SW/held-wait-dev-b
+seen() { printf '%s %s\n' "$(sed -n '1p' "$W" | cut -d' ' -f1)" "$(ago "$1")" >"$FR"; }   # <seconds>: the free prompt was first seen that long ago, for this record
+# 8: the screen ends a hook record that Escape left behind
+ev dev-b T-966 DISPATCH round=1
+asks dev-b; sleep 1; age "$W" 1 60
+MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$esc watch1
+check "trial 8: one sighting of a free prompt does not end the hook's record, and the owner's alert stays" test -f "$W" -a -f "$FR" -a -f "$HW"
+age "$FR" 2 15; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$esc watch1
+check "trial 8: after Escape the second sighting of the free prompt, 10 s later, ends the record" test ! -e "$W" -a ! -e "$FR"
+check "trial 8: the owner's alert of that wait ends with it" test ! -e "$HW"
+asks dev-b; sleep 1; age "$W" 1 300; seen 15
+MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$(cat "$longq") watch1
+check "trial 8: a pane that shows a long question keeps the record, and the earlier sighting does not count" test -f "$W" -a ! -e "$FR" -a -f "$HW"
+seen 15; MOCK_AGENTS=$t_up watch1
+check "trial 8: a pane that cannot be read keeps the record" test -f "$W" -a -f "$HW"
+age "$W" 1 5; seen 15; MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$esc watch1
+check "trial 8: a record younger than 20 s is kept whatever the screen shows" test -f "$W"
+age "$W" 1 300; seen 15; MOCK_AGENTS=$(sed 's/"dev-b","agent_status":"idle"/"dev-b","agent_status":"blocked"/' <<<"$t_up") MOCK_PANE_TEXT=$esc watch1
+check "trial 8: a seat that herdr shows blocked keeps the record" test -f "$W"
+hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'; ev dev-b T-966 DONE; rm -f "$FR" "$SW"/held-*
+printf 'x\n' >.team/reports/T-967-contract.md; echo idle >"$tmp/state"; asks dev-a; sleep 1; age .team/seats/dev-a.owner-wait 1 60; reset_log
+qout=$(MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-967 2>&1) || true
+sleep 4
+check "trial 8: a dispatch to a seat with a record that Escape left waits: one sighting is not enough" sh -c "grep -q ' dev-a T-967 DISPATCH_QUEUED' .team/events.log && ! grep -q ' dev-a T-967 DISPATCH round' .team/events.log && ! grep -qE 'agent (prompt|send-keys) dev-a' '$MOCK_LOG'"
+check "trial 8: the queued task goes out after the second sighting" sent_soon T-967
+sleep 3
+check "trial 8: it goes out once, and the record is gone" sh -c "[ \$(grep -c ' dev-a T-967 DISPATCH round=1' .team/events.log) = 1 ] && [ \$(grep -c 'agent prompt dev-a Task T-967 is yours' '$MOCK_LOG') = 1 ] && test ! -e .team/seats/dev-a.owner-wait"
+# 10: the message of a dispatch that is held because the seat shows a dialog
+check "trial 10: a dispatch held by a dialog says that the seat shows a dialog or a question, not that it is busy" sh -c "printf '%s\n' \"\$1\" | grep -q 'dev-a shows a dialog or a question: T-967 waits and is sent when it is answered' && ! printf '%s\n' \"\$1\" | grep -q 'is busy'" _ "$qout"
+ev dev-a T-967 DONE; rm -f "$tmp/state"
+# 9: a seat that shows a dialog is blocked, never stalled and never idle (herdr shows a question in a narrow pane as idle)
+ev dev-b T-968 DISPATCH round=1; rm -rf .team/observer/.alerted; ago 3600 >.team/observer/.seen/dev-b
+asks dev-b; sleep 1; reset_log
+bout=$(MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") "$squad" watch --once 2>/dev/null || true); MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
+check "trial 9: a seat with an open question and an open task past stall_minutes is blocked, not stalled" sh -c "printf '%s\n' \"\$1\" | grep -q 'dev-b ○ blocked' && grep -q ' dev-b T-968 SEAT_BLOCKED\$' .team/events.log && ! grep -q ' dev-b T-968 SEAT_STALLED' .team/events.log" _ "$bout"
+check "trial 9: the lead's line says that the seat waits for the owner's answer and that squad queues any dispatch to it" sh -c "[ \$(grep 'agent prompt lead \[squad\] dev-b is blocked on T-968: ' '$MOCK_LOG' | grep -c \"waits for .* answer.*squad queues any dispatch to it\") = 1 ]"
+check "trial 9: the lead's line does not say 're-send or re-dispatch'" refuses grep -q 'dev-b.*re-send or re-dispatch' "$MOCK_LOG"
+check "trial 9: the owner gets the 'waits for you' alert and no 'stalled' alert" sh -c "test -f '$HW' && test ! -e '$SW/held-stuck-dev-b' && ! grep -q 'notification show squad: dev-b stalled' '$MOCK_LOG'"
+hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'; rm -rf .team/observer/.alerted "$SW"; mkdir -p "$SW"; reset_log
+MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
+check "trial 9: a seat whose only sign of a dialog is the menu on its screen is blocked, not stalled" sh -c "[ \"\$(cat .team/observer/.alerted/dev-b)\" = blocked ] && ! grep -q ' dev-b T-968 SEAT_STALLED' .team/events.log && ! grep -q 'notification show squad: dev-b stalled' '$MOCK_LOG'"
+ago 400 >"$SW/blocked-dev-b"; MOCK_AGENTS=$t_up MOCK_PANE_ONLY=dev-b MOCK_PANE_TEXT=$(cat "$longq") watch1
+check "trial 9: the owner is told of that seat after 5 minutes, as for a seat that herdr shows blocked" log_has "notification show squad: dev-b waits for you (T-968)"
+ev dev-b T-968 DONE; rm -rf .team/observer/.alerted .team/observer/.seen "$SW"; mkdir -p "$SW"
+ago 600 >.team/observer/.idle/dev-b; asks dev-b; sleep 1; i0=$(grep -c ' dev-b - IDLE ' .team/events.log || true); reset_log
+MOCK_AGENTS=$t_up MOCK_PANE_TEXT=$rdy watch1
+check "trial 9: a dev with no task that shows a dialog gets no IDLE alarm" sh -c "! grep -q 'dev-b has had no task' '$MOCK_LOG' && [ \"\$(grep -c ' dev-b - IDLE ' .team/events.log)\" = '$i0' ] && test ! -e .team/observer/.idle/dev-b"
+hook dev-b PostToolUse '{"tool_name":"AskUserQuestion"}'
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
