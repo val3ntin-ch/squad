@@ -63,6 +63,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad brief` | Starts the lead again with one short line. |
 | `squad watch` | The live board in the team tab: usage, tasks, seats and their trouble. `--once` prints it once. |
 | `squad usage` | One line of plan usage: the 5-hour and 7-day windows, and when a nearly used-up window comes back. |
+| `squad tokens` | Per seat and per task: the model calls and the input, cache-read, cache-write and output tokens, read from the agents' own session files (numbers only). A task's part of a seat is what the seat used from its dispatch to its report. A seat or a part with no session file shows `not measured`, never 0. The report's Cost tab shows the same numbers per task. |
 | `squad status` | Shows the seats, the spec status, the task table and the agent states. |
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
@@ -112,7 +113,7 @@ setup pnpm install --frozen-lockfile
 - **arguments** after the fourth column go to the agent's own CLI unchanged. That is how you choose the model and the effort.
 - **role** is `lead`, `dev`, `tester`, `reviewer` or `observer`. There is exactly one lead. Without a `reviewer` seat the lead reviews; without an `observer` nobody watches.
 - **base** is the branch finished tasks are merged into.
-- **rounds** is how many review rounds a task may take before the lead brings it to you.
+- **rounds** (or **round_limit**, the same number; 5) is how many review rounds a task may take before the lead brings it to you. `squad dispatch` refuses the next round, logs `ROUND_LIMIT` and sends you one notification that names the task and its review files.
 - **escalate_model** is the model a fix runs on from round 4 (`squad dispatch --escalate`).
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.
@@ -122,11 +123,12 @@ setup pnpm install --frozen-lockfile
 - **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by the owner`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you. Your name in squad's messages and the agents' role files is "the owner"; set `owner_name <name>` in `.team/team.conf` (for example `owner_name Alice`) to have them use your name.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
-- **observe_minutes** is the longest gap between two observer passes.
+- **observe_minutes** is the longest gap between two observer passes. The observer gets no pass while no task is open (every dispatched task is merged or withdrawn, and no candidate run is in progress); the first event that opens work starts the timer again.
 - **notice_redeliver_minutes** (15): a `DONE`, a verdict or a `BLOCKED` that the lead has not acted on is sent to the lead again this often. **notice_owner_minutes** (30): after this long without an action of the lead, you get one notification.
 - **owner_reminder_hours** (4): how often `squad wait-owner` reminds you while the team waits for you.
 - **notify_os** (on): a notification to you is also an operating-system notification (macOS, through `osascript`). **notify_os off** keeps herdr's notification only.
 - **seat_restart** (off): `squad watch` ends and starts no seat. For a seat that is gone with a task open, or that runs without its squad options, it writes the event and tells you to run `squad up`. **seat_restart on**: the watch starts such a seat again by itself, with the guards in "The watch" below.
+- **flake_rerun** (1): a step of a `squad heavy --batch` run that fails is run once more alone. When it passes then, the batch goes on, and the flake is on record: a `FLAKE` event, one line in `.team/flakes.log`, and `flakes=<step>` in the candidate's receipt. `flake_rerun 0`: any failure fails the batch.
 - **verify_hook off** writes `.agents-verify-off` into every team worktree, so a global Stop hook that runs the whole repository's verify at every turn end skips them. The tester's runs are the gate.
 - **session** is the herdr session name (default: the repository's name).
 - **setup** runs once in every new worktree, so each agent can build and test.
@@ -210,6 +212,8 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 | `tasks/<ID>.md` | One complete brief per task: goal, files, acceptance table, dev check, check command, consumers, what to do when a check outside breaks, red run for bugs, visual check, references. |
 | `reports/` | The contract, the dev's, the tester's and the review reports, each with the acceptance table and its evidence. Screenshots in `reports/<ID>-shots/`. |
 | `events.log` | One line per dispatch, report, heavy run, merge, decision, consult, trouble and restart, with date and time. |
+| `receipts/CANDIDATE-<n>/` | The runner's `receipt` of a candidate run (the commit, each step's exit code, the flaky steps) and one log per step (`step-<i>.log`; `step-<i>.first.log` is the failed first run of a flaky step). Kept after a failure too. |
+| `flakes.log` | One line per batch step that failed once and passed when run again alone. |
 | `observer/NOW.md`, `observer/SUGGESTIONS.md` | What is wrong now and what it costs; ranked changes with their evidence and status. |
 | `LESSONS.md` | At the end: each finding that came back, and the cheapest change that stops it next time. |
 | `READY.md` | The lead's final summary: what to look at, rows not verified, decisions open for you. |
@@ -272,7 +276,8 @@ Claude asks once whether to trust a new repository. `squad up` starts one seat, 
 | "squad: <seat> does not stay up" | With `seat_restart on`: squad restarted the seat 3 times in one hour and stopped. Read its pane, fix the cause, then run `squad up`. |
 | "squad: check <seat>'s options" | With `seat_restart on`: squad restarted the seat and still cannot see its squad options in its process. Read its pane; `squad up` after you close its agent starts it with its options. |
 | "an agent named … is already running" | Another team runs in this herdr session. Each repository needs its own: run `squad up` from outside herdr. |
-| `squad heavy` waits a long time | `squad heavy --status` names the owner and the queue. A lock whose process is gone is cleared by the next caller. |
+| `squad heavy` waits a long time | `squad heavy --status` names the owner and the queue. A lock whose process is gone is cleared by the next caller. Each wait is in `events.log`: `HEAVY_WAIT` when it starts, and `waited=<seconds>s` in the run's `HEAVY_START`. |
+| `squad candidate` says the number is used | One number is one commit. Build the candidate again with the next free number, which the message names. |
 | An agent lost track | Tell it to read `.team/PROTOCOL.md` and its role file again. |
 | A seat rejects `--effort` | Check the levels your Claude Code accepts with `claude --help`, and change the seat line. |
 

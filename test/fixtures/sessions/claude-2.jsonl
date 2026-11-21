@@ -1,0 +1,2 @@
+{"type":"assistant","timestamp":"2026-11-20T11:30:00.000Z","message":{"id":"msg_fixture_3","model":"fixture-model","content":[],"usage":{"input_tokens":7,"cache_creation_input_tokens":40,"cache_read_input_tokens":300,"output_tokens":9}}}
+{"type":"assistant","timestamp":"2026-11-20T12:30:00.000Z","message":{"id":"msg_fixture_4","model":"fixture-model","content":[],"usage":{"input_tokens":1,"cache_creation_input_tokens":1,"cache_read_input_tokens":1,"output_tokens":1}}}

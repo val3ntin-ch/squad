@@ -96,7 +96,7 @@ A good task:
 - fits in one sitting and one context. If you would describe it with "and", split it;
 - has acceptance rows that someone can check by running or measuring something, with the expected value written in the row;
 - names its dev check (light, only this task's files) and the tester's check command;
-- lists its consumers: the tests and files outside its own that use what it changes (find them with the import graph, for example `vitest related`, and with a search for names read as text). Project A lost four tester runs to consumers nobody listed;
+- lists the consumers of each part it changes, under "Consumers to run": the tests and files outside its own that use what it changes (find them with the import graph, for example `vitest related`, and with a search for names read as text). Project A lost four tester runs to consumers nobody listed;
 - says what to do when a check outside its files breaks;
 - for a bug: the red run on the base commit that shows the bug before the fix.
 
@@ -193,7 +193,7 @@ Every task is reviewed by a fresh pair of eyes and decided by you. Nothing is sk
 3. Go through the acceptance table row by row. For each row, look at the evidence yourself: run the command, open the file at the line, look at the screenshot. A row whose evidence you did not see is not met.
 4. Visual result: look at it. Open every screenshot the tester saved. When a detail matters and the screenshot does not settle it, start the viewer from the dev's worktree (`<repository>-team/<seat>`, read-only for you) as "Visual check" in the SPEC says, and measure. Compare with the reference. "Close" is a defect.
 5. Look for what nobody listed: a state or a size that the brief forgot, a broken neighbour, a test that would pass without the change, a value written by hand where a shared one exists.
-6. **One finding per class.** When you find a defect, look for the same defect in every variant, scheme, size, state and scope of the part before you write the review. Write one finding for the class with the list of places. A second round for a place you could have found in round 1 is a defect of the review (project A: one task took four rounds for one rule).
+6. **One finding per class.** When you find a defect, look for the same defect in every variant, scheme, size, state and scope of the part before you write the review. Write one finding for the class with the list of places: a finding names the class of the defect (the rule that is broken) and the places, and the dev fixes the class. A second round for a place you could have found in round 1 is a defect of the review (project A: one task took four rounds for one rule).
 7. Write `$TEAM_DIR/reports/<ID>-review-<round>.md`:
 
 ```
@@ -217,7 +217,7 @@ Every finding is concrete: where, expected, actual. A finding the dev cannot act
 
 `APPROVE` means every row is met and you saw the evidence. The task then goes into the next candidate (PROTOCOL, "How much to test"); after the candidate's PASS, `squad merge CANDIDATE-<n>`. If a task does not merge cleanly into the candidate, `squad candidate` stops; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
 
-**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task: set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for $OWNER with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
+**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task (`squad dispatch` refuses a later round and tells $OWNER): set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for $OWNER with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
 
 ## Keeping your own context clean
 
