@@ -48,6 +48,7 @@ Usage:
   squad report [--live|--open]      the report page: decisions, observer, timeline, QA, cost
                                     (.team/report.html; --live is the report tab)
   squad usage                       one line of plan usage
+  squad tokens                      tokens and model calls per seat and per task, from the agents' session files
   squad statusline                  Claude Code status line: shows and records Claude's usage
   squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
   squad git <args>                  git writes for agents (switch/add/commit/merge...; push only the integration branch; no force/delete)
@@ -122,7 +123,8 @@ load_conf() {
       "") continue ;;
       base)  [ -n "$rest" ] && TEAM_BASE=$rest ;;
       setup) SETUP_CMD=$rest ;;
-      rounds) [[ "$rest" =~ ^[1-9][0-9]?$ ]] || die "team.conf line $line_no: 'rounds' needs a number from 1 to 99."
+      rounds|round_limit)   # one number under two names: the limit the role files name and 'squad dispatch' enforces
+              [[ "$rest" =~ ^[1-9][0-9]?$ ]] || die "team.conf line $line_no: '$kw' needs a number from 1 to 99."
               REVIEW_ROUNDS=$rest ;;
       heavy_silent_minutes|idle_minutes)
               [[ "$rest" =~ ^[0-9]{1,3}$ ]] || die "team.conf line $line_no: '$kw' needs a number of minutes (0 to 999; 0 turns it off)."
@@ -873,6 +875,14 @@ cmd_dispatch() {
     id == t && e ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES|HEAVY_START|HEAVY_END|BLOCKED|CONTRACT|DONE-FOR-SWITCH)$/ { f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null && started=1
   [ "$started" = 1 ] || plan_gate "$task"
   round=$(review_round "$task")
+  # the round limit: a later round is refused; the owner is told once per task and limit (027)
+  if [ "$round" -gt "$REVIEW_ROUNDS" ]; then
+    if ! grep -qE " $task ROUND_LIMIT .*limit=$REVIEW_ROUNDS\$" "$TEAM_DIR/events.log" 2>/dev/null; then
+      log_event "$seat" "$task" ROUND_LIMIT "round=$round limit=$REVIEW_ROUNDS"
+      v_notify "squad: $task reached the round limit" "Round $round, the limit is $REVIEW_ROUNDS. Reviews: $(cd "$TEAM_DIR/reports" && echo "$task"-review-*.md) in $TEAM_DIR/reports. More rounds: round_limit in team.conf."
+    fi
+    die "$task is at round $round: the round limit is $REVIEW_ROUNDS. Not sent. Stop the task and bring it to $OWNER_NAME with its reviews ($TEAM_DIR/reports/$task-review-*.md)."
+  fi
   # the contract comes first: a dev starts only on a table the tester agreed
   # (only a task's first hand-out: a task already under way, for example from an older squad, goes on)
   if [ "$role" = dev ] && has_role tester && [ ! -f "$TEAM_DIR/reports/$task-contract.md" ] \
@@ -1512,6 +1522,102 @@ task_stats_raw() {
     "$TEAM_DIR/events.log" 2>/dev/null || true
 }
 
+# ---- squad tokens: what a seat and a task cost, in tokens (027) ----------------------------
+# Read from the session files the agents write themselves: numbers only, never a message's text.
+# A seat's sessions are the ids squad recorded for it (.team/seats/<seat>.sessions).
+
+token_files() { # <kind> <session id> -> the session's files (Claude: with its subagents' files)
+  case "$1" in
+    claude) ls "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$2".jsonl "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$2"/subagents/*.jsonl 2>/dev/null || true ;;
+    codex) find "${CODEX_HOME:-$HOME/.codex}/sessions" -name "rollout-*$2*.jsonl" -print 2>/dev/null || true ;;
+  esac
+}
+
+token_extract() { # <kind> <file> -> a line per model call: key, local time, input, cache read, cache write, output (tabs)
+  local lt='def lt: try (sub("\\.[0-9]+"; "") | fromdateiso8601 | strflocaltime("%Y-%m-%d %H:%M:%S")) catch "";'
+  case "$1" in
+    # Claude: a model call can be on several lines with the same message id (the key): the reader counts it once
+    claude) jq -rR "$lt"' fromjson? | objects | select(.type == "assistant") | (.timestamp // "" | tostring | lt) as $t | .message | objects
+              | select((.usage | type) == "object" and (.id | type) == "string" and .model != "<synthetic>")
+              | [.id, $t, (.usage | (.input_tokens // 0), (.cache_read_input_tokens // 0), (.cache_creation_input_tokens // 0), (.output_tokens // 0))] | @tsv' "$2" ;;
+    # Codex: a token_count event per call; its input_tokens include the cached part; the same total twice is one call
+    codex) jq -rR --arg f "$(basename "$2")" "$lt"' fromjson? | objects | select(.type == "event_msg") | (.timestamp // "" | tostring | lt) as $t | .payload | objects | select(.type == "token_count")
+              | .info | objects | select((.last_token_usage | type) == "object")
+              | [$f + ":" + (.total_token_usage.total_tokens // 0 | tostring), $t, (.last_token_usage | ((.input_tokens // 0) - (.cached_input_tokens // 0)), (.cached_input_tokens // 0), (.cache_write_input_tokens // 0), (.output_tokens // 0))] | @tsv' "$2" ;;
+  esac
+}
+
+token_calls() { # <index> -> the model calls of the seat's recorded sessions (token_extract lines); fails when the seat has no session file
+  local name=${S_NAME[$1]} kind=${S_KIND[$1]} id f c found=1 cache="$TEAM_DIR/seats/tokens"
+  while IFS= read -r id; do
+    [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || continue
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      found=0; c="$cache/$name-$(basename "$f").tsv"
+      if [ ! -f "$c" ] || [ "$f" -nt "$c" ]; then   # a session file is read again only after it grew
+        mkdir -p "$cache"
+        if token_extract "$kind" "$f" >"$c.$$" 2>/dev/null; then mv "$c.$$" "$c"; else rm -f "$c.$$"; continue; fi
+      fi
+      cat "$c"
+    done < <(token_files "$kind" "$id")
+  done < <(cat "$TEAM_DIR/seats/$name.sessions" "$TEAM_DIR/seats/$name.session" 2>/dev/null | sort -u)
+  return "$found"
+}
+
+# task \t seat \t calls \t input \t cache read \t cache write \t output [\t "?" when a part of the total is not measured]
+# task "*": everything in the seat's recorded sessions; seat "*": the task's total. A task's part of a seat is
+# what the seat's sessions hold between its DISPATCH and its next report. Not measured is "?", never 0 (020).
+token_stats_raw() {
+  local i n calls seats=""; n=$(seat_count)
+  { sed 's/^/E /' "$TEAM_DIR/events.log" 2>/dev/null || true
+    for ((i = 0; i < n; i++)); do
+      seats="$seats ${S_NAME[$i]}"
+      calls=$(token_calls "$i") || continue
+      printf 'S\t%s\n' "${S_NAME[$i]}"
+      [ -z "$calls" ] || printf '%s\n' "$calls" | awk -F'\t' -v s="${S_NAME[$i]}" '{ if (!($1 in l)) o[++n] = $1; l[$1] = $0 } END { for (i = 1; i <= n; i++) print "C\t" s "\t" l[o[i]] }'
+    done
+    printf 'Z\t%s\n' "$seats"
+  } | awk '
+    function shut(s, end) { nw++; ws[nw] = s; wt[nw] = ot[s]; wa[nw] = os[s]; wb[nw] = end
+      if (!(ot[s] in tseen)) { tseen[ot[s]] = 1; tord[++nt] = ot[s] }
+      if (!((ot[s], s) in pseen)) { pseen[ot[s], s] = 1; pn[ot[s]]++; ps[ot[s], pn[ot[s]]] = s }
+      delete ot[s] }
+    function line(task, seat, k, more) { printf "%s\t%s\t%d\t%d\t%d\t%d\t%d%s\n", task, seat, v[k, 1], v[k, 2], v[k, 3], v[k, 4], v[k, 5], more }
+    $1 == "E" { if ($2 !~ /^[0-9][0-9][0-9][0-9]-/) next
+      s = $4; now = $2 " " $3
+      if ($6 == "DISPATCH") { if (s in ot) shut(s, now); ot[s] = $5; os[s] = now }
+      else if (!(s in ot)) next
+      else if ($6 == "DISPATCH_FAILED" || $6 == "DISPATCH_NOT_STARTED") delete ot[s]
+      else if ($5 == ot[s] && $6 ~ /^(DONE|BLOCKED|PASS|FAIL|APPROVE|CHANGES|CONTRACT)$/) shut(s, now)
+      next }
+    !opened { opened = 1; for (s in ot) shut(s, "9999") }   # a task still open: until now
+    { split($0, a, "\t") }
+    a[1] == "S" { meas[a[2]] = 1 }
+    a[1] == "C" { s = a[2]   # a[3] is the key; the call belongs to the newest task window of the seat that holds its time
+      for (k = nw; k >= 1; k--) if (ws[k] == s && a[4] >= wa[k] && a[4] <= wb[k]) break
+      v[s, 1]++; for (j = 2; j <= 5; j++) v[s, j] += a[j + 3]
+      if (k) { p = wt[k] SUBSEP s; v[p, 1]++; for (j = 2; j <= 5; j++) v[p, j] += a[j + 3] } }
+    a[1] == "Z" { m = split(a[2], sn, " ")
+      for (i = 1; i <= m; i++) if (sn[i] in meas) line("*", sn[i], sn[i], ""); else printf "*\t%s\t?\t?\t?\t?\t?\n", sn[i]
+      for (t = 1; t <= nt; t++) { id = tord[t]; some = 0; miss = 0
+        for (j = 1; j <= 5; j++) v["*", j] = 0
+        for (i = 1; i <= pn[id]; i++) { s = ps[id, i]; p = id SUBSEP s
+          if ((s in meas) && v[p, 1] > 0) { some = 1; line(id, s, p, ""); for (j = 1; j <= 5; j++) v["*", j] += v[p, j] }
+          else { miss = 1; printf "%s\t%s\t?\t?\t?\t?\t?\n", id, s } }
+        if (some) line(id, "*", "*", (miss ? "\t?" : "")); else printf "%s\t*\t?\t?\t?\t?\t?\n", id } }'
+}
+
+cmd_tokens() {
+  find_repo; load_conf
+  say "Tokens from the seats' session files (numbers only). A task's part of a seat: from its dispatch to its report."
+  token_stats_raw | awk -F'\t' '
+    function row(a, b) { if ($3 == "?") printf "%-16s %-12s not measured\n", a, b
+      else printf "%-16s %-12s %7d %12d %12d %12d %12d%s\n", a, b, $3, $4, $5, $6, $7, ($8 == "?" ? "  + not measured" : "") }
+    function head(a, b) { printf "\n%-16s %-12s %7s %12s %12s %12s %12s\n", a, b, "calls", "input", "cache-read", "cache-write", "output" }
+    $1 == "*" { if (!h1++) head("seat", ""); row($2, "all"); next }
+    { if (!h2++) head("task", "seat"); row($1, ($2 == "*" ? "all" : $2)) }'
+}
+
 html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g' -e "s/'/\&#39;/g"; }
 
 md_html() { # minimal Markdown -> HTML: headings, lists, tables, code, bold, links
@@ -1628,8 +1734,9 @@ HEAD
     done
     echo '</table></div></div></section>'
 
-    echo '<section id=Cost><div class=card><h3>Cost per task</h3><p class=sub>Minutes from events.log. Claude and Codex 5-hour usage in percentage points, measured between dispatch and report when it was recorded; plan windows are shared by all seats, so this is an estimate, not exact tokens.</p><div class=tw><table><tr><th>Task</th><th>Seat minutes (dev + test + review)</th><th>Claude 5h points</th><th>Codex 5h points</th></tr>'
-    task_stats | awk -F'\t' '{ printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 == "?" ? "?" : ($12 > 0 ? $12 : "—")), ($13 == "?" ? "?" : ($13 > 0 ? $13 : "—")) }'
+    echo '<section id=Cost><div class=card><h3>Cost per task</h3><p class=sub>Minutes from events.log. Claude and Codex 5-hour usage in percentage points, measured between dispatch and report when it was recorded; plan windows are shared by all seats, so this is an estimate, not exact tokens. Tokens: input · cache read · cache write · output, from the session files of the seats between dispatch and report (squad tokens); "+ ?": the part of one seat is not measured.</p><div class=tw><table><tr><th>Task</th><th>Seat minutes (dev + test + review)</th><th>Claude 5h points</th><th>Codex 5h points</th><th>Tokens</th></tr>'
+    { token_stats_raw | awk -F'\t' '$1 != "*" && $2 == "*" { print "T\t" $1 "\t" ($3 == "?" ? "?" : $4 " · " $5 " · " $6 " · " $7 ($8 == "?" ? " + ?" : "")) }' | html_escape; task_stats; } \
+      | awk -F'\t' '$1 == "T" && NF == 3 && !body { tok[$2] = $3; next } { body = 1; printf "<tr><td>%s</td><td class=n>%d</td><td class=n>%s</td><td class=n>%s</td><td class=n>%s</td></tr>\n", $1, $4 + $5 + $6, ($12 == "?" ? "?" : ($12 > 0 ? $12 : "—")), ($13 == "?" ? "?" : ($13 > 0 ? $13 : "—")), ($1 in tok ? tok[$1] : "?") }'
     echo '</table></div></div></section>'
 
     echo '<section id=Events><div class=card><h3>Last 200 events</h3><pre>'
@@ -3072,7 +3179,8 @@ cmd_session_id() {
   local seat=${1:-} id
   id=$(jq -r '.session_id // empty' 2>/dev/null) || true
   [ -n "$seat" ] && [ -n "$id" ] || return 0
-  { find_repo && mkdir -p "$TEAM_DIR/seats" && printf '%s\n' "$id" >"$TEAM_DIR/seats/$seat.session"; } 2>/dev/null || true
+  { find_repo && mkdir -p "$TEAM_DIR/seats" && printf '%s\n' "$id" >"$TEAM_DIR/seats/$seat.session"
+    grep -qxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" 2>/dev/null || printf '%s\n' "$id" >>"$TEAM_DIR/seats/$seat.sessions"; } 2>/dev/null || true   # .sessions: every one, for 'squad tokens'
   return 0
 }
 
@@ -3082,6 +3190,7 @@ record_sessions() { # <agents json>: herdr knows each running seat's conversatio
   for ((i = 0; i < n; i++)); do
     id=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_session.value // empty][0] // empty' <<<"$1" 2>/dev/null || true)
     [ -n "$id" ] && [ "$id" != "$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null)" ] && printf '%s\n' "$id" >"$TEAM_DIR/seats/${S_NAME[$i]}.session"
+    [ -z "$id" ] || grep -qxF -- "$id" "$TEAM_DIR/seats/${S_NAME[$i]}.sessions" 2>/dev/null || printf '%s\n' "$id" >>"$TEAM_DIR/seats/${S_NAME[$i]}.sessions"
   done
   return 0
 }
@@ -3472,6 +3581,7 @@ case "$cmd" in
   feedback) cmd_feedback "$@" ;;
   _owner-filter) OWNER_MODE=${1:-visual}; owner_filter ;;   # internal: tests
   report)  cmd_report "$@" ;;
+  tokens)  cmd_tokens ;;
   session-id) cmd_session_id "$@" ;;
   permissions) cmd_permissions ;;
   -v|--version|version) say "squad $VERSION" ;;

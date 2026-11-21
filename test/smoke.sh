@@ -449,6 +449,64 @@ check "dispatch --escalate runs the fix on the stronger model" sh -c "MOCK_DYNAM
 reset_log; rm -f "$tmp/state"
 check "the next dispatch puts the seat back on its own model" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-100 >/dev/null && grep -q 'agent prompt dev-a /model claude-opus-5-5' '$MOCK_LOG'"
 
+# 027 · the round limit is in code: round 5 goes out, round 6 is refused and the owner is told once
+reset_log; rm -f "$tmp/state"; printf 'x\n' >.team/reports/T-R27-contract.md
+for r in 1 2 3 4; do printf 'VERDICT: CHANGES\n' >".team/reports/T-R27-review-$r.md"; done
+check "027: a dispatch of round 5 (the limit) goes out" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-R27
+printf 'VERDICT: CHANGES\n' >.team/reports/T-R27-review-5.md; reset_log; rm -f "$tmp/state"
+check "027: a dispatch of round 6 is refused with a message" sh -c "out=\$(MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-R27 2>&1); test \$? != 0 && printf '%s' \"\$out\" | grep -q 'T-R27 is at round 6: the round limit is 5'"
+check "027: the refusal is logged as ROUND_LIMIT" ev ' dev-a T-R27 ROUND_LIMIT round=6 limit=5$'
+check "027: nothing is sent to the seat" refuses log_has "agent prompt dev-a"
+check "027: the owner gets a notification that names the task and its review files" grep -q 'notification show squad: T-R27 reached the round limit --body .*T-R27-review-1.md.*T-R27-review-5.md' "$MOCK_LOG"
+MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-R27 >/dev/null 2>&1 || true
+check "027: a second refused dispatch sends no second notification" test "$(grep -c 'notification show squad: T-R27' "$MOCK_LOG")" = 1
+reset_log; rm -f "$tmp/state"; cp .team/team.conf "$tmp/conf27"; printf 'round_limit 6\n' >>.team/team.conf
+check "027: round_limit in team.conf moves the limit" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-R27
+check "027: round_limit needs a number" sh -c "printf 'round_limit many\n' >>.team/team.conf; ! '$squad' status >/dev/null 2>&1"
+cp "$tmp/conf27" .team/team.conf; reset_log; rm -f "$tmp/state"
+
+# 027 · squad tokens: numbers from the seats' session files (fixtures with invented numbers), per seat and per task
+( cd "$tmp" && "$squad" new proj27 >/dev/null 2>&1 ); cd "$tmp/proj27"
+printf 'seat %s\n' 'lead codex lead -' 'dev-a claude dev -' 'dev-b claude dev -' 'rev-sol codex reviewer dev-a' 'tester claude tester -' >.team/team.conf
+export CLAUDE_CONFIG_DIR="$tmp/home/.claude"
+mkdir -p "$CLAUDE_CONFIG_DIR/projects/-fixture-dev-a" "$CODEX_HOME/sessions/2026/11/20" .team/seats
+cp "$here/fixtures/sessions/claude-1.jsonl" "$CLAUDE_CONFIG_DIR/projects/-fixture-dev-a/aaaaaaaa-0000-4000-8000-000000000001.jsonl"
+cp "$here/fixtures/sessions/claude-2.jsonl" "$CLAUDE_CONFIG_DIR/projects/-fixture-dev-a/aaaaaaaa-0000-4000-8000-000000000002.jsonl"
+cp "$here/fixtures/sessions/codex-1.jsonl" "$CODEX_HOME/sessions/2026/11/20/rollout-2026-11-20T10-06-00-bbbbbbbb-0000-4000-8000-000000000001.jsonl"
+# a /clear starts a new session: the hook keeps every id of the seat, not only the newest
+printf '{"session_id":"aaaaaaaa-0000-4000-8000-000000000001"}' | "$squad" session-id dev-a
+printf '{"session_id":"aaaaaaaa-0000-4000-8000-000000000002"}' | "$squad" session-id dev-a
+printf 'bbbbbbbb-0000-4000-8000-000000000001\n' >.team/seats/rev-sol.session
+printf '%s\n' '2026-11-20 10:00:00 dev-a T-701 DISPATCH round=1' '2026-11-20 10:05:00 dev-a T-701 DONE' \
+  '2026-11-20 10:06:00 rev-sol T-701 DISPATCH round=1' '2026-11-20 10:09:00 rev-sol T-701 APPROVE' \
+  '2026-11-20 11:00:00 dev-a T-702 DISPATCH round=1' '2026-11-20 12:00:00 dev-a T-702 DONE' \
+  '2026-11-20 12:01:00 tester T-702 DISPATCH round=1' '2026-11-20 12:05:00 tester T-702 PASS' \
+  '2026-11-20 12:06:00 dev-b T-703 DISPATCH round=1' '2026-11-20 12:08:00 dev-b T-703 DONE' \
+  '2026-11-20 12:10:00 lead T-701 MERGE' '2026-11-20 12:10:00 lead T-702 MERGE' '2026-11-20 12:10:00 lead T-703 MERGE' >.team/events.log
+tok=$(TZ=UTC "$squad" tokens 2>&1 || true)
+check "027: tokens shows a Claude seat's calls and input, cache-read, cache-write and output tokens (one model call counted once)" grep -qE '^dev-a +all +4 +113 +3301 +241 +80$' <<<"$tok"
+check "027: tokens shows a task's part of a seat (dispatch to report)" grep -qE '^T-701 +dev-a +2 +105 +3000 +200 +70$' <<<"$tok"
+check "027: a later task of the same seat is read from its later session" grep -qE '^T-702 +dev-a +1 +7 +300 +40 +9$' <<<"$tok"
+check "027: a Codex seat shows its token counts when its session file holds them" grep -qE '^T-701 +rev-sol +2 +300 +1200 +0 +600$' <<<"$tok"
+check "027: a task's total is the sum of its seats" grep -qE '^T-701 +all +4 +405 +4200 +200 +670$' <<<"$tok"
+check "027: a seat with no session file shows 'not measured', not 0" sh -c "grep -qE '^lead +all +not measured\$' <<<\"\$1\" && grep -qE '^T-702 +tester +not measured\$' <<<\"\$1\"" _ "$tok"
+check "027: a task total with a part not measured says so" grep -qE '^T-702 +all +1 +7 +300 +40 +9 +\+ not measured$' <<<"$tok"
+check "027: tokens prints numbers only, no text from a session" refuses grep -qE 'fixture' <<<"$tok"
+TZ=UTC "$squad" report >/dev/null 2>&1 || true
+check "027: the report shows the tokens of a merged task" grep -q '<td>T-701</td>.*<td class=n>405 · 4200 · 200 · 670</td></tr>' .team/report.html
+check "027: the report marks a merged task with a part not measured" grep -q '<td>T-702</td>.*<td class=n>7 · 300 · 40 · 9 + ?</td></tr>' .team/report.html
+check "027: the report shows ? for a merged task with no measured tokens, never 0" grep -q '<td>T-703</td><td class=n>[0-9]*</td><td class=n>[^<]*</td><td class=n>[^<]*</td><td class=n>?</td></tr>' .team/report.html
+unset CLAUDE_CONFIG_DIR; cd "$tmp/proj4"
+
+# 027 · the templates: the class of a defect, correctness before style, consumers in the brief, the tests of the changed files
+T27="$here/../templates"
+check "027: a review finding names the class of the defect and the places (reviewer, lead)" sh -c "grep -q 'names the class of the defect' '$T27/roles/reviewer.md' && grep -q 'names the class of the defect' '$T27/roles/lead.md'"
+check "027: the dev fixes the class, not only the places named" grep -q 'Fix the class' "$T27/roles/dev.md"
+check "027: the reviewer checks correctness against the brief and skips style" grep -q 'correctness against the brief.*[Ss]kip style' "$T27/roles/reviewer.md"
+check "027: a brief lists the consumers of a changed part" grep -q 'Consumers' "$T27/roles/lead.md"
+check "027: a dev runs the tests of the changed files; the full suite runs only in the candidate" sh -c "grep -q 'tests of the files you changed' '$T27/roles/dev.md' && grep -q 'full suite runs only in the candidate' '$T27/roles/dev.md' && grep -q 'full suite runs only in the candidate' '$T27/PROTOCOL.md'"
+check "027: the round limit is named in the protocol as enforced by squad dispatch" grep -q 'squad dispatch. refuses a later round' "$T27/PROTOCOL.md"
+
 # 001 · squad merge and the ledger
 ( cd "$tmp/proj4-team/dev-a" && git switch -q -c task/T-100 team/integration && echo x >t100.txt && git add t100.txt && git commit -qm "T-100" )
 check "a task alone is not merged: it goes through a tested candidate (018)" refuses "$squad" merge T-100
@@ -663,7 +721,7 @@ check "the page has its seven tabs, To test first" sh -c "for t in To-test Decis
 check "the page shows each decision with its status and the GPT consult" sh -c "grep -q 'D-001' '$html' && grep -q 'open decision for the owner' '$html' && grep -q 'GPT consult (consult/1.md)' '$html'"
 check "the page shows the observer's now and suggestions" sh -c "grep -q 'T-500 waited 5 min for the tester' '$html' && grep -q 'Batch the tester queue' '$html'"
 check "the timeline has the task's minutes: total 90, dev 30, test 25, review 8" grep -qE '<tr><td>T-500</td><td>merged</td><td class=n>90</td><td class=n>30</td><td class=n>25</td><td class=n>8</td>' "$html"
-check "the cost tab sums the seat minutes and the Claude and Codex usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td><td class=n>3</td></tr>' "$html"
+check "the cost tab sums the seat minutes and the Claude and Codex usage points" grep -qE '<tr><td>T-500</td><td class=n>63</td><td class=n>6</td><td class=n>3</td><td class=n>\?</td></tr>' "$html"
 check "the live report shows the cost too" sh -c "printf q | '$squad' report --live | grep -qE 'T-500 +merged .*│ 6 · 3\$'"
 check "an event records Codex usage when Codex has data" sh -c "CODEX_HOME='$cx' '$squad' done dev-a T-303 BLOCKED >/dev/null; grep -E ' dev-a T-303 BLOCKED .* c=42/7' .team/events.log"
 check "the QA tab counts the tester's FAIL" grep -qE '<tr><td>T-500</td><td>[a-z]+</td><td class=n>[0-9]+</td><td class=n>0</td><td class=n>1</td>' "$html"
