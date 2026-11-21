@@ -18,7 +18,9 @@ task exists (report ranks 8, 10 and 11).
 ## Done when
 - [ ] `squad dispatch` of round `round_limit + 1` of a task (default limit 5, a `team.conf`
       setting) is refused with a message, a `ROUND_LIMIT` event is logged and V! gets one
-      notification that names the task and its review files.
+      notification that names the task and its review files; a task whose newest verdict
+      of the lead is APPROVE passes the limit (it goes back to its dev when its candidate
+      fails).
 - [ ] `squad tokens` prints, per seat and per task, the input, cache-read, cache-write and
       output token counts and the number of model calls, read from the seats' Claude Code
       session files (numbers only, no prompt text); a Codex seat shows its token counts
@@ -42,3 +44,4 @@ One smoke test per "Done when" item; the token test uses a fixture session file.
 ## Assumptions & open questions
 - Report decisions 9, 10 and 12: the recommended options. Decision 15 (which other hive
   practices move into the templates) stays open: V! approves them item by item.
+- V!, 21 Nov 2026: an approved task passes the limit (its candidate failed).

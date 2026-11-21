@@ -525,7 +525,7 @@ check "027: a review finding names the class of the defect and the places (revie
 check "027: the dev fixes the class, not only the places named" grep -q 'Fix the class' "$T27/roles/dev.md"
 check "027: the reviewer checks correctness against the brief and skips style" grep -q 'correctness against the brief.*[Ss]kip style' "$T27/roles/reviewer.md"
 check "027: a brief lists the consumers of a changed part" grep -q 'Consumers' "$T27/roles/lead.md"
-check "027: a dev runs the tests of the changed files; the full suite runs only in the candidate" sh -c "grep -q 'tests of the files you changed' '$T27/roles/dev.md' && grep -q 'full suite runs only in the candidate' '$T27/roles/dev.md' && grep -q 'full suite runs only in the candidate' '$T27/PROTOCOL.md'"
+check "027: a dev runs the tests of the changed files; the full suite runs only in the candidate" sh -c "grep -q 'tests of the files you changed' '$T27/roles/dev.md' && grep -q 'full suite runs only in the candidate' '$T27/roles/dev.md' && grep -q 'Never the full suite\.' '$T27/PROTOCOL.md'"
 check "027: the round limit is named in the protocol as enforced by squad dispatch" grep -q 'squad dispatch. refuses a later round' "$T27/PROTOCOL.md"
 
 # 001 · squad merge and the ledger
@@ -1379,8 +1379,10 @@ rm -rf .team/receipts/CANDIDATE-8 .team/tasks/CANDIDATE-8.*
 cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-4.md
 printf 'echo one\ntest -f %s/flaky || { : >%s/flaky; echo first-run failure; exit 7; }\necho three\n' "$tmp" "$tmp" >.team/tasks/CANDIDATE-4.checks
 "$squad" candidate CANDIDATE-4 T-912 >/dev/null 2>&1 || true
+echo old >.team/receipts/CANDIDATE-4   # a plain-file receipt from before ticket 026: a new run replaces it with the folder
 frc=0; "$squad" heavy tester CANDIDATE-4 --batch .team/tasks/CANDIDATE-4.checks >/dev/null 2>&1 || frc=$?
 R=.team/receipts/CANDIDATE-4
+check "026: a new run replaces an old plain-file receipt with the folder" test -f $R/receipt
 check "026: a batch step that fails once and passes alone does not fail the batch" sh -c "[ $frc = 0 ] && grep -qx 'step2=0' $R/receipt && grep -qx 'steps=3' $R/receipt"
 check "026: the receipt names the flaky step" grep -qx 'flakes=2' $R/receipt
 check "026: a FLAKE event is logged" grep -q ' tester CANDIDATE-4 FLAKE step=2/3 ' .team/events.log
@@ -1408,9 +1410,12 @@ git -C "$TW" checkout -q -- . 2>/dev/null || true
 check "026: a stale PASS receipt is removed when the same candidate is run again" sh -c "[ '$r6' = 1 ] && test ! -e .team/receipts/CANDIDATE-6/receipt"
 cp .team/reports/CANDIDATE-1-test.md .team/reports/CANDIDATE-4-test.md
 check "026: the tester's PASS takes the receipt of a batch with a flake" "$squad" "done" tester CANDIDATE-4 PASS
-# a receipt from before ticket 026 is the file itself (.team/receipts/CANDIDATE-<N>)
-cp .team/receipts/CANDIDATE-4/receipt "$tmp/r4"; rm -rf .team/receipts/CANDIDATE-4; cp "$tmp/r4" .team/receipts/CANDIDATE-4
-check "026: and squad merge takes it, also with a plain-file receipt from before the change" "$squad" merge CANDIDATE-4
+# a plain-file receipt from before ticket 026 (.team/receipts/CANDIDATE-<N>) is no longer read (V!, 21 Nov 2026)
+mv .team/receipts/CANDIDATE-4 "$tmp/r4"; cp "$tmp/r4/receipt" .team/receipts/CANDIDATE-4
+"$squad" merge CANDIDATE-4 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "026: squad merge refuses a plain-file receipt from before the change" sh -c "[ $crc != 0 ] && grep -q 'run the checks of CANDIDATE-4 again' '$tmp/cout'"
+rm -f .team/receipts/CANDIDATE-4; mv "$tmp/r4" .team/receipts/CANDIDATE-4
+check "026: and squad merge takes the folder receipt of a batch with a flake" "$squad" merge CANDIDATE-4
 # the wait for the lock is on record
 "$squad" heavy tester T-926 -- sleep 3 >/dev/null 2>&1 &
 for _ in $(seq 1 100); do grep -q ' tester T-926 HEAVY_START ' .team/events.log && break; sleep 0.1; done

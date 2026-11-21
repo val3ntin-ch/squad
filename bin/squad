@@ -1111,8 +1111,8 @@ lead_verdict() { # <task> -> "APPROVE <head>" or "CHANGES <head>": the lead's ne
 
 candidate_check() { # <CANDIDATE-n>: its record, the runner's receipt and today's brief and check list agree; prints why not
   local c=$1 rec="$TEAM_DIR/candidates/$1" rcp="$TEAM_DIR/receipts/$1/receipt" n k r want
-  [ -d "$TEAM_DIR/receipts/$1" ] || rcp="$TEAM_DIR/receipts/$1"   # a receipt from before ticket 026 is the file itself
   [ -f "$rec" ] || { echo "$c was not built with 'squad candidate' (no record)."; return 1; }
+  [ ! -f "$TEAM_DIR/receipts/$1" ] || { echo "the receipt of $c is a plain file from before squad kept the receipt in a folder: run the checks of $c again."; return 1; }
   [ -f "$rcp" ] || { echo "no receipt for $c: the tester's 'squad heavy <tester> $c --batch .team/tasks/$c.checks' writes it."; return 1; }
   kv() { sed -n "s/^$1=//p" "$2" | head -1; }
   [ "$(kv build "$rcp")" = "$(plan_hash "$rec")" ] || { echo "the receipt is from another build of $c: run it again."; return 1; }

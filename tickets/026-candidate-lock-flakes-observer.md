@@ -11,8 +11,9 @@ observer passes ran while the team had no work (report ranks 4, 5, 6 and 9).
 ## Scope
 - In: `squad candidate`, `squad heavy` (the lock, `--batch`), the candidate receipt, the
   observer timer in `squad watch`, the smoke tests, README, `templates/PROTOCOL.md`.
-- Out: `squad merge` and its checks (unchanged); a second test lane; any change to which
-  checks a team runs.
+- Out: `squad merge` and the conditions it checks (unchanged; the receipt's place and two
+  messages changed: V!, 21 Nov 2026); a second test lane; any change to which checks a
+  team runs.
 
 ## Done when
 - [ ] `squad candidate <N>` refuses a number that already has a candidate commit or a
@@ -45,3 +46,4 @@ One smoke test per "Done when" item.
   Option (c) (accept only when the step also passes on the integration branch with the
   same test count) is not built: open decision for V!.
 - Report decision 14: option (b).
+- V!, 21 Nov 2026: old plain-file receipts are no longer read.
