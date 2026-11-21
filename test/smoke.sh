@@ -342,6 +342,13 @@ check "a run over the time limit is stopped (exit 124) and frees the lock" sh -c
 printf 'echo one\nsh -c "exit 3"\n# a comment\necho three\n' >"$tmp/batch.cmds"
 brc=0; "$squad" heavy tester CANDIDATE-90 --batch "$tmp/batch.cmds" >/dev/null 2>&1 || brc=$?
 check "a batch runs every command of a candidate under one lock, each with its own start and end" sh -c "grep -c ' tester CANDIDATE-90 HEAVY_START .*step=[123]/3' .team/events.log | grep -qx 4 && grep -q ' tester CANDIDATE-90 HEAVY_END rc=3 .* step=2/3' .team/events.log && test $brc = 3"
+# the lock's time budget has room for the flake rule: each step can run twice (026)
+printf 'readlink %s/lock >%s/lockval\ntrue\n' "$HV" "$tmp" >"$tmp/batch2.cmds"
+SQUAD_HEAVY_LIMIT_SECONDS=50 "$squad" heavy tester CANDIDATE-92 --batch "$tmp/batch2.cmds" >/dev/null 2>&1 || true
+check "026: the lock's time budget of a batch covers a second run of each step (flake_rerun)" grep -qE ':200$' "$tmp/lockval"
+printf 'sleep 20\necho after\n' >"$tmp/batch3.cmds"
+brc=0; SQUAD_HEAVY_LIMIT_SECONDS=1 "$squad" heavy tester CANDIDATE-93 --batch "$tmp/batch3.cmds" >/dev/null 2>&1 || brc=$?
+check "026: a batch step stopped by the time limit (exit 124) is not run again" sh -c "test $brc = 124 && grep -c ' tester CANDIDATE-93 HEAVY_START ' .team/events.log | grep -qx 1"
 check "--limit gives a candidate step its own time limit" sh -c "'$squad' heavy tester CANDIDATE-91 --limit 30 -- true && grep -q ' tester CANDIDATE-91 HEAVY_START .*limit=30m' .team/events.log"
 check "--limit is refused for a dev" refuses "$squad" heavy dev-a T-6 --limit 30 -- true
 check "squad timed stops a command that hangs (exit 124)" sh -c "start=\$(date +%s); '$squad' timed 1 -- sleep 30 >/dev/null 2>&1; rc=\$?; test \$rc = 124 && test \$(( \$(date +%s) - start )) -lt 15"
@@ -464,6 +471,12 @@ reset_log; rm -f "$tmp/state"; cp .team/team.conf "$tmp/conf27"; printf 'round_l
 check "027: round_limit in team.conf moves the limit" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-R27
 check "027: round_limit needs a number" sh -c "printf 'round_limit many\n' >>.team/team.conf; ! '$squad' status >/dev/null 2>&1"
 cp "$tmp/conf27" .team/team.conf; reset_log; rm -f "$tmp/state"
+# a task the lead approved at the limit goes back to its dev when its candidate fails
+printf '2026-11-21 08:00:00 lead T-R27 APPROVE head=x\n' >>.team/events.log
+check "027: a task whose newest verdict of the lead is APPROVE is sent past the limit (a failed candidate)" env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-R27
+printf '2026-11-21 08:10:00 lead T-R27 CHANGES head=x\n' >>.team/events.log; reset_log; rm -f "$tmp/state"
+check "027: after the lead's CHANGES the limit holds again" refuses env MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-R27
+reset_log; rm -f "$tmp/state"
 
 # 027 · squad tokens: numbers from the seats' session files (fixtures with invented numbers), per seat and per task
 ( cd "$tmp" && "$squad" new proj27 >/dev/null 2>&1 ); cd "$tmp/proj27"
@@ -489,13 +502,21 @@ check "027: tokens shows a task's part of a seat (dispatch to report)" grep -qE 
 check "027: a later task of the same seat is read from its later session" grep -qE '^T-702 +dev-a +1 +7 +300 +40 +9$' <<<"$tok"
 check "027: a Codex seat shows its token counts when its session file holds them" grep -qE '^T-701 +rev-sol +2 +300 +1200 +0 +600$' <<<"$tok"
 check "027: a task's total is the sum of its seats" grep -qE '^T-701 +all +4 +405 +4200 +200 +670$' <<<"$tok"
-check "027: a seat with no session file shows 'not measured', not 0" sh -c "grep -qE '^lead +all +not measured\$' <<<\"\$1\" && grep -qE '^T-702 +tester +not measured\$' <<<\"\$1\"" _ "$tok"
+check "027: a seat with no session file shows 'not measured', not 0" bash -c "grep -qE '^lead +all +not measured\$' <<<\"\$1\" && grep -qE '^T-702 +tester +not measured\$' <<<\"\$1\"" _ "$tok"
 check "027: a task total with a part not measured says so" grep -qE '^T-702 +all +1 +7 +300 +40 +9 +\+ not measured$' <<<"$tok"
 check "027: tokens prints numbers only, no text from a session" refuses grep -qE 'fixture' <<<"$tok"
 TZ=UTC "$squad" report >/dev/null 2>&1 || true
 check "027: the report shows the tokens of a merged task" grep -q '<td>T-701</td>.*<td class=n>405 · 4200 · 200 · 670</td></tr>' .team/report.html
 check "027: the report marks a merged task with a part not measured" grep -q '<td>T-702</td>.*<td class=n>7 · 300 · 40 · 9 + ?</td></tr>' .team/report.html
 check "027: the report shows ? for a merged task with no measured tokens, never 0" grep -q '<td>T-703</td><td class=n>[0-9]*</td><td class=n>[^<]*</td><td class=n>[^<]*</td><td class=n>?</td></tr>' .team/report.html
+# a session file with no token records is no measurement; lines added in the second of the cache write are read
+cp "$here/fixtures/sessions/codex-empty.jsonl" "$CODEX_HOME/sessions/2026/11/20/rollout-2026-11-20T09-00-00-cccccccc-0000-4000-8000-000000000001.jsonl"
+printf 'cccccccc-0000-4000-8000-000000000001\n' >.team/seats/lead.session
+printf '%s\n' '{"type":"assistant","timestamp":"2026-11-20T12:40:00.000Z","message":{"id":"msg_fixture_5","model":"fixture-model","content":[],"usage":{"input_tokens":2,"cache_creation_input_tokens":2,"cache_read_input_tokens":2,"output_tokens":2}}}' >>"$CLAUDE_CONFIG_DIR/projects/-fixture-dev-a/aaaaaaaa-0000-4000-8000-000000000002.jsonl"
+touch .team/seats/tokens/*.tsv   # the cache is not older than the session file (bash 3.2 compares whole seconds)
+tok=$(TZ=UTC "$squad" tokens 2>&1 || true)
+check "027: a Codex session file with no token records shows 'not measured', not 0" grep -qE '^lead +all +not measured$' <<<"$tok"
+check "027: lines added to a session file in the second of the cache write are read" grep -qE '^dev-a +all +5 +115 +3303 +243 +82$' <<<"$tok"
 unset CLAUDE_CONFIG_DIR; cd "$tmp/proj4"
 
 # 027 · the templates: the class of a defect, correctness before style, consumers in the brief, the tests of the changed files
@@ -1302,7 +1323,11 @@ check "018: the PASS names the build it is for" grep -qE ' tester CANDIDATE-1 PA
 # promotion: integration becomes exactly the tested commit, unless something moved
 printf 'echo changed\n' >>.team/tasks/CANDIDATE-1.checks
 check "018: a check list changed after the run stops the promotion" refuses "$squad" merge CANDIDATE-1
+check "026: the refusal for a changed check list says to build a new candidate with the next free number" sh -c "'$squad' merge CANDIDATE-1 2>&1 | grep -q 'check list of CANDIDATE-1 changed.*build a new candidate with the next free number'"
 sed -i.bak '$d' .team/tasks/CANDIDATE-1.checks; rm -f .team/tasks/CANDIDATE-1.checks.bak
+cp .team/tasks/CANDIDATE-1.md "$tmp/brief.keep"; echo more >>.team/tasks/CANDIDATE-1.md
+check "026: the refusal for a changed brief says the same" sh -c "'$squad' merge CANDIDATE-1 2>&1 | grep -q 'brief of CANDIDATE-1 changed.*build a new candidate with the next free number'"
+cp "$tmp/brief.keep" .team/tasks/CANDIDATE-1.md
 h910=$(git -C "$DB" rev-parse task/T-910)
 git -C "$DB" switch -q task/T-910 && echo d >>"$DB/t910.txt" && git -C "$DB" commit -qam "T-910 late change" && git -C "$DB" switch -q --detach
 check "018: a task changed after the candidate stops the promotion" refuses "$squad" merge CANDIDATE-1
@@ -1373,9 +1398,19 @@ check "026: with flake_rerun 0 a failed step fails the batch" sh -c "[ $frc = 7 
 check "026: the step logs are kept after a failure" sh -c "grep -qx 'first-run failure' $R/step-2.log && grep -qx three $R/step-3.log"
 check "026: a receipt with a failed step is no PASS" refuses "$squad" "done" tester CANDIDATE-5 PASS
 check "026: flake_rerun takes only 0 or 1" sh -c "printf 'flake_rerun 2\n' >>.team/team.conf; '$squad' heavy --status >/dev/null 2>&1; rc=\$?; sed -i.bak '/^flake_rerun /d' .team/team.conf; rm -f .team/team.conf.bak; [ \$rc != 0 ]"
+# a candidate that is run again starts clean: the PASS receipt of the first run does not stay
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-6.md; printf 'test ! -f %s/again || echo x >>t912.txt\n' "$tmp" >.team/tasks/CANDIDATE-6.checks
+"$squad" candidate CANDIDATE-6 T-912 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-6 --batch .team/tasks/CANDIDATE-6.checks >/dev/null 2>&1 || true
+r6=$(grep -cx 'step1=0' .team/receipts/CANDIDATE-6/receipt 2>/dev/null || true); : >"$tmp/again"
+"$squad" heavy tester CANDIDATE-6 --batch .team/tasks/CANDIDATE-6.checks >/dev/null 2>&1 || true   # this run changes a tracked file: it writes no receipt
+git -C "$TW" checkout -q -- . 2>/dev/null || true
+check "026: a stale PASS receipt is removed when the same candidate is run again" sh -c "[ '$r6' = 1 ] && test ! -e .team/receipts/CANDIDATE-6/receipt"
 cp .team/reports/CANDIDATE-1-test.md .team/reports/CANDIDATE-4-test.md
 check "026: the tester's PASS takes the receipt of a batch with a flake" "$squad" "done" tester CANDIDATE-4 PASS
-check "026: and squad merge takes it" "$squad" merge CANDIDATE-4
+# a receipt from before ticket 026 is the file itself (.team/receipts/CANDIDATE-<N>)
+cp .team/receipts/CANDIDATE-4/receipt "$tmp/r4"; rm -rf .team/receipts/CANDIDATE-4; cp "$tmp/r4" .team/receipts/CANDIDATE-4
+check "026: and squad merge takes it, also with a plain-file receipt from before the change" "$squad" merge CANDIDATE-4
 # the wait for the lock is on record
 "$squad" heavy tester T-926 -- sleep 3 >/dev/null 2>&1 &
 for _ in $(seq 1 100); do grep -q ' tester T-926 HEAVY_START ' .team/events.log && break; sleep 0.1; done
@@ -1390,7 +1425,7 @@ obs() { reset_log; MOCK_DYNAMIC=1 "$squad" watch --once --observe >/dev/null 2>&
 printf '2026-11-21 09:00:00 dev-a T-950 DISPATCH round=1\n2026-11-21 09:30:00 lead T-950 MERGE abc\n' >.team/events.log
 echo 0 >$O/.last-pass
 check "026: no observer pass while every dispatched task is merged" refuses obs
-echo $(( $(date +%s) - 7200 )) >$O/.last-pass; grep -cE ' (MERGE|STALLED|DEAD|LOGIN|BLOCKED|RESTART|FAIL)( |$)' .team/events.log >$O/.last-marks || true
+echo $(( $(date +%s) - 7200 )) >$O/.last-pass; rm -f $O/.last-marks   # the MERGE above is no "new event" for the next pass
 check "026: no timed pass either while no task is open" refuses obs
 printf '2026-11-21 10:00:00 dev-a T-951 DISPATCH round=1\n' >>.team/events.log
 check "026: the first event after that starts the timer again, from that moment" refuses obs
@@ -1404,6 +1439,13 @@ check "026: a candidate run in progress counts as work" obs
 rm -f "$HV"/lock
 printf '2026-11-21 10:30:00 tester CANDIDATE-9 HEAVY_END rc=0 1m step=1/2\n' >>.team/events.log; echo 0 >$O/.last-pass
 check "026: a candidate run that ended does not" refuses obs
+# a dispatch that failed or did not start closes what that attempt opened, and nothing else
+printf '2026-11-21 10:40:00 dev-a T-952 DISPATCH round=1\n2026-11-21 10:40:20 dev-a T-952 DISPATCH_NOT_STARTED no running turn in 20s\n' >>.team/events.log; echo 0 >$O/.last-pass
+check "026: a dispatch that did not start is no open task for the observer" refuses obs
+printf '2026-11-21 10:41:00 dev-a T-953 DISPATCH round=1\n2026-11-21 10:41:05 dev-a T-953 DISPATCH_FAILED could not send\n' >>.team/events.log; echo 0 >$O/.last-pass
+check "026: a dispatch that failed is no open task for the observer" refuses obs
+printf '2026-11-21 10:42:00 dev-b T-954 DISPATCH round=1\n2026-11-21 10:42:10 dev-a T-954 DISPATCH round=1\n2026-11-21 10:42:15 dev-a T-954 DISPATCH_FAILED could not send\n' >>.team/events.log; echo 0 >$O/.last-pass
+check "026: a failed dispatch does not close another seat's dispatch of the same task" obs
 cat .team/events.log >>"$tmp/events.keep"; mv "$tmp/events.keep" .team/events.log
 echo
 echo "$pass passed, $fail failed"

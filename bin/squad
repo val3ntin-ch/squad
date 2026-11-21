@@ -551,6 +551,8 @@ cmd_heavy() {
 
   local snap_name="" limit=${SQUAD_HEAVY_LIMIT_SECONDS:-$((minutes * 60))}  # seconds override: tests
   local nsteps=1; [ -z "$batch" ] || nsteps=${#batchv[@]}
+  # the lock's time budget (heavy_clear_stale): with the flake rule each batch step can run twice
+  local budget=$((limit * nsteps)); [ -z "$batch" ] || [ "$FLAKE_RERUN" != 1 ] || budget=$((budget * 2))
 
   local q="$HEAVY_DIR/queue" waited=0 start rc wait0 wsecs=""
   wait0=$(date +%s)
@@ -561,7 +563,7 @@ cmd_heavy() {
   : >"$HV_ME"
   trap 'heavy_release' EXIT
   trap 'heavy_release; exit 130' INT TERM HUP
-  HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$((limit * nsteps))"
+  HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$budget"
   while :; do
     heavy_clear_stale
     # a waiter whose queue entry is gone would wait forever (hive observer, pass 64): stop and say so
@@ -569,7 +571,7 @@ cmd_heavy() {
     if [ "$(ls "$q" | head -1)" = "$(basename "$HV_ME")" ] && ln -s "$HV_VAL" "$HV_LOCK" 2>/dev/null; then break; fi
     [ "$waited" = 1 ] || { say "squad heavy: waiting ($(heavy_status | tr '\n' ' '))"; waited=1; log_event "$seat" "$task" HEAVY_WAIT "$(heavy_status | tr '\n' ' ')"; }
     sleep "$HEAVY_POLL"
-    HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$((limit * nsteps))"
+    HV_VAL="$seat@$(basename "$REPO"):$$:$(date +%s):$budget"
   done
   rm -f "$HV_ME"; HV_ME=""
   [ "$waited" = 0 ] || wsecs=$(( $(date +%s) - wait0 ))   # the wait is on record (ticket 026)
@@ -876,7 +878,9 @@ cmd_dispatch() {
   [ "$started" = 1 ] || plan_gate "$task"
   round=$(review_round "$task")
   # the round limit: a later round is refused; the owner is told once per task and limit (027)
-  if [ "$round" -gt "$REVIEW_ROUNDS" ]; then
+  # (not a task whose newest verdict of the lead is APPROVE: it goes back to its dev when its candidate fails)
+  local lv; lv=$(lead_verdict "$task")
+  if [ "$round" -gt "$REVIEW_ROUNDS" ] && [ "${lv%% *}" != APPROVE ]; then
     if ! grep -qE " $task ROUND_LIMIT .*limit=$REVIEW_ROUNDS\$" "$TEAM_DIR/events.log" 2>/dev/null; then
       log_event "$seat" "$task" ROUND_LIMIT "round=$round limit=$REVIEW_ROUNDS"
       v_notify "squad: $task reached the round limit" "Round $round, the limit is $REVIEW_ROUNDS. Reviews: $(cd "$TEAM_DIR/reports" && echo "$task"-review-*.md) in $TEAM_DIR/reports. More rounds: round_limit in team.conf."
@@ -1114,9 +1118,9 @@ candidate_check() { # <CANDIDATE-n>: its record, the runner's receipt and today'
   [ "$(kv build "$rcp")" = "$(plan_hash "$rec")" ] || { echo "the receipt is from another build of $c: run it again."; return 1; }
   [ "$(kv sha "$rcp")" = "$(kv sha "$rec")" ] || { echo "the receipt is for another commit than $c."; return 1; }
   [ -f "$TEAM_DIR/tasks/$c.checks" ] && [ "$(kv checks "$rec")" = "$(plan_hash "$TEAM_DIR/tasks/$c.checks")" ] && [ "$(kv checks "$rcp")" = "$(kv checks "$rec")" ] \
-    || { echo "the check list of $c changed after it was built or run: build and run it again."; return 1; }
+    || { echo "the check list of $c changed after it was built or run: build a new candidate with the next free number."; return 1; }
   [ -f "$TEAM_DIR/tasks/$c.md" ] && [ "$(kv brief "$rec")" = "$(plan_hash "$TEAM_DIR/tasks/$c.md")" ] \
-    || { echo "the brief of $c changed after it was built: build and run it again."; return 1; }
+    || { echo "the brief of $c changed after it was built: build a new candidate with the next free number."; return 1; }
   want=$(check_lines "$TEAM_DIR/tasks/$c.checks" | wc -l | tr -d ' ')
   n=$(kv steps "$rcp"); [ "${n:-0}" = "$want" ] || { echo "the receipt has ${n:-0} of $want checks: the run did not finish."; return 1; }
   for ((k = 1; k <= n; k++)); do r=$(kv "step$k" "$rcp"); [ "$r" = 0 ] || { echo "check $k of $c failed (exit ${r:-?})."; return 1; }; done
@@ -1548,15 +1552,17 @@ token_extract() { # <kind> <file> -> a line per model call: key, local time, inp
 }
 
 token_calls() { # <index> -> the model calls of the seat's recorded sessions (token_extract lines); fails when the seat has no session file
-  local name=${S_NAME[$1]} kind=${S_KIND[$1]} id f c found=1 cache="$TEAM_DIR/seats/tokens"
+  local name=${S_NAME[$1]} kind=${S_KIND[$1]} id f c sz found=1 cache="$TEAM_DIR/seats/tokens"
   while IFS= read -r id; do
     [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || continue
     while IFS= read -r f; do
       [ -f "$f" ] || continue
-      found=0; c="$cache/$name-$(basename "$f").tsv"
-      if [ ! -f "$c" ] || [ "$f" -nt "$c" ]; then   # a session file is read again only after it grew
+      found=0; c="$cache/$name-$(basename "$f").tsv"; sz=$(wc -c <"$f" | tr -d ' ')
+      # a session file is read again only after it grew: its size is kept beside the cache
+      # (the file times alone lose lines added in the second of the cache write: bash 3.2 compares whole seconds)
+      if [ ! -f "$c" ] || [ "$f" -nt "$c" ] || [ "$sz" != "$(cat "$c.size" 2>/dev/null)" ]; then
         mkdir -p "$cache"
-        if token_extract "$kind" "$f" >"$c.$$" 2>/dev/null; then mv "$c.$$" "$c"; else rm -f "$c.$$"; continue; fi
+        if token_extract "$kind" "$f" >"$c.$$" 2>/dev/null; then mv "$c.$$" "$c"; echo "$sz" >"$c.size"; else rm -f "$c.$$"; continue; fi
       fi
       cat "$c"
     done < <(token_files "$kind" "$id")
@@ -1573,8 +1579,9 @@ token_stats_raw() {
     for ((i = 0; i < n; i++)); do
       seats="$seats ${S_NAME[$i]}"
       calls=$(token_calls "$i") || continue
+      [ -n "$calls" ] || continue   # a session file with no usage records is no measurement
       printf 'S\t%s\n' "${S_NAME[$i]}"
-      [ -z "$calls" ] || printf '%s\n' "$calls" | awk -F'\t' -v s="${S_NAME[$i]}" '{ if (!($1 in l)) o[++n] = $1; l[$1] = $0 } END { for (i = 1; i <= n; i++) print "C\t" s "\t" l[o[i]] }'
+      printf '%s\n' "$calls" | awk -F'\t' -v s="${S_NAME[$i]}" '{ if (!($1 in l)) o[++n] = $1; l[$1] = $0 } END { for (i = 1; i <= n; i++) print "C\t" s "\t" l[o[i]] }'
     done
     printf 'Z\t%s\n' "$seats"
   } | awk '
@@ -2410,12 +2417,15 @@ watch_once() {
 observer_index() { local i n; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = observer ] && { echo "$i"; return 0; }; done; return 1; }
 
 team_has_work() { # a task is open (a dispatch with no merge or withdrawal after it), or a candidate run holds the lock
+  # a dispatch that failed or did not start (the seat's next event) closes what that attempt opened, not another seat's dispatch
   local lock=0; [ ! -L "$HEAVY_DIR/lock" ] || lock=1
   awk -v lock="$lock" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ {
+      a = att[$3]; att[$3] = ""
       if ($5 == "HEAVY_START") { run[$3] = ($4 ~ /^CANDIDATE-/); next }
       if ($5 == "HEAVY_END") { run[$3] = 0; next }
       if ($4 ~ /^CANDIDATE-/) next
-      if ($5 == "DISPATCH") open[$4] = 1
+      if ($5 == "DISPATCH") { open[$4]++; att[$3] = $4 }
+      else if (($5 == "DISPATCH_FAILED" || $5 == "DISPATCH_NOT_STARTED") && a == $4 && ($4 in open)) { if (--open[$4] < 1) delete open[$4] }
       else if ($5 == "MERGE" || $5 == "WITHDRAWN") delete open[$4] }
     END { for (t in open) exit 0; if (lock) for (s in run) if (run[s]) exit 0; exit 1 }' "$TEAM_DIR/events.log" 2>/dev/null
 }
@@ -2430,8 +2440,9 @@ observe_tick() {
   now=$(date +%s)
   last=$(cat "$dir/.last-pass" 2>/dev/null || echo 0)
   # no pass while no task is open (ticket 026); the timer starts again at the first event that opens work
-  if ! team_has_work; then [ "$last" = 0 ] || echo "$now" >"$dir/.last-pass"; return 0; fi
   marks=$(grep -cE ' (MERGE|STALLED|DEAD|LOGIN|BLOCKED|RESTART|FAIL)( |$)' "$TEAM_DIR/events.log" 2>/dev/null || true)
+  # (the marks too: the merge that closed the last task is no "new event" for the next pass)
+  if ! team_has_work; then [ "$last" = 0 ] || { echo "$now" >"$dir/.last-pass"; echo "${marks:-0}" >"$dir/.last-marks"; }; return 0; fi
   prev=$(cat "$dir/.last-marks" 2>/dev/null || echo 0)
   if [ "$last" = 0 ]; then due="first pass"
   elif [ "${marks:-0}" != "$prev" ]; then due="new events"
