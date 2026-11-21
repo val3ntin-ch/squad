@@ -23,7 +23,7 @@ squad up                      # from any terminal: opens this repository's herdr
 
 The strongest model sits where one mistake costs the most: the plan and the decisions. The cheapest models do what needs no judgement. The reviewer is another vendor on purpose: a model that did not write the brief or the code sees what the authors do not.
 
-**No seat waits on a prompt nobody answers.** The reviewer runs Codex with `-a never`: an action that would need approval is refused, never asked, and the reviewer notes what it could not check. The observer runs Claude with `--permission-mode dontAsk` and a short allow list (its own folder, read commands). Devs and the tester keep your own permission settings. `squad dispatch` sends a task only when the seat shows its prompt and no menu, and checks that the turn started.
+**No seat waits on a prompt nobody answers.** The reviewer runs Codex with `-a never`: an action that would need approval is refused, never asked, and the reviewer notes what it could not check. The observer runs Claude with `--permission-mode dontAsk` and a short allow list (its own folder, read commands). Devs and the tester keep your own permission settings. `squad dispatch` sends a task only when the seat shows its prompt and no menu, and checks that the turn started. A dispatch to a busy seat waits in a queue and clears nothing. A seat is busy while it works, while its own heavy run is alive, while it waits in the heavy queue, and while it waits for its own background work (a Claude seat's Stop hook records this at each turn end, and the reading counts for one hour).
 
 ## Install
 
@@ -50,7 +50,7 @@ Each repository's team runs in its own herdr session, named after the repository
 
 - `squad up` from a terminal outside herdr starts or attaches that session and starts the team in it. Its start log is `.team/up.log`.
 - `squad up` inside herdr works in that repository's session and refuses another repository's session, with the command to switch.
-- **Resume.** After a restart (herdr, the Mac), `squad up` brings every seat back with its own conversation: Claude seats with `--resume <their session>`, Codex seats with `codex resume <their session>`. A Claude seat records its current session at every start, `/clear` and compaction (a SessionStart hook passed with `--settings`). The lead and the observer then get one line: check the heavy lock, the queue and uncommitted work. `squad up --fresh` starts new conversations instead.
+- **Resume.** After a restart (herdr, the Mac), `squad up` brings every seat back with its own conversation: Claude seats with `--resume <their session>`, Codex seats with `codex resume <their session>`. A Claude seat records its current session at every start, `/clear` and compaction (a SessionStart hook passed with `--settings`; the same file has the Stop hook that records the seat's background work). The lead and the observer then get one line: check the heavy lock, the queue and uncommitted work. `squad up --fresh` starts new conversations instead.
 
 ## Commands
 
@@ -76,7 +76,7 @@ Each repository's team runs in its own herdr session, named after the repository
 
 Used by the agents (you do not need them): `squad dispatch`, `squad done`, `squad heavy`, `squad candidate`, `squad merge`, `squad notify`, `squad consult`, `squad decisions`, `squad git`, `squad herdr`, `squad session-id`.
 
-`init`, `new` and `config` accept `--preset NAME`.
+`init`, `new` and `config` accept `--preset NAME`. `-h` or `--help` as the first argument of any command prints the help and does nothing else (`squad herdr` passes it on to herdr).
 
 ## Defining a team
 
@@ -117,7 +117,7 @@ setup pnpm install --frozen-lockfile
 - **observer_deep_model** is the model for an observer pass after a loss over 30 minutes.
 - **consult** is the command for the lead's second opinion on a real issue.
 - **heavy_timeout** is how many minutes one heavy run may hold the lock (one lock for the whole machine, in `~/.cache/squad/heavy`: teams of several repositories share it); **heavy_timeout_dev** is the shorter limit for a dev's run. A dev's run needs a clean worktree (`squad heavy` refuses uncommitted changes), runs in a snapshot of that commit (`<repo>-team/.runs/<seat>`) so the dev can keep working, and every run is its own process group, so a stop ends all of it.
-- **heavy_silent_minutes** (5): a heavy run whose output and CPU time do not move for this long is stopped as hung (`HUNG`), as CI systems stop a step with no output; the hard limit stays. **idle_minutes** (5): a dev with no task for this long is told to the lead once.
+- **heavy_silent_minutes** (5): a heavy run whose output and CPU time do not move for this long is stopped as hung (`HUNG`), as CI systems stop a step with no output; the hard limit stays. **idle_minutes** (5): a dev with no task for this long is told to the lead once. After 30 minutes with no task, while `TASKS.md` has tasks that are not merged, you get one herdr notification: the seat, the minutes and the number of open tasks.
 - **sample_percent** is the share of the tests a dev's `squad heavy … --sample -- <runner> --shard={shard}` run takes: one fixed shard per seat and task (Anthropic's `--fast` idea).
 - **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by the owner`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you. Your name in squad's messages and the agents' role files is "the owner"; set `owner_name <name>` in `.team/team.conf` (for example `owner_name Alice`) to have them use your name.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
@@ -164,7 +164,7 @@ Switch tabs with herdr's `prefix 1`…`9` (or `prefix n` / `prefix p`); `prefix 
  lock: tester since 10:05: pnpm turbo run test
 ```
 
-Every seat shows ● working, ○ idle, ! blocked or · off, and its trouble in red (a seat whose own heavy run is alive is busy, never stalled): `dead` (its agent is gone), `login` (a sign-in error), `blocked` (a prompt or a question), `stalled` (an open task and no work for `stall_minutes`). Each trouble is written to `events.log` and told to the lead once.
+Every seat shows ● working, ○ idle, ! blocked or · off, and its trouble in red (a seat whose own heavy run is alive, or that waits in the heavy queue or for its own background work, is busy: never stalled, never idle): `dead` (its agent is gone), `login` (a sign-in error), `blocked` (a prompt or a question), `stalled` (an open task and no work for `stall_minutes`). Each trouble is written to `events.log` and told to the lead once.
 
 The watch also acts on each seat by itself, also while other seats work. squad never answers a seat's question or permission prompt; it only tells you (a herdr notification, and an operating-system notification with `notify_os on`):
 

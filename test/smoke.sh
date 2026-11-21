@@ -1477,6 +1477,89 @@ printf 'notify_os maybe\n' >>.team/team.conf
 check "025: notify_os is on or off" refuses "$squad" status
 cp "$tmp/sup.conf" .team/team.conf
 check "025: the lead's role file says when to run squad wait-owner" grep -qF "$squad_abs wait-owner" .team/roles/lead.md
+# ---- 024 · a dispatch never interrupts a busy seat; a dev is never idle for long ----------
+cd "$tmp/proj4"; rm -f "$tmp/state" "$HV/lock" .team/seats/*.heartbeat .team/seats/*.background; rm -rf .team/observer/.seen .team/observer/.alerted .team/observer/.idle
+# -h and --help print the help and change nothing (the lead's report: 'squad plan --help' wrote a draft plan)
+snap24() { { find .team "$tmp/proj4-team" -maxdepth 1 | sort; find .team -type f ! -name '*.log' ! -name 'herdr.sock' -exec cksum {} + | sort; ls "$tmp"; git worktree list; } | cksum; }
+cp .team/PLAN.md "$tmp/plan.keep24"; rm -f .team/PLAN.md   # a team from before the planner: no PLAN.md, dispatches go on
+reset_log; s0=$(snap24); p0=$(grep -c ' PLAN_START ' .team/events.log || true)
+hout=$("$squad" plan --help 2>&1) || true
+check "024: squad plan --help prints the help" grep -q '^Usage:' <<<"$hout"
+check "024: squad plan --help writes no plan and starts no planner" sh -c "test ! -e .team/PLAN.md && test \"\$(grep -c ' PLAN_START ' .team/events.log)\" = '$p0' && ! grep -qv '^herdr agent list' '$MOCK_LOG'"
+hbad=0
+for c in new init up brief status clean down config doctor presets "done" usage watch git heavy update-conf dispatch merge candidate notify consult plan ui-setup timed start-seat decisions feedback report permissions; do
+  for h in -h --help; do o=$("$squad" "$c" "$h" 2>/dev/null </dev/null) || hbad=$((hbad + 1)); grep -q '^Usage:' <<<"$o" || hbad=$((hbad + 1)); done
+done
+check "024: -h and --help print the help on every command" test "$hbad" = 0
+check "024: and they change no file and send herdr nothing" sh -c "test '$(snap24)' = '$s0' && ! grep -qv '^herdr agent list' '$MOCK_LOG' && test \"\$(grep -c ' PLAN_START ' .team/events.log)\" = '$p0'"
+check "024: squad plan refuses an option it does not know, and writes no plan" sh -c "! '$squad' plan --aprove >/dev/null 2>&1 && ! '$squad' plan 'a goal' --help >/dev/null 2>&1 && test ! -e .team/PLAN.md"
+cp "$tmp/plan.keep24" .team/PLAN.md
+
+# the Stop hook: a Claude seat's settings call 'squad seat-stop <seat>', which records its background tasks
+check "024: a seat's settings carry the Stop hook beside the SessionStart hook" sh -c "jq -e '(.hooks.Stop[0].hooks[0].command | test(\"/squad. seat-stop .dev-a.\$\")) and (.hooks.SessionStart[0].hooks[0].command | test(\"session-id\"))' .team/seats/dev-a.settings.json"
+printf '{"session_id":"s1","background_tasks":[{"id":"b1","type":"shell"}],"session_crons":[]}' | "$squad" seat-stop dev-a || true
+check "024: the Stop hook records a seat that waits for its own background work" grep -qE '^1 [0-9]+$' .team/seats/dev-a.background
+# a dispatch to a seat that herdr shows idle, while it waits for its own work: queued, nothing cleared
+waits24() { # <task>: the task is queued for dev-a and, 4 s later, dev-a got no prompt at all
+  local o; o=$(MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a "$1" 2>&1) || return 1
+  grep -q "is busy: $1 waits" <<<"$o" || return 1
+  sleep 4
+  grep -q " dev-a $1 DISPATCH_QUEUED" .team/events.log && ! grep -q " dev-a $1 DISPATCH round" .team/events.log && ! grep -q 'agent prompt dev-a' "$MOCK_LOG"
+}
+sent24() { local _; for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do grep -q " dev-a $1 DISPATCH round" .team/events.log && return 0; sleep 1; done; return 1; }
+for t in T-920 T-921 T-922; do printf 'x\n' >".team/reports/$t-contract.md"; done
+reset_log; echo idle >"$tmp/state"
+check "024: a dispatch to a seat that waits on background work stays queued; nothing is cleared" waits24 T-920
+printf '{"session_id":"s1","background_tasks":[]}' | "$squad" seat-stop dev-a || true
+check "024: it is sent once the seat's turn ends with no background work" sent24 T-920
+sleep 3; reset_log; echo idle >"$tmp/state"; mkdir -p "$HV/queue"; : >"$HV/queue/999999999990-$$-dev-a@proj4"
+check "024: a dispatch to a seat that waits in the heavy lock queue stays queued; nothing is cleared" waits24 T-921
+rm -f "$HV/queue/999999999990-$$-dev-a@proj4"
+check "024: it is sent once the seat left the queue" sent24 T-921
+sleep 3; reset_log; echo idle >"$tmp/state"
+git -C "$tmp/proj4-team/dev-a" add -A; git -C "$tmp/proj4-team/dev-a" commit -qm "wip 024" || true   # a dev's run needs a clean worktree
+"$squad" heavy dev-a T-922 -- sleep 12 >/dev/null 2>&1 & hv24=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -L "$HV/lock" ] && break; sleep 0.5; done
+check "024: a dispatch to a seat whose heavy run is alive stays queued; nothing is cleared" waits24 T-922
+check "024: the run was still alive then" kill -0 "$hv24"
+wait "$hv24" || true
+check "024: it is sent once the run ended" sent24 T-922
+sleep 3; rm -f "$tmp/state"
+# the same seat gets no STALLED and no IDLE alarm
+agents_c='{"result":{"agents":[{"name":"dev-c","agent_status":"idle"},{"name":"lead","agent_status":"working"}]}}'
+printf '%s dev-c T-923 DISPATCH round=1\n' "$(now)" >>.team/events.log
+stall24() { rm -rf .team/observer/.alerted; mkdir -p .team/observer/.seen; echo $(( $(date +%s) - 3600 )) >.team/observer/.seen/dev-c; MOCK_AGENTS="$agents_c" "$squad" watch --once 2>/dev/null | grep -q 'dev-c ○ stalled'; }
+: >"$HV/queue/999999999991-$$-dev-c@proj4"
+check "024: a seat that waits in the heavy lock queue is not stalled" refuses stall24
+: >"$HV/queue/999999999992-999999-dev-c@proj4"; rm -f "$HV/queue/999999999991-$$-dev-c@proj4"
+check "024: a queue place whose process is gone does not count: the seat is stalled" stall24
+rm -f "$HV/queue/999999999992-999999-dev-c@proj4"; : >"$HV/queue/999999999993-$$-dev-c@other"
+check "024: nor does a seat of the same name in another team" stall24
+rm -f "$HV/queue/999999999993-$$-dev-c@other"
+printf '{"background_tasks":[{"id":"b1"}]}' | "$squad" seat-stop dev-c || true
+check "024: a seat that waits for its own background work is not stalled" refuses stall24
+printf '2 %s\n' $(( $(date +%s) - 3660 )) >.team/seats/dev-c.background
+check "024: a Stop hook reading older than an hour does not count" stall24
+printf '{"background_tasks":[{"id":"b1"}]}' | "$squad" seat-stop dev-c || true; printf '{"session_id":"s2","source":"clear"}' | "$squad" session-id dev-c
+check "024: a new or cleared session forgets the reading" sh -c "test ! -e .team/seats/dev-c.background && grep -qx s2 .team/seats/dev-c.session"
+printf '%s dev-c T-923 DONE\n' "$(now)" >>.team/events.log
+cp .team/TASKS.md "$tmp/tasks.keep24"
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | merged | - |\n| T-002 | b | - | todo | - |\n| T-003 | c | - | todo | T-002 |\n' >.team/TASKS.md
+idle24() { MOCK_AGENTS="$agents_c" "$squad" watch --once >/dev/null 2>&1 || true; }   # dev-c: idle, no open task
+rm -rf .team/observer/.idle; mkdir -p .team/observer/.idle; echo $(( $(date +%s) - 1860 )) >.team/observer/.idle/dev-c
+: >"$HV/queue/999999999994-$$-dev-c@proj4"; reset_log; i0=$(grep -c ' dev-c - IDLE ' .team/events.log || true); idle24
+check "024: a dev with no task that waits in the heavy lock queue gets no IDLE alarm" sh -c "! grep -q 'dev-c has had no task' '$MOCK_LOG' && ! grep -q 'notification show squad: dev-c' '$MOCK_LOG' && test \"\$(grep -c ' dev-c - IDLE ' .team/events.log)\" = '$i0'"
+rm -f "$HV/queue/999999999994-$$-dev-c@proj4"
+# no task for 30 min with open tasks: the owner gets one notification, after the lead was told
+echo $(( $(date +%s) - 600 )) >.team/observer/.idle/dev-c; reset_log; idle24
+check "024: at 5 min the lead is told, the owner is not" sh -c "grep -q 'agent prompt lead \[squad\] dev-c has had no task for 10 min' '$MOCK_LOG' && ! grep -q 'notification show squad: dev-c' '$MOCK_LOG'"
+echo $(( $(date +%s) - 1860 )) >.team/observer/.idle/dev-c; reset_log; idle24; idle24
+check "024: at 30 min the owner gets one notification: the seat, the minutes, the open tasks" sh -c "test \"\$(grep -c 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 2 open task(s)' '$MOCK_LOG')\" = 1 && ! grep -q 'agent prompt lead \[squad\] dev-c has had no task' '$MOCK_LOG'"
+check "024: and events.log has the line" grep -q ' dev-c - IDLE no task for 31 min, 2 open task(s): the owner is told' .team/events.log
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | merged | - |\n' >.team/TASKS.md
+rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
+check "024: with no open task the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
+cp "$tmp/tasks.keep24" .team/TASKS.md; rm -rf .team/observer/.idle
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
