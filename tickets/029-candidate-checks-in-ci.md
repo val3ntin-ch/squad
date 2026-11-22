@@ -31,7 +31,8 @@ price page, 21 Nov 2026: Linux 2-core $0.006 a minute; estimate of the minutes).
 - [ ] `test/smoke.sh` passes, with a test for each item above that fails before the change.
 
 ## Plan
-- `gh run list --branch "$TEAM_BASE" --event schedule --limit 1 --json …`, then
+- `gh run list --workflow "$NIGHTLY_WORKFLOW" --event schedule --limit 1 --json …` (no `--branch`: GitHub records a
+  scheduled run under the default branch, whatever ref the workflow checks out), then
   `gh run view <id> --json jobs`; a stand-in `gh` in the smoke tests.
 - A setting `nightly_workflow <file name>` (empty: off).
 

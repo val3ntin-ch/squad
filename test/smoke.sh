@@ -2375,15 +2375,69 @@ cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-3.md; printf 'true\n' >.team
 printf 'RESULT: FAIL\n' >.team/reports/CANDIDATE-3-test.md
 check "028: FAIL --task works for a candidate that has no receipt" sh -c "MOCK_AGENTS='$ag28' '$squad' 'done' tester CANDIDATE-3 FAIL --task T-3 >/dev/null 2>&1 && grep -q ' tester CANDIDATE-3 CANDIDATE_FAIL task=T-3\$' .team/events.log"
 check "028: and the rebuild names the receipt folder when no step log is on record" sh -c "'$squad' candidate CANDIDATE-4 --from CANDIDATE-3 --without T-3 >/dev/null 2>&1 && grep -q ' lead T-3 SENT_BACK from=CANDIDATE-3 log=$tmp/b28/.team/receipts/CANDIDATE-3\$' .team/events.log"
+# review findings: the rebuild carries the commits of the earlier candidate; a dependent task; a refused rebuild leaves nothing
+task28() { # <n> <start point>: task/T-<n> with one commit, done by dev-a and approved by the lead
+  git -C "$DA" switch -q -c "task/T-$1" "$2" && echo "$1" >"$DA/t$1.txt" && git -C "$DA" add "t$1.txt" && git -C "$DA" commit -qm "T-$1"
+  printf '%s dev-a T-%s DISPATCH round=1\n%s dev-a T-%s DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>.team/events.log
+  printf 'x\n' >".team/reports/T-$1-review-1.md"; "$squad" "done" lead "T-$1" APPROVE >/dev/null 2>&1 || true
+}
+task28 5 team/integration; task28 6 team/integration; task28 7 task/T-5; task28 8 team/integration   # T-7 is branched from T-5
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-5.md; printf 'true\n' >.team/tasks/CANDIDATE-5.checks
+"$squad" candidate CANDIDATE-5 T-5 T-6 T-7 T-8 >/dev/null 2>&1 || true
+free28() { ! test -e ".team/candidates/$1" && ! git -C "$I" rev-parse -q --verify "candidate/$1" >/dev/null; }   # <CANDIDATE-n>: the number is not used
+"$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-5 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: a rebuild is refused when a kept task was branched from the task left out; the message names both tasks and the second --without" sh -c "[ $crc != 0 ] && grep -q 'T-7 was branched from T-5.*--without T-7' '$tmp/cout'"
+check "028: and that refusal uses no number and logs nothing" sh -c "! test -e .team/candidates/CANDIDATE-6 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-6 && ! grep -q ' SENT_BACK from=CANDIDATE-5' .team/events.log"
+t8=$(git -C "$I" rev-parse task/T-8)
+printf '%s lead T-8 CHANGES head=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$t8" >>.team/events.log
+check "028: a rebuild with a kept task that is not approved is refused" refuses "$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-6
+check "028: a refused rebuild leaves no copied brief and no copied check list" sh -c "! test -e .team/tasks/CANDIDATE-6.md && ! test -e .team/tasks/CANDIDATE-6.checks"
+"$squad" candidate CANDIDATE-6 T-6 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: so a plain candidate of that number still asks for its brief" sh -c "[ $crc != 0 ] && grep -q 'brief first' '$tmp/cout'"
+printf '# CANDIDATE-6\n## Acceptance\n| # | Check |\n|---|---|\n| 1 | the lead wrote this |\n' >.team/tasks/CANDIDATE-6.md
+"$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-6 >/dev/null 2>&1 || true
+check "028: a refused rebuild keeps a brief that the lead wrote" sh -c "grep -q 'the lead wrote this' .team/tasks/CANDIDATE-6.md && ! test -e .team/tasks/CANDIDATE-6.checks"
+rm -f .team/tasks/CANDIDATE-6.md
+printf '%s lead T-8 APPROVE head=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$t8" >>.team/events.log
+"$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-5 --without T-7 >/dev/null 2>&1 && crc=0 || crc=$?
+c28=$(git -C "$I" rev-parse -q --verify candidate/CANDIDATE-6 || echo none)
+check "028: with the dependent task left out too, the candidate is built and holds no commit of either" sh -c "[ $crc = 0 ] && grep -q ' lead CANDIDATE-6 CANDIDATE .*tasks=T-6 T-8\$' .team/events.log && git -C '$I' merge-base --is-ancestor task/T-6 $c28 && ! git -C '$I' merge-base --is-ancestor task/T-5 $c28 && ! git -C '$I' merge-base --is-ancestor task/T-7 $c28"
+check "028: a built rebuild keeps its copied brief and check list" test -f .team/tasks/CANDIDATE-6.md -a -f .team/tasks/CANDIDATE-6.checks
+check "028: the dependent task may be left out alone (the task it was branched from stays)" sh -c "'$squad' candidate CANDIDATE-7 --from CANDIDATE-5 --without T-7 >/dev/null 2>&1 && grep -q ' lead CANDIDATE-7 CANDIDATE .*tasks=T-5 T-6 T-8\$' .team/events.log"
+old6=$(git -C "$I" rev-parse task/T-6)
+git -C "$DA" switch -q task/T-6 && echo more >>"$DA/t6.txt" && git -C "$DA" commit -qam "T-6 again"; "$squad" "done" lead T-6 APPROVE >/dev/null 2>&1 || true
+new6=$(git -C "$I" rev-parse task/T-6)
+"$squad" candidate CANDIDATE-8 --from CANDIDATE-5 --without T-8 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: a kept task with a newer approved commit than the earlier candidate carried is refused; the message names the task and both commits" sh -c "[ $crc != 0 ] && [ $old6 != $new6 ] && grep -q 'T-6 .*$old6.*$new6' '$tmp/cout'"
+check "028: and that refusal uses no number and leaves no copy" sh -c "! test -e .team/candidates/CANDIDATE-8 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-8 && ! test -e .team/tasks/CANDIDATE-8.md && ! test -e .team/tasks/CANDIDATE-8.checks"
+grep -v '^task=' .team/candidates/CANDIDATE-5 >"$tmp/rec5"; cp "$tmp/rec5" .team/candidates/CANDIDATE-5   # a record from before squad kept each task's commit
+"$squad" candidate CANDIDATE-8 --from CANDIDATE-5 --without T-8 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: an earlier candidate with no record of its commits: today's approved commits are used, and squad says so" sh -c "[ $crc = 0 ] && grep -q 'no record of its tasks. commits' '$tmp/cout' && git -C '$I' merge-base --is-ancestor $new6 \$(git -C '$I' rev-parse candidate/CANDIDATE-8)"
+# the dev's seat shows that its task was sent back
+cp .team/events.log "$tmp/events.keep"
+printf '2026-01-01 09:00:00 dev-b T-173 DISPATCH round=1\n2026-01-01 09:05:00 dev-b T-173 DONE\n2026-01-01 09:06:00 lead T-173 APPROVE\n2026-01-01 09:10:00 lead T-173 SENT_BACK from=CANDIDATE-71\n' >.team/events.log
+rep28=$(printf q | MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle"},{"name":"dev-b","agent_status":"idle"}]}}' "$squad" report --live 2>/dev/null || true)
+check "028: the seat of a task that was sent back shows SENT BACK, not APPROVED" grep -qE '^  . dev-b +dev +SENT BACK +T-173' <<<"$rep28"
+cp "$tmp/events.keep" .team/events.log
 check "028: the lead's and the tester's role files name the two commands" sh -c "grep -qF -- '--from CANDIDATE-<n> --without <ID>' .team/roles/lead.md && grep -qF -- 'FAIL --task <ID>' .team/roles/tester.md"
 
 # ---- 029 · the full suite once a night: squad reads the night's result -----------------
 cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >>"$MOCK_LOG"
+# GH_SLEEP: every call takes this many seconds (a gh that hangs); GH_VIEW_SLEEP: "run view" takes this many seconds
+# GH_MODE: fail (exit 1), garbage (an answer that is not JSON), ratelimit (GitHub's rate-limit error)
+[ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
+case "${GH_MODE:-}" in
+  fail) exit 1 ;;
+  garbage) echo '<html>502 Bad Gateway</html>'; exit 0 ;;
+  ratelimit) echo 'HTTP 403: API rate limit exceeded for user ID 1.' >&2; exit 1 ;;
+esac
+# like GitHub: a scheduled run belongs to the default branch (main), whatever ref the workflow checks out
+branch=""; prev=""; for a in "$@"; do [ "$prev" != --branch ] || branch=$a; prev=$a; done
 case "$1 $2" in
-  "run list") if [ -f "${GH_RUNS:-}" ]; then cat "$GH_RUNS"; else echo '[]'; fi ;;
-  "run view") cat "$GH_JOBS" ;;
+  "run list") if [ -f "${GH_RUNS:-}" ] && { [ -z "$branch" ] || [ "$branch" = main ]; }; then cat "$GH_RUNS"; else echo '[]'; fi ;;
+  "run view") [ -z "${GH_VIEW_SLEEP:-}" ] || sleep "$GH_VIEW_SLEEP"; cat "$GH_JOBS" ;;
 esac
 EOF
 chmod +x "$tmp/bin/gh"
@@ -2406,19 +2460,21 @@ check "029: with no gh, squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] &
 SQUAD_GH=gh-is-not-installed nwatch
 check "029: and the watch stays silent" silent
 rm -f "$GH_RUNS"; reset_log; night
-check "029: with no scheduled run, squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q 'no scheduled run of nightly.yml on team/integration' '$tmp/nout'"
-check "029: it asks for the newest scheduled run of the integration branch" log_has "gh run list --workflow nightly.yml --branch team/integration --event schedule --limit 1 --json databaseId,headSha,conclusion,status,createdAt,url"
+check "029: with no scheduled run, squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q 'no scheduled run of nightly.yml yet' '$tmp/nout'"
+check "029: it asks for the newest scheduled run of the workflow" log_has "gh run list --workflow nightly.yml --event schedule --limit 1 --json databaseId,headSha,conclusion,status,createdAt,url"
 nwatch
 check "029: and the watch stays silent" silent
 gh_run 76 "" in_progress; reset_log; night; nwatch
 check "029: a run that has not ended is shown" sh -c "[ $nrc = 0 ] && grep -q 'in_progress' '$tmp/nout'"
 check "029: and it is not logged, and nobody is told" silent
 gh_run 77 failure; reset_log; night
-check "029: squad nightly prints the date, the commit, the result and the failed jobs with their URLs" sh -c "[ $nrc = 0 ] && grep -q '2026-11-22T02:00:00Z.*abc123def456.*FAIL.*https://github.test/o/r/actions/runs/77' '$tmp/nout' && grep -q 'storybook.*https://github.test/job/2' '$tmp/nout' && ! grep -q 'unit' '$tmp/nout'"
+check "029: squad nightly prints the date, the result and the failed jobs with their URLs" sh -c "[ $nrc = 0 ] && grep -q '2026-11-22T02:00:00Z.*FAIL.*https://github.test/o/r/actions/runs/77' '$tmp/nout' && grep -q 'storybook.*https://github.test/job/2' '$tmp/nout' && ! grep -q 'unit' '$tmp/nout'"
+check "029: the run is found with the integration branch not the default branch: no gh call names a branch" refuses grep -q -- '^gh .*--branch' "$MOCK_LOG"
+check "029: the run's commit is shown as the workflow's commit, and the lead and the owner are not given it as the tested commit" sh -c "grep -q 'workflow commit abc123def456' '$tmp/nout' && ! grep -E 'agent prompt lead|notification show' '$MOCK_LOG' | grep -q abc123"
 check "029: a failed run tells the lead and the owner once" told 1
 check "029: the lead's line names the failed job and its URL" grep -q 'agent prompt lead \[squad\] The nightly run.*storybook https://github.test/job/2' "$MOCK_LOG"
 night; nwatch
-check "029: one NIGHTLY event per run, also when the command and the watch read it again" sh -c "[ \$(grep -c ' lead - NIGHTLY FAIL run=77 sha=abc123def4567890 ' .team/events.log) = 1 ] && [ \$(grep -c ' NIGHTLY ' .team/events.log) = 1 ] && grep -q 'FAIL' '$tmp/nout'"
+check "029: one NIGHTLY event per run, also when the command and the watch read it again" sh -c "[ \$(grep -c ' lead - NIGHTLY FAIL run=77 workflow_commit=abc123def4567890 ' .team/events.log) = 1 ] && [ \$(grep -c ' NIGHTLY ' .team/events.log) = 1 ] && grep -q 'FAIL' '$tmp/nout'"
 check "029: and the lead and the owner are not told again" told 1
 gh_run 78 failure; reset_log; nwatch; nwatch
 check "029: the watch checks a new scheduled run once" nightly_events "FAIL run=78 " 1
@@ -2433,6 +2489,31 @@ printf '2026-01-01 10:00:00 lead T-172 CHANGES head=x\n%s lead - NIGHTLY PASS ru
 check "029: a nightly result is no team event: a stall is still told" grep -q ' lead - STALLED .*T-172 CHANGES' .team/events.log
 cp "$tmp/events.keep" .team/events.log; rm -rf .team/observer/.watchdog
 check "029: the role files and PROTOCOL describe the fast gate and the nightly full run" sh -c "grep -qi 'fast gate' .team/roles/lead.md && grep -q 'squad nightly' .team/roles/lead.md && grep -qi 'fast gate' .team/roles/tester.md && grep -qi 'nightly' .team/roles/tester.md && grep -q 'The fast gate and the nightly full run' .team/PROTOCOL.md"
+# review findings: two callers at once, a gh that hangs, a gh that fails, a lead that shows a dialog
+gh_run 82 failure; reset_log
+( export GH_VIEW_SLEEP=2; night ) & ( export GH_VIEW_SLEEP=2; night ) & ( export GH_VIEW_SLEEP=2; nwatch ) & wait   # all three read the run before one of them records it
+check "029: two callers that read the same new run at once log it once" nightly_events "FAIL run=82 " 1
+check "029: and the lead and the owner are told once" told 1
+quiet() { told 0 && [ "$(grep -c ' lead - NIGHTLY ' .team/events.log)" = "$nev" ]; }   # nobody was told, and no new NIGHTLY event since $nev was read
+gh_run 83 failure; reset_log; t0=$(date +%s); nev=$(grep -c ' lead - NIGHTLY ' .team/events.log)
+export GH_SLEEP=30 SQUAD_GH_LIMIT=1; night; nwatch; unset GH_SLEEP SQUAD_GH_LIMIT
+check "029: a gh that hangs is stopped at the limit: squad nightly says so and exits 0, and the watch goes on" sh -c "[ $nrc = 0 ] && [ $(( $(date +%s) - t0 )) -lt 25 ] && grep -q 'no answer in 1 s' '$tmp/nout'"
+check "029: and nothing is logged, and nobody is told" quiet
+check "029: and no gh is left running" refuses pgrep -f "$tmp/bin/gh"
+for m in fail garbage ratelimit; do
+  reset_log; export GH_MODE=$m; night; nwatch; unset GH_MODE
+  case "$m" in fail) want='gh could not list the runs of nightly.yml' ;; garbage) want='not a list of runs' ;; *) want='API rate limit exceeded' ;; esac
+  check "029: gh answers with '$m': squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q '$want' '$tmp/nout'"
+  check "029: gh answers with '$m': the watch stays silent" quiet
+done
+reset_log; nwatch
+check "029: after those failures the watch still reads the run when gh answers again" nightly_events "FAIL run=83 " 1
+gh_run 84 failure; reset_log
+SQUAD_NIGHTLY_POLL=0 MOCK_AGENTS="$ag28" MOCK_PANE_TEXT=$(cat "$longq") "$squad" watch --once >/dev/null 2>&1 || true
+check "029: a failed night while the lead shows a dialog: nothing is typed into the lead; the event and the owner's notification are there" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && grep -q ' lead - NIGHTLY FAIL run=84 ' .team/events.log && [ \$(grep -c 'notification show squad: the nightly run failed' '$MOCK_LOG') = 1 ]"
+nwatch; nwatch
+check "029: the lead gets the line once when the dialog is gone" told 1
+check "029: the README says that GitHub starts a scheduled workflow only from the default branch, and that the workflow prints the tested commit" sh -c "grep -q 'only from the default branch' '$here/../README.md' && grep -q 'tested commit' '$here/../README.md' && ! grep -q -- '--branch' '$here/../README.md'"
 check "029: the README lists the command, the setting and a workflow example" sh -c "grep -q 'squad nightly' '$here/../README.md' && grep -q 'nightly_workflow' '$here/../README.md' && grep -q 'schedule:' '$here/../README.md'"
 check "029: the usage text lists squad nightly" sh -c "'$squad' help 2>&1 | grep -q 'squad nightly'"
 echo

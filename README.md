@@ -68,7 +68,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
-| `squad nightly` | Shows the newest scheduled run of the full suite on GitHub for the integration branch: its date, commit, result, and the failed jobs with their URLs. It needs `gh` and the `nightly_workflow` setting; without them, or with no run yet, it says so and does nothing else. See "The fast gate and the nightly full run". |
+| `squad nightly` | Shows the newest scheduled run of the full suite on GitHub (the workflow that `nightly_workflow` names): its date, result, and the failed jobs with their URLs. The commit it prints is the workflow's commit on the default branch, not the commit the suite tested. It needs `gh` and the `nightly_workflow` setting; without them, or with no run yet, it says so and does nothing else. See "The fast gate and the nightly full run". |
 | `squad wait-owner "<what>"` | The lead's command when the team can only wait for you: you get a notification now and a reminder every `owner_reminder_hours`; the stall alarm is silent meanwhile. `squad wait-owner --done` or a new dispatch ends the wait. |
 | `squad feedback "<text>"` | Your feedback after testing: saved in `.team/FEEDBACK.md`, logged, sent to the lead, who turns it into a task or a decision. When the lead shows a dialog the command says that the line is held; `squad watch` sends it when the lead is free. |
 | `squad update-conf` | Adds the settings and seats a new squad version needs to `.team/team.conf` and says what it added. `squad up` and `squad init` run it; a file that has everything is left alone. |
@@ -225,11 +225,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: team/integration   # the team's integration branch
+      - run: echo "Tested commit $(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"   # the tested commit, in the run's summary
       - run: npm ci
       - run: npm test             # the full suite
 ```
 
-Then `nightly_workflow nightly.yml` in `.team/team.conf`. `squad nightly` prints the newest scheduled run and its failed jobs; the lead makes a fix task for each failure.
+GitHub starts a scheduled workflow only from the default branch: the workflow file must be on the default branch (for example `main`), also when it checks out and tests the integration branch. GitHub records each scheduled run under the default branch too, so squad finds the run by its workflow and not by a branch, and the commit GitHub gives for the run is the default branch's commit. The workflow should print the tested commit itself, in a job name or in the run's summary, as the example does.
+
+Then `nightly_workflow nightly.yml` in `.team/team.conf`. `squad nightly` prints the newest scheduled run and its failed jobs; the lead makes a fix task for each failure. A `gh` call that does not answer in 30 seconds is stopped; `squad nightly` says so, and the watch asks again at its next check.
 
 | File in `.team/` | Purpose |
 |---|---|
