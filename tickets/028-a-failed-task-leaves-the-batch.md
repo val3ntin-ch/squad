@@ -47,4 +47,4 @@ Two reviewers (GPT and Claude) on the full diff, findings fixed with tests; one 
 | The receipt names the failed step, its exit code and its log; `FAIL --task <ID>` records the task | PASS | smoke "028: the receipt of a failed candidate names the failed step…", "028: the tester's FAIL records the task…"; real trial 6 (check 1) |
 | `squad candidate … --from … --without <ID>` builds the next candidate in one command | PASS | smoke "028: one command builds the next candidate…"; real trial 6 (check 2: built, checks passed, merged) |
 | The task left out is open for its dev again; the others need no new review | PASS | smoke "028: the task that was left out is sent back, with the step log", "028: the other tasks need no new review"; real trial 6 (the task was dispatched again, not refused by the round limit) |
-| `test/smoke.sh` passes | PASS | 940 passed, 0 failed (bash 5 and bash 3.2) |
+| `test/smoke.sh` passes | PASS | 951 passed, 0 failed (bash 5 and bash 3.2) |

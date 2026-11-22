@@ -52,4 +52,4 @@ Two reviewers (GPT and Claude) on the full diff, findings fixed with tests; one 
 | The watch checks once per new run; FAIL: one line to the lead and one notification; PASS: the event only | PASS (the PASS path on stand-ins only) | smoke "029: the watch checks a new scheduled run once", "029: on FAIL the lead gets one line…"; real trial 6 (check 6, FAIL path) |
 | No `gh`, no workflow or no run: says so, exits 0, the watch stays silent | PASS | smoke "029: with no gh…", "029: with no scheduled run…"; real trial 6 (no remote, unknown workflow, no setting) |
 | The role files and PROTOCOL describe the fast gate and the nightly run | PASS | smoke "029: the role files and PROTOCOL describe the fast gate and the nightly full run" |
-| `test/smoke.sh` passes | PASS | 940 passed, 0 failed (bash 5 and bash 3.2) |
+| `test/smoke.sh` passes | PASS | 951 passed, 0 failed (bash 5 and bash 3.2) |
