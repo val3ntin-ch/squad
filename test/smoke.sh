@@ -13,6 +13,8 @@ mkdir -p "$tmp/bin" "$tmp/home"
 cat >"$tmp/bin/herdr" <<'EOF'
 #!/usr/bin/env bash
 echo "herdr $* sock=${HERDR_SOCKET_PATH:-}" >>"$MOCK_LOG"
+# MOCK_DOWN=1: herdr cannot be reached at all (a command that runs in Codex's sandbox)
+[ -z "${MOCK_DOWN:-}" ] || { echo 'Error: PermissionDenied: Operation not permitted (os error 1)' >&2; exit 1; }
 nf="$(dirname "$MOCK_LOG")/n"; n=$(cat "$nf" 2>/dev/null || echo 1)
 case "$1 $2" in
   "workspace create") echo '{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"}}}' ;;
@@ -1122,13 +1124,16 @@ check "016: an older test result does not count for a newer round" grep -q 'w2:p
 printf '%s dev-a T-872 DISPATCH round=1\n%s dev-a T-872 DONE\n%s rev-x T-872 CHANGES review=1\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
 reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: a dev that is done follows the reviewer's verdict" grep -q 'w2:p3 .*--token ticket=T-872 .*--token phase=CHANGES ASKED' "$MOCK_LOG"
+check "trial 6: one check (watch --once) does not send an unchanged seat again" refuses grep -q 'report-metadata w2:p6 --source squad:seat' "$MOCK_LOG"
+reset_log; MOCK_AGENTS=$seats SQUAD_WATCH_POLL=2 "$squad" watch >/dev/null 2>&1 & wp=$!   # a long-running watch: the strip's start
+wait_log 'report-metadata w2:p6 --source squad:seat' || true; kill "$wp" 2>/dev/null || true; wait "$wp" 2>/dev/null || true
 check "016: a new strip (squad up, a herdr restart) sends every seat again" grep -q 'report-metadata w2:p6 --source squad:seat' "$MOCK_LOG"
 reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: the team's progress goes to its workspace entry" grep -q 'workspace report-metadata w2 --source squad:team --token team=[0-9]*/[0-9]* merged --token lock=lock free --token needs=nobody waits' "$MOCK_LOG"
 check "016: the team is in the list for the tab bar line" grep -qx "$PWD/.team" "$HOME/.config/squad/teams/proj4"
 printf '10:00:00 dev-b T-874 DISPATCH round=1\n10:05:00 dev-b T-874 DONE\n' >>.team/events.log
 seats_b='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4","agent_status":"idle"},{"name":"mine","agent":"claude","pane_id":"w2:p9","agent_status":"blocked"}]}}'
-reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
+rm -rf .team/observer/.ui; reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
 check "016: an older event without a date still gives the seat its task and phase" grep -q 'w2:p4 .*--token ticket=T-874 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
 check "016: the owner's own blocked agent does not count as a seat that needs them" grep -q 'workspace report-metadata w2 .*--token needs=nobody waits' "$MOCK_LOG"
 printf '%s dev-b T-875 DISPATCH round=1\n%s dev-b T-875 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" >>.team/events.log
@@ -2317,6 +2322,398 @@ check "trial 31: a failed second send of a task the seat reported on does not cl
 mv "$tmp/events.keep" .team/events.log
 # 32: the README says what to do with a seat that runs without its options: squad up alone leaves it as it is
 check "trial 32: the README tells the owner to end a running seat's agent before squad up" grep -qE '^\| "squad: <seat> runs without its squad options" \| .*end its agent in its pane.*then run `squad up`' "$here/../README.md"
+# ---- 028 · one task that fails leaves the candidate; the other tasks still merge ----------
+cd "$tmp"; "$squad" new b28 >/dev/null 2>&1; cd b28; reset_log
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat tester claude tester -\nupgrade off\n' >.team/team.conf
+"$squad" up >/dev/null 2>&1 || true
+I="$tmp/b28-team/integration"; DA="$tmp/b28-team/dev-a"
+for k in 1 2 3; do
+  git -C "$DA" switch -q -c "task/T-$k" team/integration && echo "$k" >"$DA/t$k.txt" && git -C "$DA" add "t$k.txt" && git -C "$DA" commit -qm "T-$k"
+  printf '%s dev-a T-%s DISPATCH round=1\n%s dev-a T-%s DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$k" "$(date '+%Y-%m-%d %H:%M:%S')" "$k" >>.team/events.log
+  printf 'x\n' >".team/reports/T-$k-review-1.md"; "$squad" "done" lead "T-$k" APPROVE >/dev/null 2>&1 || true
+done
+printf '# CANDIDATE-1\n## Acceptance\n| # | Check |\n|---|---|\n| 1 | the suite passes |\n' >.team/tasks/CANDIDATE-1.md
+printf 'echo one\ntest ! -f t2.txt || { echo t2 breaks the suite; exit 3; }\necho three\n' >.team/tasks/CANDIDATE-1.checks
+check "028: a candidate with its tasks named is built as before" "$squad" candidate CANDIDATE-1 T-1 T-2 T-3
+frc=0; "$squad" heavy tester CANDIDATE-1 --batch .team/tasks/CANDIDATE-1.checks >/dev/null 2>&1 || frc=$?
+R=.team/receipts/CANDIDATE-1
+check "028: the receipt of a failed candidate names the failed step, its exit code and its log file" sh -c "[ $frc = 3 ] && grep -qx 'failed=step2 rc=3 log=step-2.log' $R/receipt && grep -qx 't2 breaks the suite' $R/step-2.log"
+check "028: a step that passed has no failed line" sh -c "[ \$(grep -c '^failed=' $R/receipt) = 1 ]"
+printf 'RESULT: FAIL\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | fail | step 2 |\n' >.team/reports/CANDIDATE-1-test.md
+ag28='{"result":{"agents":[{"name":"lead","agent_status":"idle"},{"name":"dev-a","agent_status":"idle"},{"name":"tester","agent_status":"idle"}]}}'
+check "028: --task takes only a task of the candidate" refuses env MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" "done" tester CANDIDATE-1 FAIL --task T-9
+check "028: --task goes with a candidate's FAIL only" refuses env MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" "done" tester CANDIDATE-1 PASS --task T-2
+check "028: and nothing was logged by the refused reports" refuses grep -qE ' tester CANDIDATE-1 (FAIL|PASS|CANDIDATE_FAIL)' .team/events.log
+reset_log; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" "done" tester CANDIDATE-1 FAIL --task T-2 >/dev/null 2>&1 || true
+check "028: the tester's FAIL records the task it holds responsible (CANDIDATE_FAIL task=<ID>)" sh -c "grep -q ' tester CANDIDATE-1 FAIL ' .team/events.log && grep -q ' tester CANDIDATE-1 CANDIDATE_FAIL task=T-2\$' .team/events.log"
+check "028: the lead gets one line that names the task, the step log and the command that rebuilds without it" sh -c "[ \$(grep -c 'agent prompt lead ' '$MOCK_LOG') = 1 ] && grep -q 'agent prompt lead .*tester finished CANDIDATE-1: FAIL.*T-2.*$tmp/b28/$R/step-2.log.*squad candidate CANDIDATE-2 --from CANDIDATE-1 --without T-2' '$MOCK_LOG'"
+check "028: --from needs --without" refuses "$squad" candidate CANDIDATE-2 --from CANDIDATE-1
+check "028: --without takes only a task of the earlier candidate" refuses "$squad" candidate CANDIDATE-2 --from CANDIDATE-1 --without T-9
+check "028: a refused rebuild uses no number" sh -c "! test -e .team/candidates/CANDIDATE-2 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-2"
+approvals=$(grep -c ' lead T-[123] APPROVE' .team/events.log)
+"$squad" candidate CANDIDATE-2 --from CANDIDATE-1 --without T-2 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+c28=$(git -C "$I" rev-parse -q --verify candidate/CANDIDATE-2 || echo none)
+check "028: one command builds the next candidate from the same approved commits without the task" sh -c "[ $crc = 0 ] && git -C '$I' merge-base --is-ancestor task/T-1 $c28 && git -C '$I' merge-base --is-ancestor task/T-3 $c28 && ! git -C '$I' merge-base --is-ancestor task/T-2 $c28"
+check "028: the new candidate logs which tasks it carries" grep -q ' lead CANDIDATE-2 CANDIDATE .*from=CANDIDATE-1 without=T-2 tasks=T-1 T-3$' .team/events.log
+check "028: the brief and the check list come from the earlier candidate" sh -c "grep -qx '# CANDIDATE-2' .team/tasks/CANDIDATE-2.md && cmp -s .team/tasks/CANDIDATE-1.checks .team/tasks/CANDIDATE-2.checks"
+check "028: the task that was left out is sent back, with the step log" grep -q " lead T-2 SENT_BACK from=CANDIDATE-1 log=$tmp/b28/$R/step-2.log\$" .team/events.log
+check "028: the command's answer names the task that goes back to its dev and the step log, in one line" sh -c "[ \$(grep -c 'T-2' '$tmp/cout') = 1 ] && grep -q 'T-2 .*sent back.*$tmp/b28/$R/step-2.log' '$tmp/cout'"
+check "028: the other tasks need no new review" test "$(grep -c ' lead T-[123] APPROVE' .team/events.log)" = "$approvals"
+frc=0; "$squad" heavy tester CANDIDATE-2 --batch .team/tasks/CANDIDATE-2.checks >/dev/null 2>&1 || frc=$?
+printf 'RESULT: PASS\nAcceptance:\n| # | Result | Evidence |\n|---|---|---|\n| 1 | pass | ok |\n' >.team/reports/CANDIDATE-2-test.md
+MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" "done" tester CANDIDATE-2 PASS >/dev/null 2>&1 || true
+"$squad" merge CANDIDATE-2 >/dev/null 2>&1 || true
+check "028: the other tasks merge with the new candidate; the task left out does not" sh -c "[ $frc = 0 ] && grep -q ' lead T-1 MERGE ' .team/events.log && grep -q ' lead T-3 MERGE ' .team/events.log && ! grep -q ' lead T-2 MERGE' .team/events.log && test ! -e '$I/t2.txt'"
+printf '# Plan: tests\n\nStatus: approved by the owner 2026-11-16 10:00\n' >.team/PLAN.md
+mkdir -p "$HOME/.config/squad/approvals"; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$HOME/.config/squad/approvals/b28-PLAN.md.sha256"
+rm -f "$tmp/state"; reset_log
+check "028: the task that was left out is open for its dev again" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-2 >/dev/null 2>&1 && grep -q ' dev-a T-2 DISPATCH ' .team/events.log"
+check "trial 6: a sent-back task dispatched with no text names the failed candidate and its step log, not the newest review" sh -c "grep -q 'agent prompt dev-a .*T-2 .*CANDIDATE-1 failed.*$tmp/b28/$R/step-2.log' '$MOCK_LOG' && ! grep -q 'agent prompt dev-a .*newest review' '$MOCK_LOG'"
+# a task that was sent back waits for the lead, also while the next candidate runs
+cp .team/events.log "$tmp/events.keep"; rm -rf .team/observer/.watchdog
+printf '2026-01-01 09:00:00 lead T-171 APPROVE\n2026-01-01 09:10:00 lead T-171 SENT_BACK from=CANDIDATE-71\n2026-01-01 09:11:00 tester CANDIDATE-72 DISPATCH round=1\n' >.team/events.log
+mkdir -p .team/observer/.ui; echo kept >.team/observer/.ui/trial6
+reset_log; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" watch --once >/dev/null 2>&1 || true
+check "trial 6: watch --once leaves the UI folder of the running watch and its files in place" grep -qx kept .team/observer/.ui/trial6
+check "028: a task that was sent back and has no dispatch waits for the lead (the stall alert names it)" grep -q ' lead - STALLED .*T-171 SENT_BACK' .team/events.log
+cp "$tmp/events.keep" .team/events.log; rm -rf .team/observer/.watchdog
+# a candidate with no receipt (its run wrote none): the tester still names the task, and the rebuild names no log
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-3.md; printf 'true\n' >.team/tasks/CANDIDATE-3.checks
+"$squad" candidate CANDIDATE-3 T-1 T-3 >/dev/null 2>&1 || true
+printf 'RESULT: FAIL\n' >.team/reports/CANDIDATE-3-test.md
+check "028: FAIL --task works for a candidate that has no receipt" sh -c "MOCK_AGENTS='$ag28' '$squad' 'done' tester CANDIDATE-3 FAIL --task T-3 >/dev/null 2>&1 && grep -q ' tester CANDIDATE-3 CANDIDATE_FAIL task=T-3\$' .team/events.log"
+check "trial 6: a rebuild from a candidate with no failed step on record says so and names no log path" sh -c "'$squad' candidate CANDIDATE-4 --from CANDIDATE-3 --without T-3 >'$tmp/cout' 2>&1 && grep -q ' lead T-3 SENT_BACK from=CANDIDATE-3\$' .team/events.log && grep -q 'T-3 .*sent back.*no failed step is on record' '$tmp/cout' && ! grep -q 'receipts/CANDIDATE-3' '$tmp/cout'"
+# review findings: the rebuild carries the commits of the earlier candidate; a dependent task; a refused rebuild leaves nothing
+task28() { # <n> <start point>: task/T-<n> with one commit, done by dev-a and approved by the lead
+  git -C "$DA" switch -q -c "task/T-$1" "$2" && echo "$1" >"$DA/t$1.txt" && git -C "$DA" add "t$1.txt" && git -C "$DA" commit -qm "T-$1"
+  printf '%s dev-a T-%s DISPATCH round=1\n%s dev-a T-%s DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>.team/events.log
+  printf 'x\n' >".team/reports/T-$1-review-1.md"; "$squad" "done" lead "T-$1" APPROVE >/dev/null 2>&1 || true
+}
+task28 5 team/integration; task28 6 team/integration; task28 7 task/T-5; task28 8 team/integration   # T-7 is branched from T-5
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-5.md; printf 'true\n' >.team/tasks/CANDIDATE-5.checks
+"$squad" candidate CANDIDATE-5 T-5 T-6 T-7 T-8 >/dev/null 2>&1 || true
+free28() { ! test -e ".team/candidates/$1" && ! git -C "$I" rev-parse -q --verify "candidate/$1" >/dev/null; }   # <CANDIDATE-n>: the number is not used
+"$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-5 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: a rebuild is refused when a kept task was branched from the task left out; the message names both tasks and the second --without" sh -c "[ $crc != 0 ] && grep -q 'T-7 was branched from T-5.*--without T-7' '$tmp/cout'"
+check "028: and that refusal uses no number and logs nothing" sh -c "! test -e .team/candidates/CANDIDATE-6 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-6 && ! grep -q ' SENT_BACK from=CANDIDATE-5' .team/events.log"
+t8=$(git -C "$I" rev-parse task/T-8)
+printf '%s lead T-8 CHANGES head=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$t8" >>.team/events.log
+check "028: a rebuild with a kept task that is not approved is refused" refuses "$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-6
+check "028: a refused rebuild leaves no copied brief and no copied check list" sh -c "! test -e .team/tasks/CANDIDATE-6.md && ! test -e .team/tasks/CANDIDATE-6.checks"
+"$squad" candidate CANDIDATE-6 T-6 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: so a plain candidate of that number still asks for its brief" sh -c "[ $crc != 0 ] && grep -q 'brief first' '$tmp/cout'"
+printf '# CANDIDATE-6\n## Acceptance\n| # | Check |\n|---|---|\n| 1 | the lead wrote this |\n' >.team/tasks/CANDIDATE-6.md
+"$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-6 >/dev/null 2>&1 || true
+check "028: a refused rebuild keeps a brief that the lead wrote" sh -c "grep -q 'the lead wrote this' .team/tasks/CANDIDATE-6.md && ! test -e .team/tasks/CANDIDATE-6.checks"
+rm -f .team/tasks/CANDIDATE-6.md
+printf '%s lead T-8 APPROVE head=%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$t8" >>.team/events.log
+"$squad" candidate CANDIDATE-6 --from CANDIDATE-5 --without T-5 --without T-7 >/dev/null 2>&1 && crc=0 || crc=$?
+c28=$(git -C "$I" rev-parse -q --verify candidate/CANDIDATE-6 || echo none)
+check "028: with the dependent task left out too, the candidate is built and holds no commit of either" sh -c "[ $crc = 0 ] && grep -q ' lead CANDIDATE-6 CANDIDATE .*tasks=T-6 T-8\$' .team/events.log && git -C '$I' merge-base --is-ancestor task/T-6 $c28 && ! git -C '$I' merge-base --is-ancestor task/T-5 $c28 && ! git -C '$I' merge-base --is-ancestor task/T-7 $c28"
+check "028: a built rebuild keeps its copied brief and check list" test -f .team/tasks/CANDIDATE-6.md -a -f .team/tasks/CANDIDATE-6.checks
+check "028: the dependent task may be left out alone (the task it was branched from stays)" sh -c "'$squad' candidate CANDIDATE-7 --from CANDIDATE-5 --without T-7 >/dev/null 2>&1 && grep -q ' lead CANDIDATE-7 CANDIDATE .*tasks=T-5 T-6 T-8\$' .team/events.log"
+old6=$(git -C "$I" rev-parse task/T-6)
+git -C "$DA" switch -q task/T-6 && echo more >>"$DA/t6.txt" && git -C "$DA" commit -qam "T-6 again"; "$squad" "done" lead T-6 APPROVE >/dev/null 2>&1 || true
+new6=$(git -C "$I" rev-parse task/T-6)
+"$squad" candidate CANDIDATE-8 --from CANDIDATE-5 --without T-8 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: a kept task with a newer approved commit than the earlier candidate carried is refused; the message names the task and both commits" sh -c "[ $crc != 0 ] && [ $old6 != $new6 ] && grep -q 'T-6 .*$old6.*$new6' '$tmp/cout'"
+check "028: and that refusal uses no number and leaves no copy" sh -c "! test -e .team/candidates/CANDIDATE-8 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-8 && ! test -e .team/tasks/CANDIDATE-8.md && ! test -e .team/tasks/CANDIDATE-8.checks"
+grep -v '^task=' .team/candidates/CANDIDATE-5 >"$tmp/rec5"; cp "$tmp/rec5" .team/candidates/CANDIDATE-5   # a record from before squad kept each task's commit
+"$squad" candidate CANDIDATE-8 --from CANDIDATE-5 --without T-8 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "028: an earlier candidate with no record of its commits: today's approved commits are used, and squad says so" sh -c "[ $crc = 0 ] && grep -q 'no record of its tasks. commits' '$tmp/cout' && git -C '$I' merge-base --is-ancestor $new6 \$(git -C '$I' rev-parse candidate/CANDIDATE-8)"
+# the dev's seat shows that its task was sent back
+cp .team/events.log "$tmp/events.keep"
+printf '2026-01-01 09:00:00 dev-b T-173 DISPATCH round=1\n2026-01-01 09:05:00 dev-b T-173 DONE\n2026-01-01 09:06:00 lead T-173 APPROVE\n2026-01-01 09:10:00 lead T-173 SENT_BACK from=CANDIDATE-71\n' >.team/events.log
+rep28=$(printf q | MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle"},{"name":"dev-b","agent_status":"idle"}]}}' "$squad" report --live 2>/dev/null || true)
+check "028: the seat of a task that was sent back shows SENT BACK, not APPROVED" grep -qE '^  . dev-b +dev +SENT BACK +T-173' <<<"$rep28"
+cp "$tmp/events.keep" .team/events.log
+# CodeRabbit (PR #28): a candidate with two failed steps: the lead's lines, the SENT_BACK event and the dev's dispatch text name both logs
+task28 11 team/integration; task28 12 team/integration
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-9.md
+printf 'test ! -f t11.txt || { echo t11 breaks; exit 4; }\ntest ! -f t12.txt || { echo t12 breaks; exit 5; }\ntrue\n' >.team/tasks/CANDIDATE-9.checks
+"$squad" candidate CANDIDATE-9 T-11 T-12 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-9 --batch .team/tasks/CANDIDATE-9.checks >/dev/null 2>&1 || true
+R9="$tmp/b28/.team/receipts/CANDIDATE-9"
+printf 'RESULT: FAIL\n' >.team/reports/CANDIDATE-9-test.md
+reset_log; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" "done" tester CANDIDATE-9 FAIL --task T-12 >/dev/null 2>&1 || true
+check "PR 28: two failed steps: the receipt has two failed lines, and the lead's line after FAIL --task names both step logs" sh -c "[ \$(grep -c '^failed=' $R9/receipt) = 2 ] && grep -q 'agent prompt lead .*tester finished CANDIDATE-9: FAIL.*T-12.*$R9/step-1.log, $R9/step-2.log.*--from CANDIDATE-9 --without T-12' '$MOCK_LOG'"
+"$squad" candidate CANDIDATE-10 --from CANDIDATE-9 --without T-12 >"$tmp/cout" 2>&1 || true
+check "PR 28: two failed steps: the SENT_BACK event names both step logs in one log= field" grep -q " lead T-12 SENT_BACK from=CANDIDATE-9 log=$R9/step-1.log,$R9/step-2.log\$" .team/events.log
+check "PR 28: two failed steps: the command's answer names both step logs in one line" sh -c "[ \$(grep -c 'T-12' '$tmp/cout') = 1 ] && grep -q 'T-12 .*sent back.*$R9/step-1.log, $R9/step-2.log' '$tmp/cout'"
+printf '%s dev-a T-2 DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+rm -f "$tmp/state"; reset_log; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-12 >/dev/null 2>&1 || true
+check "PR 28: two failed steps: the task dispatched with no text names both step logs" grep -q "agent prompt dev-a .*T-12 .*CANDIDATE-9 failed.*$R9/step-1.log, $R9/step-2.log" "$MOCK_LOG"
+# CodeRabbit (PR #28): every task of the failed candidate is left out: nothing is built, each task is sent back with the log
+printf '%s dev-a T-12 DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+task28 13 team/integration
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-11.md; printf 'test ! -f t13.txt || { echo t13 breaks; exit 6; }\n' >.team/tasks/CANDIDATE-11.checks
+"$squad" candidate CANDIDATE-11 T-13 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-11 --batch .team/tasks/CANDIDATE-11.checks >/dev/null 2>&1 || true
+R11="$tmp/b28/.team/receipts/CANDIDATE-11"
+check "PR 28: a wrong ID beside the only task is refused, and nothing is logged" sh -c "! '$squad' candidate CANDIDATE-12 --from CANDIDATE-11 --without T-13 --without T-99 >/dev/null 2>&1 && ! grep -q ' SENT_BACK from=CANDIDATE-11' .team/events.log"
+"$squad" candidate CANDIDATE-12 --from CANDIDATE-11 --without T-13 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "PR 28: a one-task candidate without its task: no candidate is built, no number is used, exit 0" sh -c "[ $crc = 0 ] && ! test -e .team/candidates/CANDIDATE-12 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-12 && ! test -e .team/tasks/CANDIDATE-12.md && ! test -e .team/tasks/CANDIDATE-12.checks && ! grep -q ' CANDIDATE-12 ' .team/events.log"
+check "PR 28: the only task is logged SENT_BACK once, with the step log" sh -c "[ \$(grep -c ' lead T-13 SENT_BACK from=CANDIDATE-11 log=$R11/step-1.log\$' .team/events.log) = 1 ] && [ \$(grep -c ' T-13 SENT_BACK' .team/events.log) = 1 ]"
+check "PR 28: the answer names the task and the step log in one line, and says that a plain new candidate comes after the new approval" sh -c "[ \$(grep -c 'T-13' '$tmp/cout') = 1 ] && grep -q 'T-13 .*sent back.*$R11/step-1.log' '$tmp/cout' && grep -q 'plain new candidate' '$tmp/cout'"
+"$squad" candidate CANDIDATE-12 --from CANDIDATE-11 --without T-13 >/dev/null 2>&1 && crc=0 || crc=$?
+check "PR 28: a second identical call logs no second SENT_BACK" sh -c "[ $crc = 0 ] && [ \$(grep -c ' T-13 SENT_BACK' .team/events.log) = 1 ]"
+rm -f "$tmp/state"; reset_log; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-13 >/dev/null 2>&1 || true
+check "PR 28: the dispatch of that task carries the failed-candidate text and the step log" grep -q "agent prompt dev-a .*T-13 .*CANDIDATE-11 failed.*$R11/step-1.log" "$MOCK_LOG"
+check "PR 28: the lead's role file says what to do when the failed candidate has no task left" grep -qF 'no task left' .team/roles/lead.md
+check "028: the lead's and the tester's role files name the two commands" sh -c "grep -qF -- '--from CANDIDATE-<n> --without <ID>' .team/roles/lead.md && grep -qF -- 'FAIL --task <ID>' .team/roles/tester.md"
+check "028: the lead's role file says to write the check list first when a check belongs only to the task left out" grep -q 'write the brief and the check list of .CANDIDATE-<m>. first' .team/roles/lead.md
+
+# ---- 029 · the full suite once a night: squad reads the night's result -----------------
+cat >"$tmp/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh $*" >>"$MOCK_LOG"
+# GH_SLEEP: every call takes this many seconds (a gh that hangs); GH_VIEW_SLEEP: "run view" takes this many seconds
+# GH_MODE: fail (exit 1), garbage (an answer that is not JSON), ratelimit (GitHub's rate-limit error),
+# notfound (no such workflow), noremote (no GitHub remote), badtoken (a token that GitHub refuses)
+[ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
+case "${GH_MODE:-}" in
+  fail) exit 1 ;;
+  garbage) echo '<html>502 Bad Gateway</html>'; exit 0 ;;
+  ratelimit) echo 'HTTP 403: API rate limit exceeded for user ID 1.' >&2; exit 1 ;;
+  notfound) echo 'HTTP 404: workflow nightly.yml not found on the default branch' >&2; exit 1 ;;
+  noremote) echo 'failed to determine base repo: no git remotes found' >&2; exit 1 ;;
+  badtoken) echo 'HTTP 401: Bad credentials' >&2; exit 1 ;;
+esac
+# like GitHub: a scheduled run belongs to the default branch (main), whatever ref the workflow checks out
+branch=""; prev=""; for a in "$@"; do [ "$prev" != --branch ] || branch=$a; prev=$a; done
+case "$1 $2" in
+  "run list") if [ -f "${GH_RUNS:-}" ] && { [ -z "$branch" ] || [ "$branch" = main ]; }; then cat "$GH_RUNS"; else echo '[]'; fi ;;
+  "run view") [ -z "${GH_VIEW_SLEEP:-}" ] || sleep "$GH_VIEW_SLEEP"; cat "$GH_JOBS" ;;
+esac
+EOF
+chmod +x "$tmp/bin/gh"
+export GH_RUNS="$tmp/gh-runs.json" GH_JOBS="$tmp/gh-jobs.json"; rm -f "$GH_RUNS"
+gh_run() { printf '[{"databaseId":%s,"headSha":"abc123def4567890","conclusion":"%s","status":"%s","createdAt":"%s","url":"https://github.test/o/r/actions/runs/%s"}]\n' "$1" "$2" "${3:-completed}" "${4:-2026-11-22T02:00:00Z}" "$1" >"$GH_RUNS"; }   # <id> <conclusion> [<status> [<date>]]
+printf '{"jobs":[{"name":"unit","conclusion":"success","url":"https://github.test/job/1"},{"name":"storybook","conclusion":"failure","url":"https://github.test/job/2"}]}\n' >"$GH_JOBS"
+night() { nrc=0; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" nightly >"$tmp/nout" 2>&1 || nrc=$?; }
+nwatch() { SQUAD_NIGHTLY_POLL=0 MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" watch --once >/dev/null 2>&1 || true; }
+told() { [ "$(grep -c 'agent prompt lead \[squad\] The nightly run' "$MOCK_LOG")" = "$1" ] && [ "$(grep -c 'notification show squad: the nightly run failed' "$MOCK_LOG")" = "$1" ]; }   # <times the lead and the owner were told>
+nightly_events() { [ "$(grep -c " lead - NIGHTLY $1" .team/events.log)" = "$2" ]; }   # <the event's text> <times it is logged>
+silent() { told 0 && nightly_events "" 0; }
+gh_run 70 failure; reset_log; night
+check "029: with no nightly_workflow setting, squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q 'nightly_workflow' '$tmp/nout'"
+nwatch
+check "029: and the watch asks GitHub nothing" refuses grep -q '^gh ' "$MOCK_LOG"
+check "029: and stays silent" silent
+printf 'nightly_workflow nightly.yml\n' >>.team/team.conf
+reset_log; nrc=0; SQUAD_GH=gh-is-not-installed "$squad" nightly >"$tmp/nout" 2>&1 || nrc=$?
+check "029: with no gh, squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q 'gh (the GitHub CLI) is not installed' '$tmp/nout'"
+SQUAD_GH=gh-is-not-installed nwatch
+check "029: and the watch stays silent" silent
+rm -f "$GH_RUNS"; reset_log; night
+check "029: with no scheduled run, squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q 'no scheduled run of nightly.yml yet' '$tmp/nout'"
+check "029: it asks for the newest scheduled run of the workflow" log_has "gh run list --workflow nightly.yml --event schedule --limit 1 --json databaseId,headSha,conclusion,status,createdAt,url"
+nwatch
+check "029: and the watch stays silent" silent
+gh_run 76 "" in_progress; reset_log; night; nwatch
+check "029: a run that has not ended is shown" sh -c "[ $nrc = 0 ] && grep -q 'in_progress' '$tmp/nout'"
+check "029: and it is not logged, and nobody is told" silent
+gh_run 77 failure; reset_log; night
+check "029: squad nightly prints the date, the result and the failed jobs with their URLs" sh -c "[ $nrc = 0 ] && grep -q '2026-11-22T02:00:00Z.*FAIL.*https://github.test/o/r/actions/runs/77' '$tmp/nout' && grep -q 'storybook.*https://github.test/job/2' '$tmp/nout' && ! grep -q 'unit' '$tmp/nout'"
+check "029: the run is found with the integration branch not the default branch: no gh call names a branch" refuses grep -q -- '^gh .*--branch' "$MOCK_LOG"
+check "029: the run's commit is shown as the workflow's commit, and the lead and the owner are not given it as the tested commit" sh -c "grep -q 'workflow commit abc123def456' '$tmp/nout' && ! grep -E 'agent prompt lead|notification show' '$MOCK_LOG' | grep -q abc123"
+check "029: a failed run tells the lead and the owner once" told 1
+check "029: the lead's line names the failed job and its URL" grep -q 'agent prompt lead \[squad\] The nightly run.*storybook https://github.test/job/2' "$MOCK_LOG"
+night; nwatch
+check "029: one NIGHTLY event per run, also when the command and the watch read it again" sh -c "[ \$(grep -c ' lead - NIGHTLY FAIL run=77 workflow_commit=abc123def4567890 ' .team/events.log) = 1 ] && [ \$(grep -c ' NIGHTLY ' .team/events.log) = 1 ] && grep -q 'FAIL' '$tmp/nout'"
+check "029: and the lead and the owner are not told again" told 1
+gh_run 78 failure; reset_log; nwatch; nwatch
+check "029: the watch checks a new scheduled run once" nightly_events "FAIL run=78 " 1
+check "029: on FAIL the lead gets one line and the owner one notification" told 1
+gh_run 79 success; reset_log; nwatch; nwatch
+check "029: on PASS the watch logs the event" nightly_events "PASS run=79 " 1
+check "029: and tells nobody" told 0
+gh_run 80 failure; reset_log; SQUAD_NIGHTLY_POLL=600 MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" watch --once >/dev/null 2>&1 || true
+check "029: the watch asks GitHub again only after its poll time" sh -c "! grep -q '^gh ' '$MOCK_LOG' && ! grep -q ' NIGHTLY FAIL run=80 ' .team/events.log"
+cp .team/events.log "$tmp/events.keep"; rm -rf .team/observer/.watchdog .team/observer/.nightly-*
+printf '2026-01-01 10:00:00 lead T-172 CHANGES head=x\n%s lead - NIGHTLY PASS run=81\n' "$(date '+%Y-%m-%d %H:%M:%S')" >.team/events.log; rm -f "$GH_RUNS"; reset_log; nwatch
+check "029: a nightly result is no team event: a stall is still told" grep -q ' lead - STALLED .*T-172 CHANGES' .team/events.log
+cp "$tmp/events.keep" .team/events.log; rm -rf .team/observer/.watchdog
+check "029: the role files and PROTOCOL describe the fast gate and the nightly full run" sh -c "grep -qi 'fast gate' .team/roles/lead.md && grep -q 'squad nightly' .team/roles/lead.md && grep -qi 'fast gate' .team/roles/tester.md && grep -qi 'nightly' .team/roles/tester.md && grep -q 'The fast gate and the nightly full run' .team/PROTOCOL.md"
+# review findings: two callers at once, a gh that hangs, a gh that fails, a lead that shows a dialog
+# the mkdir of uutils 0.2.2 to 0.10.0 (the Rust coreutils of newer Ubuntu releases) looks first and creates after, and it answers "made" for a
+# folder that another caller made in between. This stand-in does the same, with a second between the two steps: a run
+# that is claimed with mkdir is logged twice here on every system.
+mk=$(command -v mkdir)
+printf '#!/bin/sh\nif [ $# = 1 ]; then [ ! -e "$1" ] || exit 1; sleep 1; "%s" "$1" 2>/dev/null || [ -d "$1" ]; exit; fi\nexec "%s" "$@"\n' "$mk" "$mk" >"$tmp/bin/mkdir"; chmod +x "$tmp/bin/mkdir"
+gh_run 82 failure; reset_log
+( export GH_VIEW_SLEEP=2; night ) & ( export GH_VIEW_SLEEP=2; night ) & ( export GH_VIEW_SLEEP=2; nwatch ) & wait   # all three read the run before one of them records it
+rm -f "$tmp/bin/mkdir"
+check "029: two callers that read the same new run at once log it once" nightly_events "FAIL run=82 " 1
+check "029: and the lead and the owner are told once" told 1
+quiet() { told 0 && [ "$(grep -c ' lead - NIGHTLY ' .team/events.log)" = "$nev" ]; }   # nobody was told, and no new NIGHTLY event since $nev was read
+gh_run 83 failure; reset_log; t0=$(date +%s); nev=$(grep -c ' lead - NIGHTLY ' .team/events.log)
+export GH_SLEEP=30 SQUAD_GH_LIMIT=1; night; nwatch; unset GH_SLEEP SQUAD_GH_LIMIT
+check "029: a gh that hangs is stopped at the limit: squad nightly says so and exits 0, and the watch goes on" sh -c "[ $nrc = 0 ] && [ $(( $(date +%s) - t0 )) -lt 25 ] && grep -q 'no answer in 1 s' '$tmp/nout'"
+check "029: and nothing is logged, and nobody is told" quiet
+check "029: and no gh is left running" refuses pgrep -f "$tmp/bin/gh"
+for m in fail garbage ratelimit; do
+  reset_log; export GH_MODE=$m; night; nwatch; unset GH_MODE
+  case "$m" in fail) want='gh could not list the runs of nightly.yml' ;; garbage) want='not a list of runs' ;; *) want='API rate limit exceeded' ;; esac
+  check "029: gh answers with '$m': squad nightly says so and exits 0" sh -c "[ $nrc = 0 ] && grep -q '$want' '$tmp/nout'"
+  check "029: gh answers with '$m': the watch stays silent" quiet
+done
+reset_log; nwatch
+check "029: after those failures the watch still reads the run when gh answers again" nightly_events "FAIL run=83 " 1
+gh_run 84 failure; reset_log
+SQUAD_NIGHTLY_POLL=0 MOCK_AGENTS="$ag28" MOCK_PANE_TEXT=$(cat "$longq") "$squad" watch --once >/dev/null 2>&1 || true
+check "029: a failed night while the lead shows a dialog: nothing is typed into the lead; the event and the owner's notification are there" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && grep -q ' lead - NIGHTLY FAIL run=84 ' .team/events.log && [ \$(grep -c 'notification show squad: the nightly run failed' '$MOCK_LOG') = 1 ]"
+nwatch; nwatch
+check "029: the lead gets the line once when the dialog is gone" told 1
+# trial 6: gh errors that are not about authentication; a night with many failed jobs; an old run
+for m in notfound noremote badtoken; do
+  reset_log; export GH_MODE=$m; night; unset GH_MODE
+  case "$m" in notfound) want='HTTP 404: workflow nightly.yml not found' ;; noremote) want='no git remotes found' ;; *) want='HTTP 401: Bad credentials' ;; esac
+  if [ "$m" = badtoken ]; then check "trial 6: a gh error about authentication gets the hint (see: gh auth status)" sh -c "grep -q '$want' '$tmp/nout' && grep -q 'gh auth status' '$tmp/nout'"
+  else check "trial 6: gh answers with '$m': the error is shown with no hint about authentication" sh -c "[ $nrc = 0 ] && grep -q '$want' '$tmp/nout' && ! grep -q 'gh auth status' '$tmp/nout'"; fi
+done
+{ printf '{"jobs":['; for k in 1 2 3 4 5 6 7 8; do printf '{"name":"job%s","conclusion":"failure","url":"https://github.test/job/%s"},' "$k" "$k"; done; printf '{"name":"unit","conclusion":"success","url":"https://github.test/job/9"}]}\n'; } >"$GH_JOBS"
+first5='8 failed jobs: job1 https://github.test/job/1; job2 https://github.test/job/2; job3 https://github.test/job/3; job4 https://github.test/job/4; job5 https://github.test/job/5; and 3 more: https://github.test/o/r/actions/runs/85'
+gh_run 85 failure completed "$(jq -nr 'now | todate')"; reset_log; night
+check "trial 6: squad nightly still prints every failed job" test "$(grep -c '^  failed: job' "$tmp/nout")" = 8
+check "trial 6: the NIGHTLY event carries the number of failed jobs, the first 5 and the run for the others" sh -c "grep -q ' lead - NIGHTLY FAIL run=85 .* failed: $first5\$' .team/events.log && ! grep ' NIGHTLY FAIL run=85 ' .team/events.log | grep -q job6"
+check "trial 6: the lead's line carries the same short list" sh -c "grep -q 'agent prompt lead \[squad\] The nightly run.*$first5\. ' '$MOCK_LOG' && ! grep 'agent prompt lead' '$MOCK_LOG' | grep -q job6"
+check "trial 6: a run of today gets no remark on its age" sh -c "! grep -q 'days old' '$tmp/nout' && ! grep -q 'days old' '$MOCK_LOG'"
+gh_run 86 failure completed "$(jq -nr 'now - 259200 | todate')"; reset_log; night
+check "trial 6: a run that is 3 days old is printed with its age" grep -q '(3 days old: the schedule may not be running)  FAIL' "$tmp/nout"
+check "trial 6: and the lead's line names that age; the event has no new field" sh -c "grep -q 'agent prompt lead \[squad\] The nightly run of .*(3 days old: the schedule may not be running)' '$MOCK_LOG' && ! grep -q 'NIGHTLY .*days old' .team/events.log"
+check "029: the README says that GitHub starts a scheduled workflow only from the default branch, and that the workflow prints the tested commit" sh -c "grep -q 'only from the default branch' '$here/../README.md' && grep -q 'tested commit' '$here/../README.md' && ! grep -q -- '--branch' '$here/../README.md'"
+check "029: the README lists the command, the setting and a workflow example" sh -c "grep -q 'squad nightly' '$here/../README.md' && grep -q 'nightly_workflow' '$here/../README.md' && grep -q 'schedule:' '$here/../README.md'"
+check "029: the usage text lists squad nightly" sh -c "'$squad' help 2>&1 | grep -q 'squad nightly'"
+# ---- 030 · a notice from a sandbox reaches the lead; DONE needs the cheap checks; a seat with no MCP servers; the mutex ----
+export SQUAD_HEAVY_POLL=1 SQUAD_HEAVY_DIR="$tmp/heavy"
+unset MOCK_WS MOCK_PANES
+cd "$tmp"; "$squad" new t30 >/dev/null 2>&1; cd t30; reset_log
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat rev codex reviewer dev-a\nseat tester claude tester -\nupgrade off\n' >.team/team.conf
+"$squad" up >/dev/null 2>&1 || true
+check "030: with no seat_mcp line a Claude seat starts as before (no MCP option)" sh -c "grep -q '^herdr agent start dev-a ' '$MOCK_LOG' && ! grep -q -- '--strict-mcp-config\|--mcp-config' '$MOCK_LOG'"
+N30=.team/observer/.notices
+ag30='{"result":{"agents":[{"name":"lead","agent_status":"idle"},{"name":"dev-a","agent_status":"working"},{"name":"dev-b","agent_status":"working"},{"name":"rev","agent_status":"working"},{"name":"tester","agent_status":"working"}]}}'
+tick30() { MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' "$squad" watch --once >/dev/null 2>&1 || true; }
+sent30() { [ "$(grep -c "agent prompt lead \[squad\] $1 finished $2: $3" "$MOCK_LOG")" = "$4" ]; }   # <seat> <task> <status> <times the lead got the notice>
+# the real case: a Codex reviewer ran "cat > report && squad done" as one command, so it ran in Codex's sandbox, where every herdr call fails
+printf 'x\n' >.team/reports/T-1-review-1.md; : >.team/seats/lead.owner-wait   # a record of a dialog of the lead: with no herdr it proves nothing
+reset_log; drc=0; MOCK_DOWN=1 "$squad" "done" rev T-1 CHANGES >"$tmp/dout" 2>&1 || drc=$?
+rm -f .team/seats/lead.owner-wait
+check "030: squad done with no herdr in reach exits 0 and says that the lead was not reached and that squad watch sends the notice" sh -c "[ $drc = 0 ] && grep -q '^not sent: lead could not be reached from here' '$tmp/dout' && grep -q 'squad watch sends your notice to lead: \[squad\] rev finished T-1: CHANGES' '$tmp/dout'"
+check "030: it does not say that the lead shows a dialog, and it does not say 'told'" sh -c "! grep -q 'shows a dialog\|^told ' '$tmp/dout'"
+check "030: the event is logged once, and the notice is kept as not sent" sh -c "[ \$(grep -c ' rev T-1 CHANGES ' .team/events.log) = 1 ] && test -f $N30/T-1.rev -a -e $N30/.unsent-T-1.rev"
+reset_log; tick30; tick30
+check "030: squad watch sends that notice to the lead at its next tick, once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] rev finished T-1: CHANGES' '$MOCK_LOG') = 1 ] && test ! -e $N30/.unsent-T-1.rev -a -f $N30/T-1.rev"
+check "030: and it is the plain notice, not a second sending" refuses grep -q 'Sent again' "$MOCK_LOG"
+printf 'x\n' >.team/reports/T-1b-review-1.md
+reset_log; drc=0; MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' MOCK_FAIL_PROMPT=lead "$squad" "done" rev T-1b APPROVE >"$tmp/dout" 2>&1 || drc=$?
+check "030: a send that herdr refuses (no dialog) is kept as not sent too, and squad done exits 0" sh -c "[ $drc = 0 ] && grep -q '^not sent: lead could not be reached from here' '$tmp/dout' && test -e $N30/.unsent-T-1b.rev && grep -q ' rev T-1b APPROVE ' .team/events.log"
+reset_log; tick30; tick30
+check "030: and the watch sends it once" sent30 rev T-1b APPROVE 1
+reset_log; drc=0; MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' "$squad" "done" rev T-1 CHANGES >"$tmp/dout" 2>&1 || drc=$?
+check "030: with herdr in reach squad done tells the lead at once, as before" sh -c "[ $drc = 0 ] && grep -q '^told lead: ' '$tmp/dout' && test ! -e $N30/.unsent-T-1.rev"
+check "030: and the lead got it once" sent30 rev T-1 CHANGES 1
+# done_check: a dev's DONE needs a passed squad heavy run of each check on the task's commit
+DA30="$tmp/t30-team/dev-a"
+commit30() { echo "$1" >>"$DA30/f.txt" && git -C "$DA30" add f.txt && git -C "$DA30" commit -qm "T-2 $1"; }
+done30() { drc=0; MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' "$squad" "done" "$@" >"$tmp/dout" 2>&1 || drc=$?; }
+dones30() { grep -c " dev-a T-2 DONE" .team/events.log || true; }
+git -C "$DA30" switch -q -c task/T-2 team/integration; commit30 one
+done30 dev-a T-2 DONE
+check "030: with no done_check line a dev's DONE is taken as before" sh -c "[ $drc = 0 ] && [ $(dones30) = 1 ]"
+K30="$tmp/knip30"   # the second check passes only while this file is there
+printf 'done_check echo    unit   # the unit tests\ndone_check test -f %s\n' "$K30" >>.team/team.conf
+h30=$(git -C "$DA30" rev-parse --short=7 HEAD)
+hv30() { "$squad" heavy "$@" >/dev/null 2>&1 || true; }
+done30 dev-a T-2 DONE
+check "030: with done_check lines a DONE with no run is refused, and no event is logged" sh -c "[ $drc != 0 ] && grep -q 'DONE refused' '$tmp/dout' && [ $(dones30) = 1 ]"
+check "030: the refusal names each missing check as the command to run (runs of spaces as one), and the commit" sh -c "grep -qx '  squad heavy dev-a T-2 -- echo unit' '$tmp/dout' && grep -qx '  squad heavy dev-a T-2 -- test -f $K30' '$tmp/dout' && grep -q 'on its commit $h30\.' '$tmp/dout'"
+hv30 dev-a T-2 -- echo unit
+hv30 dev-a T-2 -- test -f "$K30"   # a failed run: the file is not there yet
+: >"$K30"
+hv30 dev-a T-9 -- test -f "$K30"   # a passed run for another task
+hv30 dev-b T-2 -- test -f "$K30"   # a passed run of another seat
+done30 dev-a T-2 DONE
+check "030: a passed run counts for its check; a failed run, a run for another task and a run of another seat do not" sh -c "[ $drc != 0 ] && grep -qx '  squad heavy dev-a T-2 -- test -f $K30' '$tmp/dout' && ! grep -q -- '-- echo unit' '$tmp/dout' && grep -q '1 check(s)' '$tmp/dout'"
+done30 dev-a T-2 BLOCKED
+check "030: BLOCKED is not held by done_check" sh -c "[ $drc = 0 ] && grep -q ' dev-a T-2 BLOCKED' .team/events.log"
+done30 tester T-2 PASS
+check "030: the tester's PASS is not held by done_check" sh -c "[ $drc = 0 ] && grep -q ' tester T-2 PASS' .team/events.log"
+hv30 dev-a T-2 -- test -f "$K30"
+commit30 two
+done30 dev-a T-2 DONE
+check "030: after a new commit the runs on the older commit do not count: both checks are named again" sh -c "[ $drc != 0 ] && grep -q '2 check(s)' '$tmp/dout' && [ $(dones30) = 1 ]"
+# a part of a check is not the check: only the whole command counts, and never a --sample run
+unit30() { grep -qx '  squad heavy dev-a T-2 -- echo unit' "$tmp/dout"; }   # the refusal still names the unit check
+hv30 dev-a T-2 -- echo unit extra; done30 dev-a T-2 DONE
+check "030: a narrowed run (the check's command with one more argument) does not count" unit30
+hv30 dev-a T-2 -- sh -c 'true # echo unit'; done30 dev-a T-2 DONE
+check "030: a command that only contains the check's text does not count" unit30
+hv30 dev-a T-2 -- echo a HEAVY_START sha=x limit=1m echo unit; done30 dev-a T-2 DONE
+check "030: a command that carries the words of a start event before the check's text does not count" unit30
+hv30 dev-a T-2 -- bash -c echo unit; done30 dev-a T-2 DONE
+check "030: one run of bash -c with the check's words is not a batch step and does not count" unit30
+hv30 dev-a T-2 --sample -- echo part '{shard}'
+s30=$(sed -n 's/.* dev-a T-2 HEAVY_START .* sample=[^ ]* in=[^ ]* //p' .team/events.log | tail -1)   # that run's command, as logged: echo part <k>/<n>
+echo "done_check $s30" >>.team/team.conf
+printf 'echo unit\ntest -f %s\n' "$K30" >"$tmp/checks30"
+hv30 dev-a T-2 --batch "$tmp/checks30"
+done30 dev-a T-2 DONE
+check "030: a --sample run does not count, also when its command is the check's text; the steps of a batch count" sh -c "[ -n '$s30' ] && [ $drc != 0 ] && grep -q '1 check(s)' '$tmp/dout' && grep -qx '  squad heavy dev-a T-2 -- $s30' '$tmp/dout' && [ $(dones30) = 1 ]"
+# shellcheck disable=SC2086  # the logged command, split into its words
+hv30 dev-a T-2 -- $s30
+done30 dev-a T-2 DONE
+check "030: with a passed whole run of each check on the task's commit DONE is taken" sh -c "[ $drc = 0 ] && [ $(dones30) = 2 ]"
+check "030: a done_check line with no text is refused" sh -c "cp .team/team.conf '$tmp/conf30' && echo 'done_check' >>.team/team.conf && ! '$squad' status >/dev/null 2>&1; rc=\$?; cp '$tmp/conf30' .team/team.conf; exit \$rc"
+bad30() { local rc=0; printf 'done_check %s\n' "$1" >>.team/team.conf; "$squad" status >"$tmp/dout" 2>&1 || rc=$?; cp "$tmp/conf30" .team/team.conf; [ "$rc" != 0 ] && grep -q "done_check.*script" "$tmp/dout"; }   # <text>: team.conf with it is refused, with the advice
+for t30 in "echo 'a b'" 'echo "a b"' 'yarn lint && yarn knip' 'yarn lint; yarn knip' 'yarn knip | tail -5'; do
+  check "030: a done_check text that a logged command can never equal is refused at load: $t30" bad30 "$t30"
+done
+# a notice that squad done replaces while the watch sends its older text: the newer one is still not sent, so its marker stays
+printf '%s %s rev CHANGES T-4\n[squad] rev finished T-4: CHANGES (the older report)\n' "$(date +%s)" "$(wc -l <.team/events.log | tr -d ' ')" >"$N30/T-4.rev"; : >"$N30/.unsent-T-4.rev"
+printf '%s %s rev CHANGES T-4\n[squad] rev finished T-4: CHANGES (the newer report)\n' "$(date +%s)" "$(wc -l <.team/events.log | tr -d ' ')" >"$tmp/newer30"
+reset_log; rm -f "$tmp/once30"
+MOCK_ON_PROMPT="[ -e '$tmp/once30' ] || { : >'$tmp/once30'; cp '$tmp/newer30' '$tmp/t30/$N30/T-4.rev'; : >'$tmp/t30/$N30/.unsent-T-4.rev'; }" tick30
+check "030: a notice replaced during the watch's send keeps its not-sent marker" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] rev finished T-4: CHANGES (the older report)' '$MOCK_LOG') = 1 ] && test -e $N30/.unsent-T-4.rev"
+tick30; tick30
+check "030: and the next tick sends the newer text, once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] rev finished T-4: CHANGES (the newer report)' '$MOCK_LOG') = 1 ] && test ! -e $N30/.unsent-T-4.rev"
+rm -f "$N30"/T-4.rev "$N30"/.*-T-4.rev
+# seat_mcp: a Claude seat that starts with no MCP server (the options are checked on the real CLI by hand: ticket 030)
+mcp30() { grep "^herdr agent start $1 " "$MOCK_LOG" | grep -qF -- " --strict-mcp-config --mcp-config $tmp/t30/.team/seats/no-mcp.json --settings "; }   # <seat>: it starts with squad's empty MCP list
+up30() { cp "$tmp/conf30" .team/team.conf; printf '%s\n' "$1" >>.team/team.conf; reset_log; "$squad" up >/dev/null 2>&1; }       # <a seat_mcp line>
+up30 'seat_mcp none' || true
+check "030: seat_mcp none: every Claude seat starts with --strict-mcp-config and squad's --mcp-config file" sh -c "$(declare -f mcp30); MOCK_LOG='$MOCK_LOG' tmp='$tmp'; mcp30 lead && mcp30 dev-a && mcp30 dev-b && mcp30 tester"
+check "030: the file that --mcp-config names holds an empty server list" jq -e '.mcpServers == {}' .team/seats/no-mcp.json
+check "030: a Codex seat is not changed by seat_mcp" sh -c "grep -q '^herdr agent start rev ' '$MOCK_LOG' && ! grep '^herdr agent start rev ' '$MOCK_LOG' | grep -q -- 'mcp-config'"
+up30 'seat_mcp none tester dev-b' || true
+check "030: seat_mcp none <seats>: only the named seats start with no MCP server" sh -c "$(declare -f mcp30); MOCK_LOG='$MOCK_LOG' tmp='$tmp'; mcp30 tester && mcp30 dev-b && ! mcp30 lead && ! mcp30 dev-a && [ \$(grep -c -- '--strict-mcp-config' '$MOCK_LOG') = 2 ]"
+up30 'seat_mcp inherit' || true
+check "030: seat_mcp inherit starts every seat as before" sh -c "grep -q '^herdr agent start dev-a ' '$MOCK_LOG' && ! grep -q -- 'mcp-config' '$MOCK_LOG'"
+check "030: seat_mcp with another word is refused" refuses up30 'seat_mcp off'
+check "030: seat_mcp none with a name that is no seat is refused" refuses up30 'seat_mcp none nobody'
+cp "$tmp/conf30" .team/team.conf
+# the role files
+own30='Run `squad done` as its own command: joined to another command'
+check "030: the role files and PROTOCOL say: run squad done as its own command" sh -c "for f in roles/reviewer.md roles/dev.md roles/tester.md PROTOCOL.md; do grep -qF '$own30' .team/\$f || exit 1; done"
+check "030: the dev role says: run the team's done_check commands on your last commit before DONE" grep -qF "Before DONE, run the team's \`done_check\` commands on your last commit" .team/roles/dev.md
+check "030: the README lists done_check and seat_mcp, and says that Codex seats are not affected" sh -c "grep -q '^- \*\*done_check\*\*' '$here/../README.md' && grep -q '^- \*\*seat_mcp\*\*' '$here/../README.md' && grep -q 'Codex seats are not affected' '$here/../README.md'"
+# the mutex: with the mkdir of uutils 0.2.2 to 0.10.0 (the stand-in of ticket 029: it looks, waits a second, creates, and answers "made" for a
+# folder that another caller made in between) a mutex that is claimed with mkdir is held by every caller at once
+mk=$(command -v mkdir)
+printf '#!/bin/sh\nif [ $# = 1 ]; then [ ! -e "$1" ] || exit 1; sleep 1; "%s" "$1" 2>/dev/null || [ -d "$1" ]; exit; fi\nexec "%s" "$@"\n' "$mk" "$mk" >"$tmp/bin/mkdir"; chmod +x "$tmp/bin/mkdir"
+rm -f "$tmp"/frc30.*
+for k in 1 2 3; do ( rc=0; MOCK_AGENTS=$ag30 "$squad" feedback "note $k" >/dev/null 2>&1 || rc=$?; echo "$rc" >"$tmp/frc30.$k" ) & done; wait
+rm -f "$tmp/bin/mkdir"
+check "030: three callers of one mutex at once: each one ends well" test "$(cat "$tmp"/frc30.* | tr -d '\n')" = 000
+check "030: and each one held it alone: three feedback entries with three numbers" test "$(sed -n 's/^## \(F-[0-9]*\) · .*/\1/p' .team/FEEDBACK.md | sort -u | tr '\n' ' ')" = "F-1 F-2 F-3 "
+check "030: the mutex is free after them" test ! -e .team/.feedback.lock
+mkdir .team/.feedback.lock
+check "030: a lock folder of an older squad at the same path is a held mutex" sh -c "SQUAD_MUTEX_TRIES=3 '$squad' feedback 'x' 2>&1 | grep -q 'cannot create the lock'"
+touch -t 202601010000 .team/.feedback.lock
+check "030: and when it is older than a minute it is left over from a crash: the next caller takes it" sh -c "'$squad' feedback 'after a stale lock' >/dev/null 2>&1 && grep -q 'after a stale lock' .team/FEEDBACK.md && test ! -e .team/.feedback.lock"
+rm -rf .team/.feedback.lock; : >.team/.feedback.lock; touch -t 202601010000 .team/.feedback.lock
+check "030: a stale lock file is taken the same way" sh -c "'$squad' feedback 'after a stale file' >/dev/null 2>&1 && grep -q 'after a stale file' .team/FEEDBACK.md && test ! -e .team/.feedback.lock"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

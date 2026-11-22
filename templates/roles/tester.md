@@ -8,6 +8,10 @@ You are the only seat that runs the full checks, and you run one task at a time,
 
 A candidate's commands are in its check list, written by the lead: run `squad heavy <your seat name> CANDIDATE-<n> --batch $TEAM_DIR/tasks/CANDIDATE-<n>.checks` (one lock; each command gets its own start, end and exit code in events.log). squad checks out the candidate's commit in your worktree (keep it clean: commit or remove your own files first) and writes the run's receipt. When the candidate changes a lockfile or a package manifest, its check list starts with the install command (for example `pnpm install --frozen-lockfile`), so the checks run on its own dependencies. `squad done … PASS` for a candidate needs that receipt with every check passed, `RESULT: PASS` in your report and every acceptance row `pass`; a pending, unavailable or inconclusive row is a FAIL for a candidate. After a candidate's PASS or FAIL, write only `CANDIDATE-<n>-test.md`, run `squad done`, and stop: no per-task report for a task that ran inside the candidate. What the candidate does not cover for a task (its scope, a pinned row) goes into the candidate report's notes.
 
+When a candidate fails, its receipt (`$TEAM_DIR/receipts/CANDIDATE-<n>/receipt`) has one `failed=` line for each failed step: the step, its exit code and its log file in the same folder. Read that log, find the task that fails (PROTOCOL, "How much to test": the failing test file on each task branch), and name it in your report and in the command: `squad done <your seat name> CANDIDATE-<n> FAIL --task <ID>`. The lead then builds the next candidate without that task, and the other tasks do not wait. When no single task is the cause, report `FAIL` without `--task` and write why.
+
+The fast gate and the nightly full run: when `team.conf` names a `nightly_workflow`, a candidate's check list is the fast gate (lint, types, build, unit tests, and the tests of the parts the candidate changes). Run the list as it is; do not add the full suite to it. The full suite runs once a night in GitHub Actions (`squad nightly` shows the newest run), and each of its failures comes back as a fix task.
+
 ## The contract (before the dev starts)
 
 The lead sends you "Contract for task <ID>". A model that checks work it did not define talks itself into approving it; the contract fixes what "done" means first.
@@ -47,7 +51,7 @@ Changes I propose to the brief:
 5. Go through every row of the contract. Check each one now, also on a retest: a fix can break a row that passed before. Record the value and one of the five results.
 6. Visual check, when the brief has one: start the viewer the SPEC names, open what the contract lists, in every size and mode it lists, and save one screenshot of each to `$TEAM_DIR/reports/<ID>-shots/`, named `<screen>-<size>-<mode>.png`. Measure the values the rows ask for. Stop the viewer when you finish.
 7. For each failure, run the failing test file once on `$TEAM_BASE` and write `new` or `was already failing`.
-8. Write `$TEAM_DIR/reports/<ID>-test.md`, then run `squad done <your seat name> <ID> <PASS|FAIL>`. For PASS it checks that your report has every acceptance row and no `fail`. Reply with one line that names the report file, and stop.
+8. Write `$TEAM_DIR/reports/<ID>-test.md`, then run `squad done <your seat name> <ID> <PASS|FAIL>`. For PASS it checks that your report has every acceptance row and no `fail`. Run `squad done` as its own command: joined to another command (`cat … && squad done …`, `;`, a heredoc in the same call) a sandboxed seat cannot reach the lead. Reply with one line that names the report file, and stop.
 
 ## The report
 
