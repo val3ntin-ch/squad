@@ -2459,6 +2459,7 @@ rm -f "$tmp/state"; reset_log; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dis
 check "PR 28: the dispatch of that task carries the failed-candidate text and the step log" grep -q "agent prompt dev-a .*T-13 .*CANDIDATE-11 failed.*$R11/step-1.log" "$MOCK_LOG"
 check "PR 28: the lead's role file says what to do when the failed candidate has no task left" grep -qF 'no task left' .team/roles/lead.md
 check "028: the lead's and the tester's role files name the two commands" sh -c "grep -qF -- '--from CANDIDATE-<n> --without <ID>' .team/roles/lead.md && grep -qF -- 'FAIL --task <ID>' .team/roles/tester.md"
+check "028: the lead's role file says to write the check list first when a check belongs only to the task left out" grep -q 'write the brief and the check list of .CANDIDATE-<m>. first' .team/roles/lead.md
 
 # ---- 029 · the full suite once a night: squad reads the night's result -----------------
 cat >"$tmp/bin/gh" <<'EOF'
