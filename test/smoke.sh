@@ -2534,8 +2534,14 @@ check "029: a nightly result is no team event: a stall is still told" grep -q ' 
 cp "$tmp/events.keep" .team/events.log; rm -rf .team/observer/.watchdog
 check "029: the role files and PROTOCOL describe the fast gate and the nightly full run" sh -c "grep -qi 'fast gate' .team/roles/lead.md && grep -q 'squad nightly' .team/roles/lead.md && grep -qi 'fast gate' .team/roles/tester.md && grep -qi 'nightly' .team/roles/tester.md && grep -q 'The fast gate and the nightly full run' .team/PROTOCOL.md"
 # review findings: two callers at once, a gh that hangs, a gh that fails, a lead that shows a dialog
+# the mkdir of uutils 0.2.2 to 0.10.0 (the Rust coreutils of newer Ubuntu releases) looks first and creates after, and it answers "made" for a
+# folder that another caller made in between. This stand-in does the same, with a second between the two steps: a run
+# that is claimed with mkdir is logged twice here on every system.
+mk=$(command -v mkdir)
+printf '#!/bin/sh\nif [ $# = 1 ]; then [ ! -e "$1" ] || exit 1; sleep 1; "%s" "$1" 2>/dev/null || [ -d "$1" ]; exit; fi\nexec "%s" "$@"\n' "$mk" "$mk" >"$tmp/bin/mkdir"; chmod +x "$tmp/bin/mkdir"
 gh_run 82 failure; reset_log
 ( export GH_VIEW_SLEEP=2; night ) & ( export GH_VIEW_SLEEP=2; night ) & ( export GH_VIEW_SLEEP=2; nwatch ) & wait   # all three read the run before one of them records it
+rm -f "$tmp/bin/mkdir"
 check "029: two callers that read the same new run at once log it once" nightly_events "FAIL run=82 " 1
 check "029: and the lead and the owner are told once" told 1
 quiet() { told 0 && [ "$(grep -c ' lead - NIGHTLY ' .team/events.log)" = "$nev" ]; }   # nobody was told, and no new NIGHTLY event since $nev was read

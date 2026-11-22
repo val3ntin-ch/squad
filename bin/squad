@@ -2882,9 +2882,11 @@ cmd_nightly() { # prints the run; with no setting, no gh or no run it says so; a
   say "squad nightly: $at$old  $res  $url  (workflow commit ${sha:0:12}: the default branch, not the tested commit)"
   [ -z "$jobs" ] || printf '  failed: %s\n' "$jobs" | sed '2,$s/^/  failed: /'
   # this run is on record: one event, one line, one notification. The watch and this command, or two watches, can read
-  # the same run at once: mkdir of the run's marker is one step, and only the caller that made it logs and tells.
+  # the same run at once: bash makes the run's marker in one step (set -C: a new file or a failure), and only the caller
+  # that made it logs and tells. Never mkdir for this: the mkdir of uutils 0.2.2 to 0.10.0 (the Rust coreutils of newer
+  # Ubuntu releases) looks first and creates after, and it answers "made" for a folder that another caller made in between.
   mkdir -p "$TEAM_DIR/observer/.nightly-runs"
-  mkdir "$TEAM_DIR/observer/.nightly-runs/$id" 2>/dev/null || return 0
+  ( set -C; : >"$TEAM_DIR/observer/.nightly-runs/$id" ) 2>/dev/null || return 0
   # the event and the lead's line: the number of failed jobs and the first 5; the run's page has the others
   if [ -n "$jobs" ]; then
     n=$(printf '%s\n' "$jobs" | grep -c . || true)
