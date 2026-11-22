@@ -120,6 +120,8 @@ NOTICE_OWNER_MINUTES=30      # team.conf "notice_owner_minutes": a notice the le
 OWNER_REMINDER_HOURS=4       # team.conf "owner_reminder_hours": squad wait-owner reminds the owner this often
 NOTIFY_OS=on                 # team.conf "notify_os off": only herdr's notification, none from the operating system
 SEAT_RESTART=off             # team.conf "seat_restart on": squad watch starts a seat again that is gone or runs without its squad options; off: it only tells the owner
+DONE_CHECKS=""               # team.conf "done_check <text>", one a line: a dev's DONE needs a passed 'squad heavy' run on the task's commit whose command contains the text (ticket 030)
+SEAT_MCP=""                  # team.conf "seat_mcp none [<seat>...]": "*" (every Claude seat) or " <seat> <seat> " starts with no MCP server; empty (inherit): the user's configuration
 NIGHTLY_WORKFLOW=""          # team.conf "nightly_workflow <file name>": the GitHub workflow that runs the full suite at night (empty: squad nightly is off)
 CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
 SESSION_NAME=""         # herdr session of this team (default: the repository's name)
@@ -128,6 +130,7 @@ load_conf() {
   local conf="$TEAM_DIR/team.conf" kw name kind role reviews rest n=0 line_no=0
   [ -f "$conf" ] || die "$conf not found. Run 'squad init' first."
   S_NAME=() S_KIND=() S_ROLE=() S_REVIEWS=() S_ARGS=()
+  DONE_CHECKS=""
   while IFS= read -r line || [ -n "$line" ]; do
     line_no=$((line_no + 1))
     line=${line%%#*}
@@ -166,6 +169,12 @@ load_conf() {
               case "$kw" in notice_redeliver_minutes) NOTICE_REDELIVER_MINUTES=$rest ;; notice_owner_minutes) NOTICE_OWNER_MINUTES=$rest ;; *) OWNER_REMINDER_HOURS=$rest ;; esac ;;
       notify_os) case "$rest" in on|off) NOTIFY_OS=$rest ;; *) die "team.conf line $line_no: 'notify_os' is on or off." ;; esac ;;
       seat_restart) case "$rest" in on|off) SEAT_RESTART=$rest ;; *) die "team.conf line $line_no: 'seat_restart' is on or off." ;; esac ;;
+      done_check) [ -n "$rest" ] || die "team.conf line $line_no: 'done_check' needs the text of a check command, e.g. done_check yarn knip"
+                  DONE_CHECKS="$DONE_CHECKS$rest"$'\n' ;;
+      seat_mcp) if [ "$rest" = inherit ]; then SEAT_MCP=""
+                elif [ "$rest" = none ]; then SEAT_MCP="*"
+                elif [[ "$rest" =~ ^none([[:space:]]+[a-z][a-z0-9_-]*)+$ ]]; then SEAT_MCP="$(printf '%s' "${rest#none}" | tr -s '[:space:]' ' ') "
+                else die "team.conf line $line_no: 'seat_mcp' is inherit, none, or none <seat> [<seat>...]."; fi ;;
       nightly_workflow) [[ "$rest" =~ ^[A-Za-z0-9._-]*$ ]] || die "team.conf line $line_no: 'nightly_workflow' is the file name of a workflow, e.g. nightly.yml."
                         NIGHTLY_WORKFLOW=$rest ;;
       consult) [ -n "$rest" ] || die "team.conf line $line_no: 'consult' needs a command, e.g. consult codex --search exec -m gpt-6.1-sol"
@@ -194,6 +203,10 @@ load_conf() {
   done
   [ "$leads" = 1 ] || die "team.conf must define exactly one seat with the role 'lead' (found $leads)."
   [ -n "$SESSION_NAME" ] || SESSION_NAME=$(basename "$REPO" | tr -c 'A-Za-z0-9._\n-' '-')
+  local m
+  [ "$SEAT_MCP" = "*" ] || for m in $SEAT_MCP; do
+    seat_index "$m" >/dev/null || die "team.conf: 'seat_mcp none' names '$m', which is not a seat."
+  done
 
   # Every name a reviewer points at must be a dev.
   local r target found j
@@ -420,11 +433,14 @@ run_in_group() {
 
 # The lock is a symbolic link whose target is "<seat>:<pid>:<epoch>": ln -s
 # creates it and names its owner in one atomic step, and fails if it exists.
-mutex() { # <dir>: a short critical section; a mutex older than a minute is left over from a crash
+mutex() { # <path>: a short critical section, ended with rm -f <path>; a mutex older than a minute is left over from a crash
   # bounded (about 2 min, past the 1-min stale rule): a folder that cannot be written fails, never hangs
+  # The claim is a file that bash itself makes in one step (set -C: a new file, or a failure), not mkdir: the mkdir of
+  # uutils 0.2.2 to 0.10.0 answers "made" for a folder that another caller made in between, so two callers held the
+  # mutex. A folder at the path (the mutex of an older squad on this machine) is a held mutex here too.
   local m=$1 tries=0 max=${SQUAD_MUTEX_TRIES:-600}
-  until mkdir "$m" 2>/dev/null; do
-    [ -z "$(find "$m" -maxdepth 0 -mmin +1 2>/dev/null)" ] || rmdir "$m" 2>/dev/null || true
+  until ( set -C; : >"$m" ) 2>/dev/null; do
+    [ -z "$(find "$m" -maxdepth 0 -mmin +1 2>/dev/null)" ] || rmdir "$m" 2>/dev/null || rm -f "$m" 2>/dev/null || true
     tries=$((tries + 1))
     [ "$tries" -lt "$max" ] || die "cannot create the lock $m (is its folder writable?)."
     sleep 0.2
@@ -486,7 +502,7 @@ heavy_clear_stale() {
       rm -f "$HEAVY_DIR/lock" "$HEAVY_DIR/lock.cmd" "$HEAVY_DIR/lock.pgid"
       log_event "$seat" - HEAVY_STALE "lock cleared: owner process gone or over time"
     fi
-    rmdir "$HEAVY_DIR/clean" 2>/dev/null || true
+    rm -f "$HEAVY_DIR/clean" 2>/dev/null || true
   fi
 }
 
@@ -510,7 +526,7 @@ heavy_ticket() { # -> the next arrival number (a counter under a mutex: callers 
   mutex "$HEAVY_DIR/seq.lock"
   n=$(( $(cat "$HEAVY_DIR/seq" 2>/dev/null || echo 0) + 1 ))
   echo "$n" >"$HEAVY_DIR/seq"
-  rmdir "$HEAVY_DIR/seq.lock"
+  rm -f "$HEAVY_DIR/seq.lock"
   printf '%012d' "$n"
 }
 
@@ -1250,7 +1266,7 @@ cmd_merge() { # squad merge CANDIDATE-<n>: the tested candidate becomes the inte
     *) die "a task reaches $TEAM_BASE only in a tested candidate: squad candidate CANDIDATE-<n> $cand …, the tester's PASS, then squad merge CANDIDATE-<n>." ;;
   esac
   valid_task "$cand"
-  mutex "$TEAM_DIR/.candidate.lock"; trap 'rmdir "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT   # builds and promotions one at a time
+  mutex "$TEAM_DIR/.candidate.lock"; trap 'rm -f "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT   # builds and promotions one at a time
   why=$(candidate_check "$cand") || die "merge refused: $why"
   rec="$TEAM_DIR/candidates/$cand"
   local testers=""; for ((t = 0; t < $(seat_count); t++)); do [ "${S_ROLE[$t]}" = tester ] && testers="$testers ${S_NAME[$t]}"; done
@@ -1357,7 +1373,7 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
   # shellcheck disable=SC2086  # the task list is split into its IDs; each is checked by valid_task below
   set -- $tasks
   mutex "$TEAM_DIR/.candidate.lock"   # builds and promotions one at a time
-  trap '[ -z "$CAND_COPY_B" ] || rm -f "$CAND_COPY_B"; [ -z "$CAND_COPY_C" ] || rm -f "$CAND_COPY_C"; rmdir "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT
+  trap '[ -z "$CAND_COPY_B" ] || rm -f "$CAND_COPY_B"; [ -z "$CAND_COPY_C" ] || rm -f "$CAND_COPY_C"; rm -f "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT
   # one number is one commit (ticket 026): a number with a record, a receipt or a branch is used; checked before any git change
   if [ -e "$TEAM_DIR/candidates/$cand" ] || [ -e "$TEAM_DIR/receipts/$cand" ] || git -C "$REPO" rev-parse -q --verify "refs/heads/candidate/$cand" >/dev/null; then
     die "$cand is used already (one number is one commit): the next free number is CANDIDATE-$(candidate_next)."
@@ -2137,7 +2153,7 @@ cmd_feedback() {
   # the highest F-number + 1: a pasted note with its own headings, or a deleted entry, never repeats an id
   n=$(( $(sed -n 's/^## F-\([0-9][0-9]*\) · .*/\1/p' "$TEAM_DIR/FEEDBACK.md" | sort -n | tail -1 || true) + 1 ))
   printf '\n## F-%s · %s\n\n%s\n\n- Status: open\n' "$n" "$(date '+%Y-%m-%d %H:%M')" "$text" >>"$TEAM_DIR/FEEDBACK.md"
-  rmdir "$TEAM_DIR/.feedback.lock"
+  rm -f "$TEAM_DIR/.feedback.lock"
   log_event owner - FEEDBACK "F-$n $(printf '%s' "$text" | head -1 | cut -c1-80)"
   if lead_line "[squad] Feedback F-$n from $OWNER_NAME in $TEAM_DIR/FEEDBACK.md: $(printf '%s' "$text" | head -1 | cut -c1-120). Turn it into a brief or a decision, then mark F-$n done with its id. (Notification: first finish what you were doing.)"; then
     say "F-$n saved and sent to $LEAD."
@@ -2774,7 +2790,7 @@ notices_tick_1() {
       rm -f "$f" "$d/.sent-$b" "$d/.owner-$b" "$d/.unsent-$b"; continue
     fi
     sent=$(num_in "$d/.sent-$b"); [ "$sent" -gt 0 ] || sent=$at
-    if [ -e "$d/.unsent-$b" ]; then   # its first send was held (the lead showed a dialog): it goes out as soon as the lead is free
+    if [ -e "$d/.unsent-$b" ]; then   # its first send was held (the lead showed a dialog) or failed (squad done could not reach herdr): it goes out as soon as the lead is free
       # the lead's state is asked again for each line (tell_lead): a line just sent can make the lead open a dialog
       if tell_lead "$line"; then put "$d/.sent-$b" "$now"; rm -f "$d/.unsent-$b"; fi
     elif [ $((now - sent)) -ge $((NOTICE_REDELIVER_MINUTES * 60)) ]; then
@@ -3226,6 +3242,26 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
   [ -z "$open" ] || { DONE_NOTE="not verified: rows$open"; DONE_UNTESTED=$(printf '%s' "$open" | sed 's/([a-z]*)//g; s/^ //; s/ /,/g'); }
 }
 
+done_checks() { # <index> <task>: a dev's DONE needs, for each done_check of team.conf, a 'squad heavy' run of this seat for
+  # this task on the task's commit now (the head of the seat's worktree, as 'squad heavy' reads it), whose command
+  # contains the text and which ended with exit 0 (ticket 030). No done_check line: nothing is asked.
+  [ -n "$DONE_CHECKS" ] || return 0
+  local seat=${S_NAME[$1]} task=$2 full c missing="" n=0
+  full=$(git -C "$(seat_cwd "$1")" rev-parse HEAD 2>/dev/null || echo "?")
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    # a run is its HEAVY_START (the commit, then the command after squad's own fields) and the HEAVY_END that follows it
+    DONE_CHECK=$c awk -v s="$seat" -v t="$task" -v sha="sha=$full" '
+      $3 != s || $4 != t { next }
+      $5 == "HEAVY_START" { ok = 0
+        if ($6 == sha) { x = $0; sub(/^.* HEAVY_START sha=[^ ]* limit=[^ ]*( waited=[^ ]*)?( sample=[^ ]*)?( in=[^ ]*)?( step=[^ ]*)? /, "", x); ok = index(x, ENVIRON["DONE_CHECK"]) > 0 } }
+      $5 == "HEAVY_END" { if (ok && $6 == "rc=0") pass = 1; ok = 0 }
+      END { exit !pass }' "$TEAM_DIR/events.log" 2>/dev/null && continue
+    missing="$missing"$'\n'"  squad heavy $seat $task -- $c"; n=$((n + 1))
+  done <<<"$DONE_CHECKS"
+  [ "$n" = 0 ] || die "DONE refused: $n check(s) of team.conf (done_check) have no passed run of $seat for $task on its commit ${full:0:7}. Commit, run each one, then report DONE again:$missing"
+}
+
 cmd_done() {
   [ $# -ge 3 ] || die "usage: squad done <seat> <task> <status>"
   local seat=$1 task=$2 status=$3 i role="" report culprit="" hint=""
@@ -3254,6 +3290,7 @@ cmd_done() {
   esac
   DONE_NOTE=""
   case "$role:$status" in dev:DONE|tester:PASS) done_gate "$i" "$task" "$status" "$report" ;; esac
+  [ "$role:$status" != dev:DONE ] || done_checks "$i" "$task"
   local head="" build=""   # a verdict covers one exact commit of the task; a candidate's PASS one build (ticket 018)
   case "$task:$status" in CANDIDATE-*:PASS) build=$(plan_hash "$TEAM_DIR/candidates/$task" 2>/dev/null || true) ;; esac
   case "$status" in APPROVE|CHANGES) head=$(git -C "$WT_ROOT/integration" rev-parse -q --verify "task/$task" 2>/dev/null || true) ;; esac
@@ -3265,12 +3302,17 @@ cmd_done() {
   # would drop the unfinished step; told to finish first, it does (tested).
   local msg="[squad] $seat finished $task: $status${report:+ — report: $report}${DONE_NOTE:+ ($DONE_NOTE)}.$hint (Notification: first finish what you were doing, then handle this.)"
   notice_keep "$seat" "$task" "$status" "$msg"
-  if seat_dialog "$LEAD"; then   # nothing is typed into a lead that shows a dialog: the watch sends the kept notice when it is free (notices_tick)
-    : >"$TEAM_DIR/observer/.notices/.unsent-$task.$seat"
+  # herdr is asked once, and its answer is needed: a command that runs in a sandbox (a Codex seat that joined 'squad done'
+  # to another command) cannot reach herdr, and that is neither "the lead shows a dialog" nor "the lead is free"
+  local agents unsent="$TEAM_DIR/observer/.notices/.unsent-$task.$seat"
+  local away="not sent: $LEAD could not be reached from here (herdr refused the call or did not answer; a command that runs in a sandbox cannot reach it). The event is logged, and squad watch sends your notice to $LEAD: $msg"
+  agents=$(herdr_team agent list 2>/dev/null) || { : >"$unsent"; say "$away"; return 0; }
+  if seat_dialog "$LEAD" "$agents"; then   # nothing is typed into a lead that shows a dialog: the watch sends the kept notice when it is free (notices_tick)
+    : >"$unsent"
     say "held: $LEAD shows a dialog. The event is logged, and squad watch sends your notice when $LEAD is free: $msg"
     return 0
   fi
-  herdr_team agent prompt "$LEAD" "$msg" >/dev/null || die "could not reach the lead; the event is in $TEAM_DIR/events.log"
+  herdr_team agent prompt "$LEAD" "$msg" >/dev/null || { : >"$unsent"; say "$away"; return 0; }
   say "told $LEAD: $msg"
 }
 
@@ -3377,7 +3419,7 @@ cmd_init() {
   copy_if_missing "$TEMPLATES/LESSONS.md" "$TEAM_DIR/LESSONS.md"
   mutex "$TEAM_DIR/.feedback.lock"   # the same lock as squad feedback: never copy over a saved entry
   copy_if_missing "$TEMPLATES/FEEDBACK.md" "$TEAM_DIR/FEEDBACK.md"
-  rmdir "$TEAM_DIR/.feedback.lock"
+  rm -f "$TEAM_DIR/.feedback.lock"
   mkdir -p "$TEAM_DIR/observer" "$TEAM_DIR/consult"
 
   # Keep team files out of commits without touching the tracked .gitignore.
@@ -3417,7 +3459,7 @@ update_conf() { # the whole read, decide and write runs under one mutex
   local rc=0
   mutex "$TEAM_DIR/.conf.lock"
   update_conf_locked || rc=$?
-  rmdir "$TEAM_DIR/.conf.lock" 2>/dev/null || true
+  rm -f "$TEAM_DIR/.conf.lock" 2>/dev/null || true
   return "$rc"
 }
 
@@ -4055,6 +4097,15 @@ start_seat() { # <index> <pane>
   # the seat's conversation: a Claude seat records its session id at every
   # start, /clear and compaction (SessionStart hook); after a restart, both
   # agents resume the seat's own conversation instead of starting blank
+  # seat_mcp none: Claude Code takes its MCP servers only from --mcp-config (--strict-mcp-config), and that file's list
+  # is empty (a file: no quotes or braces on the command line); before --settings, because --mcp-config takes every
+  # value that follows it up to the next option
+  if [ "$kind" = claude ]; then
+    case "$SEAT_MCP" in "*"|*" $name "*)
+      mkdir -p "$TEAM_DIR/seats" && put "$TEAM_DIR/seats/no-mcp.json" '{"mcpServers":{}}'
+      agent_args+=(--strict-mcp-config --mcp-config "$TEAM_DIR/seats/no-mcp.json") ;;
+    esac
+  fi
   [ "$kind" = claude ] && agent_args+=(--settings "$(write_seat_settings "$i")")
   [ "$kind" != claude ] || write_local_hooks "$(seat_cwd "$i")"
   local resume_id=""
@@ -4151,7 +4202,7 @@ up_lock() { # .team/up.lock -> <pid>: a link, created atomically; a dead owner's
     fi
     mutex "$TEAM_DIR/.up.clean"
     [ "$(readlink "$f" 2>/dev/null || true)" != "$pid" ] || rm -f "$f"
-    rmdir "$TEAM_DIR/.up.clean"
+    rm -f "$TEAM_DIR/.up.clean"
   done
   trap '[ "$(readlink "$TEAM_DIR/up.lock" 2>/dev/null)" = "$$" ] && rm -f "$TEAM_DIR/up.lock"' EXIT
 }

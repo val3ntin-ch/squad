@@ -13,6 +13,8 @@ mkdir -p "$tmp/bin" "$tmp/home"
 cat >"$tmp/bin/herdr" <<'EOF'
 #!/usr/bin/env bash
 echo "herdr $* sock=${HERDR_SOCKET_PATH:-}" >>"$MOCK_LOG"
+# MOCK_DOWN=1: herdr cannot be reached at all (a command that runs in Codex's sandbox)
+[ -z "${MOCK_DOWN:-}" ] || { echo 'Error: PermissionDenied: Operation not permitted (os error 1)' >&2; exit 1; }
 nf="$(dirname "$MOCK_LOG")/n"; n=$(cat "$nf" 2>/dev/null || echo 1)
 case "$1 $2" in
   "workspace create") echo '{"result":{"root_pane":{"pane_id":"w2:p1"},"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1"}}}' ;;
@@ -2583,6 +2585,102 @@ check "trial 6: and the lead's line names that age; the event has no new field" 
 check "029: the README says that GitHub starts a scheduled workflow only from the default branch, and that the workflow prints the tested commit" sh -c "grep -q 'only from the default branch' '$here/../README.md' && grep -q 'tested commit' '$here/../README.md' && ! grep -q -- '--branch' '$here/../README.md'"
 check "029: the README lists the command, the setting and a workflow example" sh -c "grep -q 'squad nightly' '$here/../README.md' && grep -q 'nightly_workflow' '$here/../README.md' && grep -q 'schedule:' '$here/../README.md'"
 check "029: the usage text lists squad nightly" sh -c "'$squad' help 2>&1 | grep -q 'squad nightly'"
+# ---- 030 · a notice from a sandbox reaches the lead; DONE needs the cheap checks; a seat with no MCP servers; the mutex ----
+export SQUAD_HEAVY_POLL=1 SQUAD_HEAVY_DIR="$tmp/heavy"
+unset MOCK_WS MOCK_PANES
+cd "$tmp"; "$squad" new t30 >/dev/null 2>&1; cd t30; reset_log
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat rev codex reviewer dev-a\nseat tester claude tester -\nupgrade off\n' >.team/team.conf
+"$squad" up >/dev/null 2>&1 || true
+check "030: with no seat_mcp line a Claude seat starts as before (no MCP option)" sh -c "grep -q '^herdr agent start dev-a ' '$MOCK_LOG' && ! grep -q -- '--strict-mcp-config\|--mcp-config' '$MOCK_LOG'"
+N30=.team/observer/.notices
+ag30='{"result":{"agents":[{"name":"lead","agent_status":"idle"},{"name":"dev-a","agent_status":"working"},{"name":"dev-b","agent_status":"working"},{"name":"rev","agent_status":"working"},{"name":"tester","agent_status":"working"}]}}'
+tick30() { MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' "$squad" watch --once >/dev/null 2>&1 || true; }
+sent30() { [ "$(grep -c "agent prompt lead \[squad\] $1 finished $2: $3" "$MOCK_LOG")" = "$4" ]; }   # <seat> <task> <status> <times the lead got the notice>
+# the real case: a Codex reviewer ran "cat > report && squad done" as one command, so it ran in Codex's sandbox, where every herdr call fails
+printf 'x\n' >.team/reports/T-1-review-1.md; : >.team/seats/lead.owner-wait   # a record of a dialog of the lead: with no herdr it proves nothing
+reset_log; drc=0; MOCK_DOWN=1 "$squad" "done" rev T-1 CHANGES >"$tmp/dout" 2>&1 || drc=$?
+rm -f .team/seats/lead.owner-wait
+check "030: squad done with no herdr in reach exits 0 and says that the lead was not reached and that squad watch sends the notice" sh -c "[ $drc = 0 ] && grep -q '^not sent: lead could not be reached from here' '$tmp/dout' && grep -q 'squad watch sends your notice to lead: \[squad\] rev finished T-1: CHANGES' '$tmp/dout'"
+check "030: it does not say that the lead shows a dialog, and it does not say 'told'" sh -c "! grep -q 'shows a dialog\|^told ' '$tmp/dout'"
+check "030: the event is logged once, and the notice is kept as not sent" sh -c "[ \$(grep -c ' rev T-1 CHANGES ' .team/events.log) = 1 ] && test -f $N30/T-1.rev -a -e $N30/.unsent-T-1.rev"
+reset_log; tick30; tick30
+check "030: squad watch sends that notice to the lead at its next tick, once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] rev finished T-1: CHANGES' '$MOCK_LOG') = 1 ] && test ! -e $N30/.unsent-T-1.rev -a -f $N30/T-1.rev"
+check "030: and it is the plain notice, not a second sending" refuses grep -q 'Sent again' "$MOCK_LOG"
+printf 'x\n' >.team/reports/T-1b-review-1.md
+reset_log; drc=0; MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' MOCK_FAIL_PROMPT=lead "$squad" "done" rev T-1b APPROVE >"$tmp/dout" 2>&1 || drc=$?
+check "030: a send that herdr refuses (no dialog) is kept as not sent too, and squad done exits 0" sh -c "[ $drc = 0 ] && grep -q '^not sent: lead could not be reached from here' '$tmp/dout' && test -e $N30/.unsent-T-1b.rev && grep -q ' rev T-1b APPROVE ' .team/events.log"
+reset_log; tick30; tick30
+check "030: and the watch sends it once" sent30 rev T-1b APPROVE 1
+reset_log; drc=0; MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' "$squad" "done" rev T-1 CHANGES >"$tmp/dout" 2>&1 || drc=$?
+check "030: with herdr in reach squad done tells the lead at once, as before" sh -c "[ $drc = 0 ] && grep -q '^told lead: ' '$tmp/dout' && test ! -e $N30/.unsent-T-1.rev"
+check "030: and the lead got it once" sent30 rev T-1 CHANGES 1
+# done_check: a dev's DONE needs a passed squad heavy run of each check on the task's commit
+DA30="$tmp/t30-team/dev-a"
+commit30() { echo "$1" >>"$DA30/f.txt" && git -C "$DA30" add f.txt && git -C "$DA30" commit -qm "T-2 $1"; }
+done30() { drc=0; MOCK_AGENTS=$ag30 MOCK_PANE_TEXT=$'Claude Code\n❯ ' "$squad" "done" "$@" >"$tmp/dout" 2>&1 || drc=$?; }
+dones30() { grep -c " dev-a T-2 DONE" .team/events.log || true; }
+git -C "$DA30" switch -q -c task/T-2 team/integration; commit30 one
+done30 dev-a T-2 DONE
+check "030: with no done_check line a dev's DONE is taken as before" sh -c "[ $drc = 0 ] && [ $(dones30) = 1 ]"
+printf 'done_check echo unit   # the unit tests\ndone_check echo knip\n' >>.team/team.conf
+h30=$(git -C "$DA30" rev-parse --short=7 HEAD)
+done30 dev-a T-2 DONE
+check "030: with done_check lines a DONE with no run is refused, and no event is logged" sh -c "[ $drc != 0 ] && grep -q 'DONE refused' '$tmp/dout' && [ $(dones30) = 1 ]"
+check "030: the refusal names each missing check as the command to run, and the commit" sh -c "grep -qx '  squad heavy dev-a T-2 -- echo unit' '$tmp/dout' && grep -qx '  squad heavy dev-a T-2 -- echo knip' '$tmp/dout' && grep -q 'on its commit $h30\.' '$tmp/dout'"
+"$squad" heavy dev-a T-2 -- echo unit >/dev/null 2>&1 || true
+"$squad" heavy dev-a T-2 -- sh -c 'echo knip; exit 3' >/dev/null 2>&1 || true   # a failed run
+"$squad" heavy dev-a T-9 -- echo knip >/dev/null 2>&1 || true                    # a passed run for another task
+"$squad" heavy dev-b T-2 -- echo knip >/dev/null 2>&1 || true                    # a passed run of another seat
+done30 dev-a T-2 DONE
+check "030: a passed run counts for its check; a failed run, a run for another task and a run of another seat do not" sh -c "[ $drc != 0 ] && grep -qx '  squad heavy dev-a T-2 -- echo knip' '$tmp/dout' && ! grep -q -- '-- echo unit' '$tmp/dout' && grep -q '1 check(s)' '$tmp/dout'"
+done30 dev-a T-2 BLOCKED
+check "030: BLOCKED is not held by done_check" sh -c "[ $drc = 0 ] && grep -q ' dev-a T-2 BLOCKED' .team/events.log"
+done30 tester T-2 PASS
+check "030: the tester's PASS is not held by done_check" sh -c "[ $drc = 0 ] && grep -q ' tester T-2 PASS' .team/events.log"
+"$squad" heavy dev-a T-2 -- echo knip >/dev/null 2>&1 || true
+commit30 two
+done30 dev-a T-2 DONE
+check "030: after a new commit the runs on the older commit do not count: both checks are named again" sh -c "[ $drc != 0 ] && grep -q '2 check(s)' '$tmp/dout' && [ $(dones30) = 1 ]"
+printf 'echo unit tests\necho knip --strict\n' >"$tmp/checks30"
+"$squad" heavy dev-a T-2 --batch "$tmp/checks30" >/dev/null 2>&1 || true
+done30 dev-a T-2 DONE
+check "030: with a passed run of each check on the task's commit (here: the steps of one batch) DONE is taken" sh -c "[ $drc = 0 ] && [ $(dones30) = 2 ]"
+check "030: a done_check line with no text is refused" sh -c "cp .team/team.conf '$tmp/conf30' && echo 'done_check' >>.team/team.conf && ! '$squad' status >/dev/null 2>&1; rc=\$?; cp '$tmp/conf30' .team/team.conf; exit \$rc"
+# seat_mcp: a Claude seat that starts with no MCP server (the options are checked on the real CLI by hand: ticket 030)
+mcp30() { grep "^herdr agent start $1 " "$MOCK_LOG" | grep -qF -- " --strict-mcp-config --mcp-config $tmp/t30/.team/seats/no-mcp.json --settings "; }   # <seat>: it starts with squad's empty MCP list
+up30() { cp "$tmp/conf30" .team/team.conf; printf '%s\n' "$1" >>.team/team.conf; reset_log; "$squad" up >/dev/null 2>&1; }       # <a seat_mcp line>
+up30 'seat_mcp none' || true
+check "030: seat_mcp none: every Claude seat starts with --strict-mcp-config and squad's --mcp-config file" sh -c "$(declare -f mcp30); MOCK_LOG='$MOCK_LOG' tmp='$tmp'; mcp30 lead && mcp30 dev-a && mcp30 dev-b && mcp30 tester"
+check "030: the file that --mcp-config names holds an empty server list" jq -e '.mcpServers == {}' .team/seats/no-mcp.json
+check "030: a Codex seat is not changed by seat_mcp" sh -c "grep -q '^herdr agent start rev ' '$MOCK_LOG' && ! grep '^herdr agent start rev ' '$MOCK_LOG' | grep -q -- 'mcp-config'"
+up30 'seat_mcp none tester dev-b' || true
+check "030: seat_mcp none <seats>: only the named seats start with no MCP server" sh -c "$(declare -f mcp30); MOCK_LOG='$MOCK_LOG' tmp='$tmp'; mcp30 tester && mcp30 dev-b && ! mcp30 lead && ! mcp30 dev-a && [ \$(grep -c -- '--strict-mcp-config' '$MOCK_LOG') = 2 ]"
+up30 'seat_mcp inherit' || true
+check "030: seat_mcp inherit starts every seat as before" sh -c "grep -q '^herdr agent start dev-a ' '$MOCK_LOG' && ! grep -q -- 'mcp-config' '$MOCK_LOG'"
+check "030: seat_mcp with another word is refused" refuses up30 'seat_mcp off'
+check "030: seat_mcp none with a name that is no seat is refused" refuses up30 'seat_mcp none nobody'
+cp "$tmp/conf30" .team/team.conf
+# the role files
+own30='Run `squad done` as its own command: joined to another command'
+check "030: the role files and PROTOCOL say: run squad done as its own command" sh -c "for f in roles/reviewer.md roles/dev.md roles/tester.md PROTOCOL.md; do grep -qF '$own30' .team/\$f || exit 1; done"
+check "030: the dev role says: run the team's done_check commands on your last commit before DONE" grep -qF "Before DONE, run the team's \`done_check\` commands on your last commit" .team/roles/dev.md
+check "030: the README lists done_check and seat_mcp, and says that Codex seats are not affected" sh -c "grep -q '^- \*\*done_check\*\*' '$here/../README.md' && grep -q '^- \*\*seat_mcp\*\*' '$here/../README.md' && grep -q 'Codex seats are not affected' '$here/../README.md'"
+# the mutex: with the mkdir of uutils 0.2.2 to 0.10.0 (the stand-in of ticket 029: it looks, waits a second, creates, and answers "made" for a
+# folder that another caller made in between) a mutex that is claimed with mkdir is held by every caller at once
+mk=$(command -v mkdir)
+printf '#!/bin/sh\nif [ $# = 1 ]; then [ ! -e "$1" ] || exit 1; sleep 1; "%s" "$1" 2>/dev/null || [ -d "$1" ]; exit; fi\nexec "%s" "$@"\n' "$mk" "$mk" >"$tmp/bin/mkdir"; chmod +x "$tmp/bin/mkdir"
+rm -f "$tmp"/frc30.*
+for k in 1 2 3; do ( rc=0; MOCK_AGENTS=$ag30 "$squad" feedback "note $k" >/dev/null 2>&1 || rc=$?; echo "$rc" >"$tmp/frc30.$k" ) & done; wait
+rm -f "$tmp/bin/mkdir"
+check "030: three callers of one mutex at once: each one ends well" test "$(cat "$tmp"/frc30.* | tr -d '\n')" = 000
+check "030: and each one held it alone: three feedback entries with three numbers" test "$(sed -n 's/^## \(F-[0-9]*\) · .*/\1/p' .team/FEEDBACK.md | sort -u | tr '\n' ' ')" = "F-1 F-2 F-3 "
+check "030: the mutex is free after them" test ! -e .team/.feedback.lock
+mkdir .team/.feedback.lock
+check "030: a lock folder of an older squad at the same path is a held mutex" sh -c "SQUAD_MUTEX_TRIES=3 '$squad' feedback 'x' 2>&1 | grep -q 'cannot create the lock'"
+touch -t 202601010000 .team/.feedback.lock
+check "030: and when it is older than a minute it is left over from a crash: the next caller takes it" sh -c "'$squad' feedback 'after a stale lock' >/dev/null 2>&1 && grep -q 'after a stale lock' .team/FEEDBACK.md && test ! -e .team/.feedback.lock"
+rm -rf .team/.feedback.lock; : >.team/.feedback.lock; touch -t 202601010000 .team/.feedback.lock
+check "030: a stale lock file is taken the same way" sh -c "'$squad' feedback 'after a stale file' >/dev/null 2>&1 && grep -q 'after a stale file' .team/FEEDBACK.md && test ! -e .team/.feedback.lock"
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

@@ -51,7 +51,7 @@ Changes I propose to the brief:
 5. Go through every row of the contract. Check each one now, also on a retest: a fix can break a row that passed before. Record the value and one of the five results.
 6. Visual check, when the brief has one: start the viewer the SPEC names, open what the contract lists, in every size and mode it lists, and save one screenshot of each to `$TEAM_DIR/reports/<ID>-shots/`, named `<screen>-<size>-<mode>.png`. Measure the values the rows ask for. Stop the viewer when you finish.
 7. For each failure, run the failing test file once on `$TEAM_BASE` and write `new` or `was already failing`.
-8. Write `$TEAM_DIR/reports/<ID>-test.md`, then run `squad done <your seat name> <ID> <PASS|FAIL>`. For PASS it checks that your report has every acceptance row and no `fail`. Reply with one line that names the report file, and stop.
+8. Write `$TEAM_DIR/reports/<ID>-test.md`, then run `squad done <your seat name> <ID> <PASS|FAIL>`. For PASS it checks that your report has every acceptance row and no `fail`. Run `squad done` as its own command: joined to another command (`cat … && squad done …`, `;`, a heredoc in the same call) a sandboxed seat cannot reach the lead. Reply with one line that names the report file, and stop.
 
 ## The report
 
