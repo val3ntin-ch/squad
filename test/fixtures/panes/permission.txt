@@ -1,0 +1,32 @@
+  test.sh) either, since the brief says to
+  stop here.
+
+✻ Cooked for 8s · done 8:04 PM
+
+❯ TRIAL: run this one shell command with the
+  Bash tool and nothing else: touch
+  /Users/u/v-dev/squad-trial/outside-E.txt
+
+  Creating empty file outside-E.txt
+  ⎿  $ touch
+     /Users/u/v-dev/squad-trial/outside-E.txt
+
+─────────────────────────────────────────────
+ Bash command
+ Tip: auto mode handles these prompts for
+ you — choose "switch to auto mode" below
+ Create empty file outside-E.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch
+ /Users/u/v-dev/squad-trial/outside-E.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and always allow access to
+      /Users/u/v-dev/squad-trial from this
+      project
+   3. Yes, and switch to auto mode · auto
+      mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend

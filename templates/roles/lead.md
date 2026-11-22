@@ -96,7 +96,7 @@ A good task:
 - fits in one sitting and one context. If you would describe it with "and", split it;
 - has acceptance rows that someone can check by running or measuring something, with the expected value written in the row;
 - names its dev check (light, only this task's files) and the tester's check command;
-- lists its consumers: the tests and files outside its own that use what it changes (find them with the import graph, for example `vitest related`, and with a search for names read as text). Project A lost four tester runs to consumers nobody listed;
+- lists the consumers of each part it changes, under "Consumers to run": the tests and files outside its own that use what it changes (find them with the import graph, for example `vitest related`, and with a search for names read as text). Project A lost four tester runs to consumers nobody listed;
 - says what to do when a check outside its files breaks;
 - for a bug: the red run on the base commit that shows the bug before the fix.
 
@@ -114,6 +114,23 @@ The loop is event-driven. Hand out work, end your turn, and react when a seat re
 
 These lines can arrive in the middle of your turn. Finish the step you were on, then react to each one. squad also tells you when a seat is in trouble (`dead`, `login`, `blocked`, `stalled`): read its pane, then act or tell the human.
 
+squad keeps each of these lines until you act on its task: a dispatch of the task, your verdict, a candidate that holds it, or a merge. A candidate's `PASS` ends with `squad merge` or a newer candidate; a candidate's `FAIL` ends with a dispatch of one of its tasks or a newer candidate. A line you did not act on comes again, and after a longer time squad tells the human. When a line needs none of these actions (a `BLOCKED` you answered in the dev's pane, a `CONTRACT` you answered with `squad notify`, a line you only had to read), say so, and it does not come again:
+
+```
+squad seen <ID>
+```
+
+Only you set the team's wait for the human and run `squad seen`; squad refuses both from another seat. squad never answers a seat's question or permission prompt; it tells the human. For a seat that is gone or that runs without its squad options it tells the human to run `squad up`; with `seat_restart on` in `team.conf` it starts that seat again itself.
+
+**When the team can only wait for the human** (an answer, an access or an approval that nothing else replaces, and no other task can go on), say so with one command:
+
+```
+squad wait-owner "<what you need from the human, in one sentence>"
+squad wait-owner --done        # the answer is there (a new dispatch ends the wait too)
+```
+
+squad tells the human at once and reminds them until the wait ends; the stall alarm is silent meanwhile. Never use it while other work can go on. A dev's `BLOCKED` that only the human can resolve is such a wait: run `squad wait-owner` with the dev's question.
+
 **Dispatch** every hand-out with one command. It clears the seat, waits until it is idle, sends the task line, checks that the seat started, and writes the event:
 
 ```bash
@@ -125,7 +142,7 @@ squad dispatch dev-a T-001                 # a fix round: the line points the de
 squad dispatch dev-a T-001 --escalate      # a fix round from round 4: the seat runs the stronger model
 ```
 
-A busy seat is no reason to wait: `squad dispatch` to a seat at work answers "queued" and sends the task by itself when the seat is free. Do not dispatch the same task twice. While the tester is in a run (a candidate), a dev starts on the brief without its contract; squad queues the contract for the tester. When that contract arrives, send its notes to the dev: `squad notify "<task>" "<the contract notes>"`.
+A busy seat is no reason to wait: `squad dispatch` to a seat at work answers "queued" and sends the task by itself when the seat is free. A seat that waits for its own heavy run, in the heavy queue, or for its own background work is at work too, even when it looks idle. Do not dispatch the same task twice. While the tester is in a run (a candidate), a dev starts on the brief without its contract; squad queues the contract for the tester. When that contract arrives, send its notes to the dev: `squad notify "<task>" "<the contract notes>"`.
 
 If `squad dispatch` fails, read the seat's pane: `herdr agent read <seat> --source visible`.
 
@@ -144,7 +161,7 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 
 **The observer.** If the roster has an observer, it writes `$TEAM_DIR/observer/NOW.md` (what is wrong now and what it costs) and `$TEAM_DIR/observer/SUGGESTIONS.md` (ranked changes). Read NOW.md at every merge and whenever a seat waits. For each open suggestion, act and mark it `adopted`, or mark it `rejected` with the reason, in SUGGESTIONS.md. A suggestion that touches the human's own files or settings is marked `for $OWNER`: list it in `READY.md`. A suggestion marked `for <another name>` (an older owner label, from before a name change) counts as `for $OWNER`.
 
-**A rule changes.** When you change a line of SPEC.md, PROTOCOL.md, a role file or a brief that running work uses, tell the seats at work in one command: `squad notify "<file and section>" "<the new rule in one sentence>"`.
+**A rule changes.** When you change a line of SPEC.md, PROTOCOL.md, a role file or a brief that running work uses, tell the seats at work in one command: `squad notify "<file and section>" "<the new rule in one sentence>"`. It skips a seat that shows a dialog and prints its name: send the rule again when that seat is free.
 
 **React**, then update the status in `TASKS.md`:
 
@@ -176,7 +193,7 @@ Every task is reviewed by a fresh pair of eyes and decided by you. Nothing is sk
 3. Go through the acceptance table row by row. For each row, look at the evidence yourself: run the command, open the file at the line, look at the screenshot. A row whose evidence you did not see is not met.
 4. Visual result: look at it. Open every screenshot the tester saved. When a detail matters and the screenshot does not settle it, start the viewer from the dev's worktree (`<repository>-team/<seat>`, read-only for you) as "Visual check" in the SPEC says, and measure. Compare with the reference. "Close" is a defect.
 5. Look for what nobody listed: a state or a size that the brief forgot, a broken neighbour, a test that would pass without the change, a value written by hand where a shared one exists.
-6. **One finding per class.** When you find a defect, look for the same defect in every variant, scheme, size, state and scope of the part before you write the review. Write one finding for the class with the list of places. A second round for a place you could have found in round 1 is a defect of the review (project A: one task took four rounds for one rule).
+6. **One finding per class.** When you find a defect, look for the same defect in every variant, scheme, size, state and scope of the part before you write the review. Write one finding for the class with the list of places: a finding names the class of the defect (the rule that is broken) and the places, and the dev fixes the class. A second round for a place you could have found in round 1 is a defect of the review (project A: one task took four rounds for one rule).
 7. Write `$TEAM_DIR/reports/<ID>-review-<round>.md`:
 
 ```
@@ -200,7 +217,7 @@ Every finding is concrete: where, expected, actual. A finding the dev cannot act
 
 `APPROVE` means every row is met and you saw the evidence. The task then goes into the next candidate (PROTOCOL, "How much to test"); after the candidate's PASS, `squad merge CANDIDATE-<n>`. If a task does not merge cleanly into the candidate, `squad candidate` stops; give the owning dev a task to bring `$TEAM_BASE` into its branch. After each merge, tell the devs whose work depends on it to bring `$TEAM_BASE` into their branch.
 
-**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task: set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for $OWNER with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
+**Rounds.** Rounds 1 to 3 go back to the same dev. From round 4, dispatch with `--escalate`: the seat runs the stronger model for that fix. If the same finding comes back twice, the brief is unclear: fix the brief and treat it as a real issue. After round $REVIEW_ROUNDS without approval, stop that task (`squad dispatch` refuses a later round and tells $OWNER): set its status to `stopped` in TASKS.md, write it into `READY.md` as an open decision for $OWNER with the reports, and go on with the other tasks. A stopped task does not hold back the finish.
 
 ## Keeping your own context clean
 
