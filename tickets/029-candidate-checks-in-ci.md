@@ -1,5 +1,5 @@
 # 029 · A fast gate for each candidate, the full suite once a night; squad reads the night's result
-Status: Approved (V!, 21 Nov 2026: option B, "go with it")
+Status: Done — awaiting PR review
 Size: S (≤ 2 h) for squad; the workflow is the team's own task
 
 ## Goal
@@ -21,7 +21,7 @@ price page, 21 Nov 2026: Linux 2-core $0.006 a minute; estimate of the minutes).
   candidate branches; `squad merge` and its conditions.
 
 ## Done when
-- [ ] `squad nightly` prints the newest scheduled run of `$TEAM_BASE` (date, commit,
+- [ ] `squad nightly` prints the newest scheduled run of the workflow (date, the workflow's commit,
       result, failed jobs with their URLs) and logs one `NIGHTLY` event per run.
 - [ ] `squad watch` runs that check once after each new scheduled run: on FAIL the lead
       gets one line and V! one notification; on PASS only the event.
@@ -42,3 +42,14 @@ One smoke test per "Done when" item.
 ## Assumptions & open questions
 - Built after tickets 023 to 028 are merged.
 - Hive applies the decision at once through its own rules; squad's part only reports.
+
+## Verification
+Two reviewers (GPT and Claude) on the full diff, findings fixed with tests; one real trial on a throwaway team (real git, real seats, a read-only `gh` call), 22 Nov 2026.
+
+| Item | Result | Evidence |
+|---|---|---|
+| `squad nightly` prints the newest scheduled run and logs one `NIGHTLY` event per run | PASS | smoke "029: squad nightly prints the date, the commit, the result and the failed jobs…"; real trial 6 (a real scheduled run read with the real `gh`, one event, none on the second call) |
+| The watch checks once per new run; FAIL: one line to the lead and one notification; PASS: the event only | PASS (the PASS path on stand-ins only) | smoke "029: the watch checks a new scheduled run once", "029: on FAIL the lead gets one line…"; real trial 6 (check 6, FAIL path) |
+| No `gh`, no workflow or no run: says so, exits 0, the watch stays silent | PASS | smoke "029: with no gh…", "029: with no scheduled run…"; real trial 6 (no remote, unknown workflow, no setting) |
+| The role files and PROTOCOL describe the fast gate and the nightly run | PASS | smoke "029: the role files and PROTOCOL describe the fast gate and the nightly full run" |
+| `test/smoke.sh` passes | PASS | 940 passed, 0 failed (bash 5 and bash 3.2) |
