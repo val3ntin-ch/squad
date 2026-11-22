@@ -120,7 +120,7 @@ NOTICE_OWNER_MINUTES=30      # team.conf "notice_owner_minutes": a notice the le
 OWNER_REMINDER_HOURS=4       # team.conf "owner_reminder_hours": squad wait-owner reminds the owner this often
 NOTIFY_OS=on                 # team.conf "notify_os off": only herdr's notification, none from the operating system
 SEAT_RESTART=off             # team.conf "seat_restart on": squad watch starts a seat again that is gone or runs without its squad options; off: it only tells the owner
-DONE_CHECKS=""               # team.conf "done_check <text>", one a line: a dev's DONE needs a passed 'squad heavy' run on the task's commit whose command contains the text (ticket 030)
+DONE_CHECKS=""               # team.conf "done_check <command>", one a line: a dev's DONE needs a passed, whole 'squad heavy' run of that command on the task's commit (ticket 030)
 SEAT_MCP=""                  # team.conf "seat_mcp none [<seat>...]": "*" (every Claude seat) or " <seat> <seat> " starts with no MCP server; empty (inherit): the user's configuration
 NIGHTLY_WORKFLOW=""          # team.conf "nightly_workflow <file name>": the GitHub workflow that runs the full suite at night (empty: squad nightly is off)
 CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
@@ -170,6 +170,9 @@ load_conf() {
       notify_os) case "$rest" in on|off) NOTIFY_OS=$rest ;; *) die "team.conf line $line_no: 'notify_os' is on or off." ;; esac ;;
       seat_restart) case "$rest" in on|off) SEAT_RESTART=$rest ;; *) die "team.conf line $line_no: 'seat_restart' is on or off." ;; esac ;;
       done_check) [ -n "$rest" ] || die "team.conf line $line_no: 'done_check' needs the text of a check command, e.g. done_check yarn knip"
+                  # the text is compared with a run's command as events.log has it: its words joined by one space, with no quotes
+                  rest=$(printf '%s' "$rest" | tr -s ' \t' ' ')
+                  case "$rest" in *\'*|*\"*|*"&&"*|*";"*|*"|"*) die "team.conf line $line_no: a 'done_check' command has no quote, &&, ; or |: its run is logged without quotes and could never match. Put the command in a script or a package script, and name that (e.g. done_check yarn check:unit)." ;; esac
                   DONE_CHECKS="$DONE_CHECKS$rest"$'\n' ;;
       seat_mcp) if [ "$rest" = inherit ]; then SEAT_MCP=""
                 elif [ "$rest" = none ]; then SEAT_MCP="*"
@@ -2792,7 +2795,11 @@ notices_tick_1() {
     sent=$(num_in "$d/.sent-$b"); [ "$sent" -gt 0 ] || sent=$at
     if [ -e "$d/.unsent-$b" ]; then   # its first send was held (the lead showed a dialog) or failed (squad done could not reach herdr): it goes out as soon as the lead is free
       # the lead's state is asked again for each line (tell_lead): a line just sent can make the lead open a dialog
-      if tell_lead "$line"; then put "$d/.sent-$b" "$now"; rm -f "$d/.unsent-$b"; fi
+      # squad done can replace the notice during the send (a newer report, with its own marker): then the marker stays
+      if tell_lead "$line"; then
+        put "$d/.sent-$b" "$now"
+        [ "$(cat "$f" 2>/dev/null)" != "$at $nr $seat $status $task"$'\n'"$line" ] || rm -f "$d/.unsent-$b"
+      fi
     elif [ $((now - sent)) -ge $((NOTICE_REDELIVER_MINUTES * 60)) ]; then
       # nothing is typed into a lead that shows a dialog (squad never answers one): the line goes out at a later tick
       if [ -e "$d/.owner-$b" ] && [ "$(num_in "$d/.owner-$b")" -ge "$NOTICE_RESENDS" ]; then :   # the owner knows: no line for ever
@@ -3243,23 +3250,28 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
 }
 
 done_checks() { # <index> <task>: a dev's DONE needs, for each done_check of team.conf, a 'squad heavy' run of this seat for
-  # this task on the task's commit now (the head of the seat's worktree, as 'squad heavy' reads it), whose command
-  # contains the text and which ended with exit 0 (ticket 030). No done_check line: nothing is asked.
+  # this task on the task's commit now (the head of the seat's worktree, as 'squad heavy' reads it), whose command is the
+  # check's command, whole (as written, or as the step of a batch: bash -c <command>), not a --sample run, and which
+  # ended with exit 0 (ticket 030). No done_check line: nothing is asked.
   [ -n "$DONE_CHECKS" ] || return 0
   local seat=${S_NAME[$1]} task=$2 full c missing="" n=0
   full=$(git -C "$(seat_cwd "$1")" rev-parse HEAD 2>/dev/null || echo "?")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
-    # a run is its HEAVY_START (the commit, then the command after squad's own fields) and the HEAVY_END that follows it
+    # a run is its HEAVY_START and the HEAVY_END that follows it. The start's text after the first " HEAVY_START " (a
+    # command can hold those words too): squad's own fields in their fixed order, then the command.
     DONE_CHECK=$c awk -v s="$seat" -v t="$task" -v sha="sha=$full" '
       $3 != s || $4 != t { next }
       $5 == "HEAVY_START" { ok = 0
-        if ($6 == sha) { x = $0; sub(/^.* HEAVY_START sha=[^ ]* limit=[^ ]*( waited=[^ ]*)?( sample=[^ ]*)?( in=[^ ]*)?( step=[^ ]*)? /, "", x); ok = index(x, ENVIRON["DONE_CHECK"]) > 0 } }
+        if ($6 == sha) { x = substr($0, index($0, " HEAVY_START ") + 13); c = ENVIRON["DONE_CHECK"]
+          sub(/^sha=[^ ]* limit=[^ ]*/, "", x); sub(/^ waited=[^ ]*/, "", x); part = sub(/^ sample=[^ ]*/, "", x)
+          sub(/^ in=[^ ]*/, "", x); sub(/^ step=[^ ]*/, "", x); sub(/^ /, "", x)
+          ok = !part && (x == c || x == "bash -c " c) } }
       $5 == "HEAVY_END" { if (ok && $6 == "rc=0") pass = 1; ok = 0 }
       END { exit !pass }' "$TEAM_DIR/events.log" 2>/dev/null && continue
     missing="$missing"$'\n'"  squad heavy $seat $task -- $c"; n=$((n + 1))
   done <<<"$DONE_CHECKS"
-  [ "$n" = 0 ] || die "DONE refused: $n check(s) of team.conf (done_check) have no passed run of $seat for $task on its commit ${full:0:7}. Commit, run each one, then report DONE again:$missing"
+  [ "$n" = 0 ] || die "DONE refused: $n check(s) of team.conf (done_check) have no passed run of $seat for $task on its commit ${full:0:7}. Commit, run each one as written (the whole command, no --sample), then report DONE again:$missing"
 }
 
 cmd_done() {

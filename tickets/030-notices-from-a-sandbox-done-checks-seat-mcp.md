@@ -56,3 +56,17 @@ One smoke test per "Done when" item; the `seat_mcp` item also by one real `claud
 - Open decision for V!: which hive seats get `seat_mcp none` (the devs may use the
   Playwright MCP server for screenshots), and hive's `done_check` lines (proposed: the
   unit tests of `@hive/ui`, of `@hive/storybook`'s non-browser tests, and `knip`).
+- Known limits (review of commit 11a4161, 22 Nov 2026):
+  - (a) When `herdr agent prompt` exits non-zero after it already typed the line, the lead
+    gets the notice a second time at the next tick. A duplicate is accepted; a lost notice
+    is not.
+  - (b) A failed run after a passed run on the same commit and command does not take the
+    pass back.
+  - (c) A run that outlived its budget and whose lock was cleared can make a later real
+    pass be refused (the safe direction). A run id in the events would fix it.
+  - (d) Pre-existing in `mutex()`, not changed here: the stale rule (older than 1 minute,
+    check then remove) can remove a fresh or a long-held lock. It needs an owner in the
+    lock; that is a later ticket.
+  - (e) An older squad on the same machine cannot clear a stale lock file of a crashed new
+    squad. Install the new binary before you add `done_check` or `seat_mcp` lines to
+    `team.conf`: an old binary stops on the unknown keyword.

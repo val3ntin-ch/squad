@@ -2622,30 +2622,61 @@ dones30() { grep -c " dev-a T-2 DONE" .team/events.log || true; }
 git -C "$DA30" switch -q -c task/T-2 team/integration; commit30 one
 done30 dev-a T-2 DONE
 check "030: with no done_check line a dev's DONE is taken as before" sh -c "[ $drc = 0 ] && [ $(dones30) = 1 ]"
-printf 'done_check echo unit   # the unit tests\ndone_check echo knip\n' >>.team/team.conf
+K30="$tmp/knip30"   # the second check passes only while this file is there
+printf 'done_check echo    unit   # the unit tests\ndone_check test -f %s\n' "$K30" >>.team/team.conf
 h30=$(git -C "$DA30" rev-parse --short=7 HEAD)
+hv30() { "$squad" heavy "$@" >/dev/null 2>&1 || true; }
 done30 dev-a T-2 DONE
 check "030: with done_check lines a DONE with no run is refused, and no event is logged" sh -c "[ $drc != 0 ] && grep -q 'DONE refused' '$tmp/dout' && [ $(dones30) = 1 ]"
-check "030: the refusal names each missing check as the command to run, and the commit" sh -c "grep -qx '  squad heavy dev-a T-2 -- echo unit' '$tmp/dout' && grep -qx '  squad heavy dev-a T-2 -- echo knip' '$tmp/dout' && grep -q 'on its commit $h30\.' '$tmp/dout'"
-"$squad" heavy dev-a T-2 -- echo unit >/dev/null 2>&1 || true
-"$squad" heavy dev-a T-2 -- sh -c 'echo knip; exit 3' >/dev/null 2>&1 || true   # a failed run
-"$squad" heavy dev-a T-9 -- echo knip >/dev/null 2>&1 || true                    # a passed run for another task
-"$squad" heavy dev-b T-2 -- echo knip >/dev/null 2>&1 || true                    # a passed run of another seat
+check "030: the refusal names each missing check as the command to run (runs of spaces as one), and the commit" sh -c "grep -qx '  squad heavy dev-a T-2 -- echo unit' '$tmp/dout' && grep -qx '  squad heavy dev-a T-2 -- test -f $K30' '$tmp/dout' && grep -q 'on its commit $h30\.' '$tmp/dout'"
+hv30 dev-a T-2 -- echo unit
+hv30 dev-a T-2 -- test -f "$K30"   # a failed run: the file is not there yet
+: >"$K30"
+hv30 dev-a T-9 -- test -f "$K30"   # a passed run for another task
+hv30 dev-b T-2 -- test -f "$K30"   # a passed run of another seat
 done30 dev-a T-2 DONE
-check "030: a passed run counts for its check; a failed run, a run for another task and a run of another seat do not" sh -c "[ $drc != 0 ] && grep -qx '  squad heavy dev-a T-2 -- echo knip' '$tmp/dout' && ! grep -q -- '-- echo unit' '$tmp/dout' && grep -q '1 check(s)' '$tmp/dout'"
+check "030: a passed run counts for its check; a failed run, a run for another task and a run of another seat do not" sh -c "[ $drc != 0 ] && grep -qx '  squad heavy dev-a T-2 -- test -f $K30' '$tmp/dout' && ! grep -q -- '-- echo unit' '$tmp/dout' && grep -q '1 check(s)' '$tmp/dout'"
 done30 dev-a T-2 BLOCKED
 check "030: BLOCKED is not held by done_check" sh -c "[ $drc = 0 ] && grep -q ' dev-a T-2 BLOCKED' .team/events.log"
 done30 tester T-2 PASS
 check "030: the tester's PASS is not held by done_check" sh -c "[ $drc = 0 ] && grep -q ' tester T-2 PASS' .team/events.log"
-"$squad" heavy dev-a T-2 -- echo knip >/dev/null 2>&1 || true
+hv30 dev-a T-2 -- test -f "$K30"
 commit30 two
 done30 dev-a T-2 DONE
 check "030: after a new commit the runs on the older commit do not count: both checks are named again" sh -c "[ $drc != 0 ] && grep -q '2 check(s)' '$tmp/dout' && [ $(dones30) = 1 ]"
-printf 'echo unit tests\necho knip --strict\n' >"$tmp/checks30"
-"$squad" heavy dev-a T-2 --batch "$tmp/checks30" >/dev/null 2>&1 || true
+# a part of a check is not the check: only the whole command counts, and never a --sample run
+unit30() { grep -qx '  squad heavy dev-a T-2 -- echo unit' "$tmp/dout"; }   # the refusal still names the unit check
+hv30 dev-a T-2 -- echo unit extra; done30 dev-a T-2 DONE
+check "030: a narrowed run (the check's command with one more argument) does not count" unit30
+hv30 dev-a T-2 -- sh -c 'true # echo unit'; done30 dev-a T-2 DONE
+check "030: a command that only contains the check's text does not count" unit30
+hv30 dev-a T-2 -- echo a HEAVY_START sha=x limit=1m echo unit; done30 dev-a T-2 DONE
+check "030: a command that carries the words of a start event before the check's text does not count" unit30
+hv30 dev-a T-2 --sample -- echo part '{shard}'
+s30=$(sed -n 's/.* dev-a T-2 HEAVY_START .* sample=[^ ]* in=[^ ]* //p' .team/events.log | tail -1)   # that run's command, as logged: echo part <k>/<n>
+echo "done_check $s30" >>.team/team.conf
+printf 'echo unit\ntest -f %s\n' "$K30" >"$tmp/checks30"
+hv30 dev-a T-2 --batch "$tmp/checks30"
 done30 dev-a T-2 DONE
-check "030: with a passed run of each check on the task's commit (here: the steps of one batch) DONE is taken" sh -c "[ $drc = 0 ] && [ $(dones30) = 2 ]"
+check "030: a --sample run does not count, also when its command is the check's text; the steps of a batch count" sh -c "[ -n '$s30' ] && [ $drc != 0 ] && grep -q '1 check(s)' '$tmp/dout' && grep -qx '  squad heavy dev-a T-2 -- $s30' '$tmp/dout' && [ $(dones30) = 1 ]"
+# shellcheck disable=SC2086  # the logged command, split into its words
+hv30 dev-a T-2 -- $s30
+done30 dev-a T-2 DONE
+check "030: with a passed whole run of each check on the task's commit DONE is taken" sh -c "[ $drc = 0 ] && [ $(dones30) = 2 ]"
 check "030: a done_check line with no text is refused" sh -c "cp .team/team.conf '$tmp/conf30' && echo 'done_check' >>.team/team.conf && ! '$squad' status >/dev/null 2>&1; rc=\$?; cp '$tmp/conf30' .team/team.conf; exit \$rc"
+bad30() { local rc=0; printf 'done_check %s\n' "$1" >>.team/team.conf; "$squad" status >"$tmp/dout" 2>&1 || rc=$?; cp "$tmp/conf30" .team/team.conf; [ "$rc" != 0 ] && grep -q "done_check.*script" "$tmp/dout"; }   # <text>: team.conf with it is refused, with the advice
+for t30 in "echo 'a b'" 'echo "a b"' 'yarn lint && yarn knip' 'yarn lint; yarn knip' 'yarn knip | tail -5'; do
+  check "030: a done_check text that a logged command can never equal is refused at load: $t30" bad30 "$t30"
+done
+# a notice that squad done replaces while the watch sends its older text: the newer one is still not sent, so its marker stays
+printf '%s %s rev CHANGES T-4\n[squad] rev finished T-4: CHANGES (the older report)\n' "$(date +%s)" "$(wc -l <.team/events.log | tr -d ' ')" >"$N30/T-4.rev"; : >"$N30/.unsent-T-4.rev"
+printf '%s %s rev CHANGES T-4\n[squad] rev finished T-4: CHANGES (the newer report)\n' "$(date +%s)" "$(wc -l <.team/events.log | tr -d ' ')" >"$tmp/newer30"
+reset_log; rm -f "$tmp/once30"
+MOCK_ON_PROMPT="[ -e '$tmp/once30' ] || { : >'$tmp/once30'; cp '$tmp/newer30' '$tmp/t30/$N30/T-4.rev'; : >'$tmp/t30/$N30/.unsent-T-4.rev'; }" tick30
+check "030: a notice replaced during the watch's send keeps its not-sent marker" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] rev finished T-4: CHANGES (the older report)' '$MOCK_LOG') = 1 ] && test -e $N30/.unsent-T-4.rev"
+tick30; tick30
+check "030: and the next tick sends the newer text, once" sh -c "[ \$(grep -c 'agent prompt lead \[squad\] rev finished T-4: CHANGES (the newer report)' '$MOCK_LOG') = 1 ] && test ! -e $N30/.unsent-T-4.rev"
+rm -f "$N30"/T-4.rev "$N30"/.*-T-4.rev
 # seat_mcp: a Claude seat that starts with no MCP server (the options are checked on the real CLI by hand: ticket 030)
 mcp30() { grep "^herdr agent start $1 " "$MOCK_LOG" | grep -qF -- " --strict-mcp-config --mcp-config $tmp/t30/.team/seats/no-mcp.json --settings "; }   # <seat>: it starts with squad's empty MCP list
 up30() { cp "$tmp/conf30" .team/team.conf; printf '%s\n' "$1" >>.team/team.conf; reset_log; "$squad" up >/dev/null 2>&1; }       # <a seat_mcp line>
