@@ -1122,13 +1122,16 @@ check "016: an older test result does not count for a newer round" grep -q 'w2:p
 printf '%s dev-a T-872 DISPATCH round=1\n%s dev-a T-872 DONE\n%s rev-x T-872 CHANGES review=1\n' "$(now)" "$(now)" "$(now)" >>.team/events.log
 reset_log; MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: a dev that is done follows the reviewer's verdict" grep -q 'w2:p3 .*--token ticket=T-872 .*--token phase=CHANGES ASKED' "$MOCK_LOG"
+check "trial 6: one check (watch --once) does not send an unchanged seat again" refuses grep -q 'report-metadata w2:p6 --source squad:seat' "$MOCK_LOG"
+reset_log; MOCK_AGENTS=$seats SQUAD_WATCH_POLL=2 "$squad" watch >/dev/null 2>&1 & wp=$!   # a long-running watch: the strip's start
+wait_log 'report-metadata w2:p6 --source squad:seat' || true; kill "$wp" 2>/dev/null || true; wait "$wp" 2>/dev/null || true
 check "016: a new strip (squad up, a herdr restart) sends every seat again" grep -q 'report-metadata w2:p6 --source squad:seat' "$MOCK_LOG"
 reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats "$squad" watch --once >/dev/null 2>&1
 check "016: the team's progress goes to its workspace entry" grep -q 'workspace report-metadata w2 --source squad:team --token team=[0-9]*/[0-9]* merged --token lock=lock free --token needs=nobody waits' "$MOCK_LOG"
 check "016: the team is in the list for the tab bar line" grep -qx "$PWD/.team" "$HOME/.config/squad/teams/proj4"
 printf '10:00:00 dev-b T-874 DISPATCH round=1\n10:05:00 dev-b T-874 DONE\n' >>.team/events.log
 seats_b='{"result":{"agents":[{"name":"dev-b","agent":"claude","pane_id":"w2:p4","agent_status":"idle"},{"name":"mine","agent":"claude","pane_id":"w2:p9","agent_status":"blocked"}]}}'
-reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
+rm -rf .team/observer/.ui; reset_log; MOCK_WS='{"result":{"workspaces":[{"label":"proj4 team","workspace_id":"w2"}]}}' MOCK_AGENTS=$seats_b "$squad" watch --once >/dev/null 2>&1
 check "016: an older event without a date still gives the seat its task and phase" grep -q 'w2:p4 .*--token ticket=T-874 .*--token phase=WAITS FOR TEST' "$MOCK_LOG"
 check "016: the owner's own blocked agent does not count as a seat that needs them" grep -q 'workspace report-metadata w2 .*--token needs=nobody waits' "$MOCK_LOG"
 printf '%s dev-b T-875 DISPATCH round=1\n%s dev-b T-875 DISPATCH_NOT_STARTED x\n' "$(now)" "$(now)" >>.team/events.log
@@ -2363,18 +2366,21 @@ printf '# Plan: tests\n\nStatus: approved by the owner 2026-11-16 10:00\n' >.tea
 mkdir -p "$HOME/.config/squad/approvals"; { shasum -a 256 .team/PLAN.md 2>/dev/null || sha256sum .team/PLAN.md; } | cut -d' ' -f1 >"$HOME/.config/squad/approvals/b28-PLAN.md.sha256"
 rm -f "$tmp/state"; reset_log
 check "028: the task that was left out is open for its dev again" sh -c "MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 '$squad' dispatch dev-a T-2 >/dev/null 2>&1 && grep -q ' dev-a T-2 DISPATCH ' .team/events.log"
+check "trial 6: a sent-back task dispatched with no text names the failed candidate and its step log, not the newest review" sh -c "grep -q 'agent prompt dev-a .*T-2 .*CANDIDATE-1 failed.*$tmp/b28/$R/step-2.log' '$MOCK_LOG' && ! grep -q 'agent prompt dev-a .*newest review' '$MOCK_LOG'"
 # a task that was sent back waits for the lead, also while the next candidate runs
 cp .team/events.log "$tmp/events.keep"; rm -rf .team/observer/.watchdog
 printf '2026-01-01 09:00:00 lead T-171 APPROVE\n2026-01-01 09:10:00 lead T-171 SENT_BACK from=CANDIDATE-71\n2026-01-01 09:11:00 tester CANDIDATE-72 DISPATCH round=1\n' >.team/events.log
+mkdir -p .team/observer/.ui; echo kept >.team/observer/.ui/trial6
 reset_log; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" watch --once >/dev/null 2>&1 || true
+check "trial 6: watch --once leaves the UI folder of the running watch and its files in place" grep -qx kept .team/observer/.ui/trial6
 check "028: a task that was sent back and has no dispatch waits for the lead (the stall alert names it)" grep -q ' lead - STALLED .*T-171 SENT_BACK' .team/events.log
 cp "$tmp/events.keep" .team/events.log; rm -rf .team/observer/.watchdog
-# a candidate with no receipt (its run wrote none): the tester still names the task, and the rebuild names the receipt folder
+# a candidate with no receipt (its run wrote none): the tester still names the task, and the rebuild names no log
 cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-3.md; printf 'true\n' >.team/tasks/CANDIDATE-3.checks
 "$squad" candidate CANDIDATE-3 T-1 T-3 >/dev/null 2>&1 || true
 printf 'RESULT: FAIL\n' >.team/reports/CANDIDATE-3-test.md
 check "028: FAIL --task works for a candidate that has no receipt" sh -c "MOCK_AGENTS='$ag28' '$squad' 'done' tester CANDIDATE-3 FAIL --task T-3 >/dev/null 2>&1 && grep -q ' tester CANDIDATE-3 CANDIDATE_FAIL task=T-3\$' .team/events.log"
-check "028: and the rebuild names the receipt folder when no step log is on record" sh -c "'$squad' candidate CANDIDATE-4 --from CANDIDATE-3 --without T-3 >/dev/null 2>&1 && grep -q ' lead T-3 SENT_BACK from=CANDIDATE-3 log=$tmp/b28/.team/receipts/CANDIDATE-3\$' .team/events.log"
+check "trial 6: a rebuild from a candidate with no failed step on record says so and names no log path" sh -c "'$squad' candidate CANDIDATE-4 --from CANDIDATE-3 --without T-3 >'$tmp/cout' 2>&1 && grep -q ' lead T-3 SENT_BACK from=CANDIDATE-3\$' .team/events.log && grep -q 'T-3 .*sent back.*no failed step is on record' '$tmp/cout' && ! grep -q 'receipts/CANDIDATE-3' '$tmp/cout'"
 # review findings: the rebuild carries the commits of the earlier candidate; a dependent task; a refused rebuild leaves nothing
 task28() { # <n> <start point>: task/T-<n> with one commit, done by dev-a and approved by the lead
   git -C "$DA" switch -q -c "task/T-$1" "$2" && echo "$1" >"$DA/t$1.txt" && git -C "$DA" add "t$1.txt" && git -C "$DA" commit -qm "T-$1"
@@ -2426,12 +2432,16 @@ cat >"$tmp/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >>"$MOCK_LOG"
 # GH_SLEEP: every call takes this many seconds (a gh that hangs); GH_VIEW_SLEEP: "run view" takes this many seconds
-# GH_MODE: fail (exit 1), garbage (an answer that is not JSON), ratelimit (GitHub's rate-limit error)
+# GH_MODE: fail (exit 1), garbage (an answer that is not JSON), ratelimit (GitHub's rate-limit error),
+# notfound (no such workflow), noremote (no GitHub remote), badtoken (a token that GitHub refuses)
 [ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
 case "${GH_MODE:-}" in
   fail) exit 1 ;;
   garbage) echo '<html>502 Bad Gateway</html>'; exit 0 ;;
   ratelimit) echo 'HTTP 403: API rate limit exceeded for user ID 1.' >&2; exit 1 ;;
+  notfound) echo 'HTTP 404: workflow nightly.yml not found on the default branch' >&2; exit 1 ;;
+  noremote) echo 'failed to determine base repo: no git remotes found' >&2; exit 1 ;;
+  badtoken) echo 'HTTP 401: Bad credentials' >&2; exit 1 ;;
 esac
 # like GitHub: a scheduled run belongs to the default branch (main), whatever ref the workflow checks out
 branch=""; prev=""; for a in "$@"; do [ "$prev" != --branch ] || branch=$a; prev=$a; done
@@ -2442,7 +2452,7 @@ esac
 EOF
 chmod +x "$tmp/bin/gh"
 export GH_RUNS="$tmp/gh-runs.json" GH_JOBS="$tmp/gh-jobs.json"; rm -f "$GH_RUNS"
-gh_run() { printf '[{"databaseId":%s,"headSha":"abc123def4567890","conclusion":"%s","status":"%s","createdAt":"2026-11-22T02:00:00Z","url":"https://github.test/o/r/actions/runs/%s"}]\n' "$1" "$2" "${3:-completed}" "$1" >"$GH_RUNS"; }   # <id> <conclusion> [<status>]
+gh_run() { printf '[{"databaseId":%s,"headSha":"abc123def4567890","conclusion":"%s","status":"%s","createdAt":"%s","url":"https://github.test/o/r/actions/runs/%s"}]\n' "$1" "$2" "${3:-completed}" "${4:-2026-11-22T02:00:00Z}" "$1" >"$GH_RUNS"; }   # <id> <conclusion> [<status> [<date>]]
 printf '{"jobs":[{"name":"unit","conclusion":"success","url":"https://github.test/job/1"},{"name":"storybook","conclusion":"failure","url":"https://github.test/job/2"}]}\n' >"$GH_JOBS"
 night() { nrc=0; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" nightly >"$tmp/nout" 2>&1 || nrc=$?; }
 nwatch() { SQUAD_NIGHTLY_POLL=0 MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" watch --once >/dev/null 2>&1 || true; }
@@ -2513,6 +2523,23 @@ SQUAD_NIGHTLY_POLL=0 MOCK_AGENTS="$ag28" MOCK_PANE_TEXT=$(cat "$longq") "$squad"
 check "029: a failed night while the lead shows a dialog: nothing is typed into the lead; the event and the owner's notification are there" sh -c "! grep -q 'agent prompt lead' '$MOCK_LOG' && grep -q ' lead - NIGHTLY FAIL run=84 ' .team/events.log && [ \$(grep -c 'notification show squad: the nightly run failed' '$MOCK_LOG') = 1 ]"
 nwatch; nwatch
 check "029: the lead gets the line once when the dialog is gone" told 1
+# trial 6: gh errors that are not about authentication; a night with many failed jobs; an old run
+for m in notfound noremote badtoken; do
+  reset_log; export GH_MODE=$m; night; unset GH_MODE
+  case "$m" in notfound) want='HTTP 404: workflow nightly.yml not found' ;; noremote) want='no git remotes found' ;; *) want='HTTP 401: Bad credentials' ;; esac
+  if [ "$m" = badtoken ]; then check "trial 6: a gh error about authentication gets the hint (see: gh auth status)" sh -c "grep -q '$want' '$tmp/nout' && grep -q 'gh auth status' '$tmp/nout'"
+  else check "trial 6: gh answers with '$m': the error is shown with no hint about authentication" sh -c "[ $nrc = 0 ] && grep -q '$want' '$tmp/nout' && ! grep -q 'gh auth status' '$tmp/nout'"; fi
+done
+{ printf '{"jobs":['; for k in 1 2 3 4 5 6 7 8; do printf '{"name":"job%s","conclusion":"failure","url":"https://github.test/job/%s"},' "$k" "$k"; done; printf '{"name":"unit","conclusion":"success","url":"https://github.test/job/9"}]}\n'; } >"$GH_JOBS"
+first5='8 failed jobs: job1 https://github.test/job/1; job2 https://github.test/job/2; job3 https://github.test/job/3; job4 https://github.test/job/4; job5 https://github.test/job/5; and 3 more: https://github.test/o/r/actions/runs/85'
+gh_run 85 failure completed "$(jq -nr 'now | todate')"; reset_log; night
+check "trial 6: squad nightly still prints every failed job" test "$(grep -c '^  failed: job' "$tmp/nout")" = 8
+check "trial 6: the NIGHTLY event carries the number of failed jobs, the first 5 and the run for the others" sh -c "grep -q ' lead - NIGHTLY FAIL run=85 .* failed: $first5\$' .team/events.log && ! grep ' NIGHTLY FAIL run=85 ' .team/events.log | grep -q job6"
+check "trial 6: the lead's line carries the same short list" sh -c "grep -q 'agent prompt lead \[squad\] The nightly run.*$first5\. ' '$MOCK_LOG' && ! grep 'agent prompt lead' '$MOCK_LOG' | grep -q job6"
+check "trial 6: a run of today gets no remark on its age" sh -c "! grep -q 'days old' '$tmp/nout' && ! grep -q 'days old' '$MOCK_LOG'"
+gh_run 86 failure completed "$(jq -nr 'now - 259200 | todate')"; reset_log; night
+check "trial 6: a run that is 3 days old is printed with its age" grep -q '(3 days old: the schedule may not be running)  FAIL' "$tmp/nout"
+check "trial 6: and the lead's line names that age; the event has no new field" sh -c "grep -q 'agent prompt lead \[squad\] The nightly run of .*(3 days old: the schedule may not be running)' '$MOCK_LOG' && ! grep -q 'NIGHTLY .*days old' .team/events.log"
 check "029: the README says that GitHub starts a scheduled workflow only from the default branch, and that the workflow prints the tested commit" sh -c "grep -q 'only from the default branch' '$here/../README.md' && grep -q 'tested commit' '$here/../README.md' && ! grep -q -- '--branch' '$here/../README.md'"
 check "029: the README lists the command, the setting and a workflow example" sh -c "grep -q 'squad nightly' '$here/../README.md' && grep -q 'nightly_workflow' '$here/../README.md' && grep -q 'schedule:' '$here/../README.md'"
 check "029: the usage text lists squad nightly" sh -c "'$squad' help 2>&1 | grep -q 'squad nightly'"

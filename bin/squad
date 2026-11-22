@@ -992,7 +992,12 @@ wait_started() { # <seat> <task text> <seconds>
 
 default_task_line() { # <role> <task> <round>
   case "$1" in
-    dev) if [ "$3" -gt 1 ] || [ -f "$TEAM_DIR/reports/$2-test.md" ]; then echo "$2 needs changes. Read the newest review in $TEAM_DIR/reports/$2-review-*.md (and $TEAM_DIR/reports/$2-test.md if it failed), fix every finding, update your report."
+    dev) local sb; sb=$(awk -v t="$2" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 ~ /^(SENT_BACK|APPROVE|CHANGES|PASS|FAIL|MERGE)$/ { l = $0 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null || true)
+         # sent back from a candidate: the newest review is the APPROVE, so the line names the candidate and its step log
+         if [[ "$sb" == *" $2 SENT_BACK from="* ]]; then sb=${sb#* SENT_BACK from=}
+           if [[ "$sb" == *" log="* ]]; then echo "$2 was sent back: its candidate ${sb%% *} failed. Read the log of the step that failed, ${sb#* log=}, fix what it shows, update your report."
+           else echo "$2 was sent back: its candidate ${sb%% *} failed. No failed step is on record: ask the lead what failed, fix it, update your report."; fi
+         elif [ "$3" -gt 1 ] || [ -f "$TEAM_DIR/reports/$2-test.md" ]; then echo "$2 needs changes. Read the newest review in $TEAM_DIR/reports/$2-review-*.md (and $TEAM_DIR/reports/$2-test.md if it failed), fix every finding, update your report."
          else echo "Task $2 is yours. Read $TEAM_DIR/tasks/$2.md and follow your role file."; fi ;;
     tester) echo "Test task $2. Read $TEAM_DIR/tasks/$2.md and follow your role file." ;;
     reviewer) echo "Review task $2, round $3. Read $TEAM_DIR/tasks/$2.md and follow your role file." ;;
@@ -1397,10 +1402,11 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
   say "$cand is ${sha:0:12} (candidate/$cand)${from:+, with $*}. The tester runs: squad heavy <tester> $cand --batch .team/tasks/$cand.checks"
   # the task that was left out is open for its dev again: its state is "sent back" (the lead's APPROVE of the other tasks stays)
   [ -n "$from" ] || return 0
-  flog=$(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$from/receipt" 2>/dev/null | head -1 || true); flog="$TEAM_DIR/receipts/$from${flog:+/$flog}"
+  flog=$(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$from/receipt" 2>/dev/null | head -1 || true); flog=${flog:+$TEAM_DIR/receipts/$from/$flog}
   for t in ${without//,/ }; do
-    log_event "$LEAD" "$t" SENT_BACK "from=$from log=$flog"
-    say "$t is sent back to its dev: it is not in $cand. The log of the step that failed in $from: $flog. Dispatch it at once: squad dispatch <dev> $t \"<what failed, and the log>\""
+    log_event "$LEAD" "$t" SENT_BACK "from=$from${flog:+ log=$flog}"
+    if [ -n "$flog" ]; then say "$t is sent back to its dev: it is not in $cand. The log of the step that failed in $from: $flog. Dispatch it at once: squad dispatch <dev> $t \"<what failed, and the log>\""
+    else say "$t is sent back to its dev: it is not in $cand; no failed step is on record for $from (no step log). Dispatch it at once: squad dispatch <dev> $t \"<what failed>\""; fi
   done
 }
 
@@ -2841,30 +2847,38 @@ gh_limited() { # <command...>: its output; false when it fails (then: the first 
 }
 cmd_nightly() { # prints the run; with no setting, no gh or no run it says so; always true
   find_repo; load_conf
-  local gh=${SQUAD_GH:-gh} j id sha concl status at url res jobs="" names
+  local gh=${SQUAD_GH:-gh} j id sha concl status at url res jobs="" names="" n ts old="" hint=""
   [ -n "$NIGHTLY_WORKFLOW" ] || { say "squad nightly: no workflow is set. Name the workflow that runs the full suite at night: nightly_workflow <file name> in $TEAM_DIR/team.conf."; return 0; }
   command -v "$gh" >/dev/null 2>&1 || { say "squad nightly: gh (the GitHub CLI) is not installed; the night's result is not read."; return 0; }
   j=$(gh_limited "$gh" run list --workflow "$NIGHTLY_WORKFLOW" --event schedule --limit 1 --json databaseId,headSha,conclusion,status,createdAt,url) \
-    || { say "squad nightly: gh could not list the runs of $NIGHTLY_WORKFLOW${j:+: $j} (see: gh auth status)."; return 0; }
+    || { case "$j" in *[Aa]uth*|*401*|*403*|*[Ll]ogin*) hint=" (see: gh auth status)" ;; esac   # the hint only for an error about authentication
+         say "squad nightly: gh could not list the runs of $NIGHTLY_WORKFLOW${j:+: $j}$hint."; return 0; }
   jq -e 'type == "array"' >/dev/null 2>&1 <<<"$j" || { say "squad nightly: the answer of gh is not a list of runs; the night's result is not read."; return 0; }
   id=$(jq -r '.[0].databaseId // empty' <<<"$j" 2>/dev/null || true)
   [[ "$id" =~ ^[0-9]+$ ]] || { say "squad nightly: no scheduled run of $NIGHTLY_WORKFLOW yet."; return 0; }
-  { IFS=$'\t' read -r sha concl status at url; } < <(jq -r '.[0] | [.headSha, .conclusion, .status, .createdAt, .url] | map(. // "" | tostring | gsub("[[:space:]]"; " ") | if . == "" then "-" else . end) | @tsv' <<<"$j") || true
+  { IFS=$'\t' read -r sha concl status at url ts; } < <(jq -r '.[0] | [.headSha, .conclusion, .status, .createdAt, .url, (.createdAt | try fromdateiso8601 catch 0)] | map(. // "" | tostring | gsub("[[:space:]]"; " ") | if . == "" then "-" else . end) | @tsv' <<<"$j") || true
   if [ "$status" != completed ]; then say "squad nightly: $at  $status (not ended yet)  $url"; return 0; fi
   res=FAIL; [ "$concl" != success ] || res=PASS
   if [ "$res" = FAIL ]; then   # the jobs that did not pass, each with its URL
     jobs=$(gh_limited "$gh" run view "$id" --json jobs | jq -r '.jobs[]? | select((.conclusion // "") as $c | $c != "" and $c != "success" and $c != "skipped" and $c != "neutral") | "\(.name) \(.url)" | gsub("[[:space:]]+"; " ")' 2>/dev/null || true)
   fi
-  say "squad nightly: $at  $res  $url  (workflow commit ${sha:0:12}: the default branch, not the tested commit)"
+  # a newest run older than 36 hours: the schedule may not be running
+  [[ "$ts" =~ ^[0-9]+$ ]] && [ "$ts" -gt 0 ] && [ $(($(date +%s) - ts)) -gt 129600 ] && old=" ($(( ($(date +%s) - ts + 43200) / 86400 )) days old: the schedule may not be running)"
+  say "squad nightly: $at$old  $res  $url  (workflow commit ${sha:0:12}: the default branch, not the tested commit)"
   [ -z "$jobs" ] || printf '  failed: %s\n' "$jobs" | sed '2,$s/^/  failed: /'
   # this run is on record: one event, one line, one notification. The watch and this command, or two watches, can read
   # the same run at once: mkdir of the run's marker is one step, and only the caller that made it logs and tells.
   mkdir -p "$TEAM_DIR/observer/.nightly-runs"
   mkdir "$TEAM_DIR/observer/.nightly-runs/$id" 2>/dev/null || return 0
-  names=$(printf '%s' "$jobs" | tr '\n' ';' | sed 's/;/; /g')
+  # the event and the lead's line: the number of failed jobs and the first 5; the run's page has the others
+  if [ -n "$jobs" ]; then
+    n=$(printf '%s\n' "$jobs" | grep -c . || true)
+    names="$n failed job$([ "$n" = 1 ] || echo s): $(printf '%s\n' "$jobs" | sed -n '1,5p' | tr '\n' ';' | sed 's/;$//; s/;/; /g')"
+    [ "$n" -le 5 ] || names="$names; and $((n - 5)) more: $url"
+  fi
   log_event "$LEAD" - NIGHTLY "$res run=$id workflow_commit=$sha date=$at url=$url${names:+ failed: $names}"
   [ "$res" = FAIL ] || return 0
-  lead_line "[squad] The nightly run of $at ($NIGHTLY_WORKFLOW) failed: ${names:-see the run}. Run: $url. Make a fix task for each failure (PROTOCOL, \"The fast gate and the nightly full run\"). (Notification: first finish what you were doing.)" || true
+  lead_line "[squad] The nightly run of $at$old ($NIGHTLY_WORKFLOW) failed: ${names:-see the run}. Run: $url. Make a fix task for each failure (PROTOCOL, \"The fast gate and the nightly full run\"). (Notification: first finish what you were doing.)" || true
   v_notify "squad: the nightly run failed" "$(basename "$REPO"), $at: ${names:-see the run}. $url"
 }
 NIGHTLY_POLL=${SQUAD_NIGHTLY_POLL:-600}   # seconds between two questions of the watch to GitHub
@@ -3104,7 +3118,7 @@ cmd_watch() {
   local once=0 observe=0 a self="$SQUAD_HOME/bin/squad" sum csum
   for a in "$@"; do case "$a" in --once) once=1 ;; --observe) observe=1 ;; esac; done
   sum=$(cksum <"$self" 2>/dev/null || true); csum=$(cksum <"$TEAM_DIR/team.conf" 2>/dev/null || true)
-  [ "$observe" = 1 ] || ui_reset   # a new strip (squad up, a herdr restart): send herdr everything again
+  [ "$observe" = 1 ] || [ "$once" = 1 ] || ui_reset   # a new strip (squad up, a herdr restart): send herdr everything again; one check (--once) leaves the running strip's folder
   while :; do
     watch_once
     [ "$observe" = 1 ] || { watchdog_tick || true; ui_sync || true; report_lost_requests || true; }
