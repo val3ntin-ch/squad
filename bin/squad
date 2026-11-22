@@ -51,12 +51,16 @@ Usage:
   squad tokens                      tokens and model calls per seat and per task, from the agents' session files
   squad statusline                  Claude Code status line: shows and records Claude's usage
   squad done <seat> <task> <status> a worker tells the lead it finished (used by agents)
+                                    (the tester, for a failed candidate: FAIL --task <ID> names the task that failed)
   squad git <args>                  git writes for agents (switch/add/commit/merge...; push only the integration branch; no force/delete)
   squad heavy <seat> [task] [--limit min] [--batch file] -- cmd   run a heavy command: one at a time,
                                     first come first served (agents); --batch: a candidate's commands under one lock
   squad dispatch <seat> <task>      clear a seat, give it the task, confirm it started (the lead)
   squad candidate CANDIDATE-<n> <task...>  build a candidate from the lead's approved task commits (the lead)
+  squad candidate CANDIDATE-<m> --from CANDIDATE-<n> --without <task>   the tasks of a failed candidate without
+                                    the task that failed, as the next candidate (the lead)
   squad merge CANDIDATE-<n>         the tested candidate becomes the integration branch, exactly (the lead)
+  squad nightly                     the newest scheduled run of the full suite on GitHub (nightly_workflow in team.conf)
   squad notify "<where>" "<rule>"   tell the seats at work that a rule changed (the lead)
   squad consult "<question>" [f..]  an independent GPT brainstorm from official sources (the lead)
   squad plan "<goal>" [--feature]   the planner researches and proves the plan before any work
@@ -116,6 +120,7 @@ NOTICE_OWNER_MINUTES=30      # team.conf "notice_owner_minutes": a notice the le
 OWNER_REMINDER_HOURS=4       # team.conf "owner_reminder_hours": squad wait-owner reminds the owner this often
 NOTIFY_OS=on                 # team.conf "notify_os off": only herdr's notification, none from the operating system
 SEAT_RESTART=off             # team.conf "seat_restart on": squad watch starts a seat again that is gone or runs without its squad options; off: it only tells the owner
+NIGHTLY_WORKFLOW=""          # team.conf "nightly_workflow <file name>": the GitHub workflow that runs the full suite at night (empty: squad nightly is off)
 CONSULT_CMD="codex --search exec -m gpt-6.1-sol -c model_reasoning_effort=medium"
 SESSION_NAME=""         # herdr session of this team (default: the repository's name)
 
@@ -161,6 +166,8 @@ load_conf() {
               case "$kw" in notice_redeliver_minutes) NOTICE_REDELIVER_MINUTES=$rest ;; notice_owner_minutes) NOTICE_OWNER_MINUTES=$rest ;; *) OWNER_REMINDER_HOURS=$rest ;; esac ;;
       notify_os) case "$rest" in on|off) NOTIFY_OS=$rest ;; *) die "team.conf line $line_no: 'notify_os' is on or off." ;; esac ;;
       seat_restart) case "$rest" in on|off) SEAT_RESTART=$rest ;; *) die "team.conf line $line_no: 'seat_restart' is on or off." ;; esac ;;
+      nightly_workflow) [[ "$rest" =~ ^[A-Za-z0-9._-]*$ ]] || die "team.conf line $line_no: 'nightly_workflow' is the file name of a workflow, e.g. nightly.yml."
+                        NIGHTLY_WORKFLOW=$rest ;;
       consult) [ -n "$rest" ] || die "team.conf line $line_no: 'consult' needs a command, e.g. consult codex --search exec -m gpt-6.1-sol"
                CONSULT_CMD=$rest ;;
       session) [[ "$rest" =~ ^[A-Za-z0-9._-]+$ ]] || die "team.conf line $line_no: 'session' is a herdr session name (letters, digits, . _ -)."
@@ -634,7 +641,7 @@ cmd_heavy() {
     [ -d "$run_dir" ] || run_dir=$snap
     snap_name=${snap#"$WT_ROOT"/}
   fi
-  local step=0 worst=0 rcs="" changed=0 retried=0 flakes="" ldir=""
+  local step=0 worst=0 rcs="" changed=0 retried=0 flakes="" ldir="" failed=""
   if [ -n "$crec" ]; then   # a candidate keeps each step's output beside its receipt (ticket 026); a new run starts clean
     ldir="$TEAM_DIR/receipts/$task"; [ -d "$ldir" ] || rm -f "$ldir"
     mkdir -p "$ldir"; rm -f "$ldir"/step-*.log "$ldir/receipt"
@@ -685,13 +692,14 @@ cmd_heavy() {
     retried=0
     [ "$rc" = 0 ] || [ "$worst" != 0 ] || worst=$rc
     step=$((step + 1)); rcs="$rcs step$step=$rc"
+    [ "$rc" = 0 ] || failed="$failed${failed:+$'\n'}failed=step$step rc=$rc log=step-$step.log"   # ticket 028: the receipt names each failed step
     [ -n "$batch" ] && [ "$step" -lt "$nsteps" ] || break
     [ "$rc" != 124 ] || break   # a hung or timed-out step ends the batch: the lock goes to the next in line
     cmdv=(bash -c "${batchv[$step]}")
   done
   if [ -n "$crec" ]; then   # the runner's receipt: written by this run, never by the seat that reports PASS
     if [ "$changed" = 0 ] && [ "$(git -C "$wt" rev-parse HEAD)" = "$full" ] && [ -z "$(wt_changes "$wt")" ] && [ "$(plan_hash "$crec" 2>/dev/null)" = "$cbuild" ]; then
-      { echo "build=$cbuild"; echo "sha=$full"; echo "checks=$cchecks"; echo "steps=$step"; printf '%s\n' $rcs; echo "flakes=${flakes# }"; } >"$ldir/receipt.tmp" \
+      { echo "build=$cbuild"; echo "sha=$full"; echo "checks=$cchecks"; echo "steps=$step"; printf '%s\n' $rcs; echo "flakes=${flakes# }"; [ -z "$failed" ] || printf '%s\n' "$failed"; } >"$ldir/receipt.tmp" \
         && mv "$ldir/receipt.tmp" "$ldir/receipt"
     else
       say "squad heavy: the tester's worktree or $task's build changed during the run; no receipt for $task." >&2; [ "$worst" != 0 ] || worst=1
@@ -1296,15 +1304,42 @@ candidate_next() { # -> the first number above every candidate record, receipt a
 
 cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the base and the lead's approved task commits
   find_repo; load_conf
-  local cand=${1:-} t h v tmp base sha brief checks I="$WT_ROOT/integration"
-  [[ "$cand" =~ ^CANDIDATE-[0-9]+$ ]] && [ $# -ge 2 ] || die "usage: squad candidate CANDIDATE-<n> <task> [<task>...]"
+  local cand=${1:-} t h v tmp base sha brief checks I="$WT_ROOT/integration" from="" without="" tasks="" flog=""
+  local usage="usage: squad candidate CANDIDATE-<n> <task> [<task>...] | squad candidate CANDIDATE-<m> --from CANDIDATE-<n> --without <task>"
+  [[ "$cand" =~ ^CANDIDATE-[0-9]+$ ]] && [ $# -ge 2 ] || die "$usage"
   shift
+  # ticket 028: --from CANDIDATE-<n> --without <task>: the tasks of the earlier candidate (its CANDIDATE event), minus the task that failed
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) [[ "${2:-}" =~ ^CANDIDATE-[0-9]+$ ]] || die "$usage"; from=$2; shift ;;
+      --without) [ -n "${2:-}" ] || die "$usage"; valid_task "$2"; without="$without${without:+,}$2"; shift ;;
+      -*) die "$usage" ;;
+      *) tasks="$tasks $1" ;;
+    esac
+    shift
+  done
+  if [ -n "$from" ] || [ -n "$without" ]; then
+    [ -n "$from" ] && [ -n "$without" ] && [ -z "$tasks" ] || die "$usage"
+    tasks=$(awk -v c="$from" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == c && $5 == "CANDIDATE" && sub(/.*tasks=/, "") { x = $0 } END { print x }' "$TEAM_DIR/events.log" 2>/dev/null)
+    [ -n "$tasks" ] || die "$from was not built with 'squad candidate' (no CANDIDATE event with its tasks)."
+    for t in ${without//,/ }; do
+      case " $tasks " in *" $t "*) ;; *) die "$t is not a task of $from (its tasks: $tasks)." ;; esac
+      v=""; for h in $tasks; do [ "$h" = "$t" ] || v="$v $h"; done; tasks=${v# }
+    done
+    [ -n "$tasks" ] || die "$from without $without has no task left: nothing to build."
+  fi
+  # shellcheck disable=SC2086  # the task list is split into its IDs; each is checked by valid_task below
+  set -- $tasks
   mutex "$TEAM_DIR/.candidate.lock"; trap 'rmdir "$TEAM_DIR/.candidate.lock" 2>/dev/null || true' EXIT   # builds and promotions one at a time
   # one number is one commit (ticket 026): a number with a record, a receipt or a branch is used; checked before any git change
   if [ -e "$TEAM_DIR/candidates/$cand" ] || [ -e "$TEAM_DIR/receipts/$cand" ] || git -C "$REPO" rev-parse -q --verify "refs/heads/candidate/$cand" >/dev/null; then
     die "$cand is used already (one number is one commit): the next free number is CANDIDATE-$(candidate_next)."
   fi
   brief="$TEAM_DIR/tasks/$cand.md"; checks="$TEAM_DIR/tasks/$cand.checks"
+  if [ -n "$from" ]; then   # one command: a brief or a check list that is not written yet is the earlier candidate's (the brief with the new name)
+    [ -e "$brief" ] || [ ! -f "$TEAM_DIR/tasks/$from.md" ] || sed -e "s/$from\$/$cand/" -e "s/$from\([^0-9]\)/$cand\1/g" "$TEAM_DIR/tasks/$from.md" >"$brief"
+    [ -e "$checks" ] || [ ! -f "$TEAM_DIR/tasks/$from.checks" ] || cp "$TEAM_DIR/tasks/$from.checks" "$checks"
+  fi
   [ -n "$(acceptance_rows "$brief" 2>/dev/null)" ] || die "write the candidate's brief first, with its acceptance rows: $brief"
   grep -qvE '^[[:space:]]*(#|$)' "$checks" 2>/dev/null || die "write the candidate's check list first: $checks (one command a line)."
   base=$(git -C "$I" rev-parse "$TEAM_BASE") || die "no branch $TEAM_BASE."
@@ -1330,8 +1365,15 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
   git -C "$REPO" branch -f "candidate/$cand" "$sha" >/dev/null
   mkdir -p "$TEAM_DIR/candidates"
   { echo "base=$base"; echo "sha=$sha"; echo "brief=$(plan_hash "$brief")"; echo "checks=$(plan_hash "$checks")"; printf 'task=%s\n' "${heads[@]}"; } >"$TEAM_DIR/candidates/$cand"
-  log_event "$LEAD" "$cand" CANDIDATE "sha=$sha base=$base tasks=$*"
-  say "$cand is ${sha:0:12} (candidate/$cand). The tester runs: squad heavy <tester> $cand --batch .team/tasks/$cand.checks"
+  log_event "$LEAD" "$cand" CANDIDATE "sha=$sha base=$base${from:+ from=$from without=$without} tasks=$*"
+  say "$cand is ${sha:0:12} (candidate/$cand)${from:+, with $*}. The tester runs: squad heavy <tester> $cand --batch .team/tasks/$cand.checks"
+  # the task that was left out is open for its dev again: its state is "sent back" (the lead's APPROVE of the other tasks stays)
+  [ -n "$from" ] || return 0
+  flog=$(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$from/receipt" 2>/dev/null | head -1 || true); flog="$TEAM_DIR/receipts/$from${flog:+/$flog}"
+  for t in ${without//,/ }; do
+    log_event "$LEAD" "$t" SENT_BACK "from=$from log=$flog"
+    say "$t is sent back to its dev: it is not in $cand. The log of the step that failed in $from: $flog. Dispatch it at once: squad dispatch <dev> $t \"<what failed, and the log>\""
+  done
 }
 
 # ---- squad notify: tell the seats at work that a rule changed ---------------
@@ -2746,11 +2788,48 @@ owner_wait_tick() {
   put "$f.reminded" "$now"
   v_notify "squad: $(basename "$REPO") still waits for you" "$what (since $(fmt_hm "$at"))"
 }
+# ---- squad nightly: the night's full run on GitHub (ticket 029) ----------------
+# Each candidate runs the fast checks; the full suite runs once a night in GitHub Actions (the team's own workflow,
+# team.conf "nightly_workflow <file name>"). squad reads the newest scheduled run of the integration branch through gh.
+# One NIGHTLY event per run; a failed run is told to the lead (one line) and to the owner (one notification), once.
+cmd_nightly() { # prints the run; with no setting, no gh or no run it says so; always true
+  find_repo; load_conf
+  local gh=${SQUAD_GH:-gh} j id sha concl status at url res jobs="" names seen="$TEAM_DIR/observer/.nightly-run"
+  [ -n "$NIGHTLY_WORKFLOW" ] || { say "squad nightly: no workflow is set. Name the workflow that runs the full suite at night: nightly_workflow <file name> in $TEAM_DIR/team.conf."; return 0; }
+  command -v "$gh" >/dev/null 2>&1 || { say "squad nightly: gh (the GitHub CLI) is not installed; the night's result is not read."; return 0; }
+  j=$(cd "$REPO" && "$gh" run list --workflow "$NIGHTLY_WORKFLOW" --branch "$TEAM_BASE" --event schedule --limit 1 --json databaseId,headSha,conclusion,status,createdAt,url 2>/dev/null) \
+    || { say "squad nightly: gh could not list the runs of $NIGHTLY_WORKFLOW (see: gh auth status)."; return 0; }
+  id=$(jq -r '.[0].databaseId // empty' <<<"$j" 2>/dev/null || true)
+  [[ "$id" =~ ^[0-9]+$ ]] || { say "squad nightly: no scheduled run of $NIGHTLY_WORKFLOW on $TEAM_BASE yet."; return 0; }
+  { IFS=$'\t' read -r sha concl status at url; } < <(jq -r '.[0] | [.headSha, .conclusion, .status, .createdAt, .url] | map(. // "" | tostring | gsub("[[:space:]]"; " ") | if . == "" then "-" else . end) | @tsv' <<<"$j") || true
+  if [ "$status" != completed ]; then say "squad nightly: $at  ${sha:0:12}  $status (not ended yet)  $url"; return 0; fi
+  res=FAIL; [ "$concl" != success ] || res=PASS
+  if [ "$res" = FAIL ]; then   # the jobs that did not pass, each with its URL
+    jobs=$("$gh" run view "$id" --json jobs 2>/dev/null | jq -r '.jobs[]? | select((.conclusion // "") as $c | $c != "" and $c != "success" and $c != "skipped" and $c != "neutral") | "\(.name) \(.url)" | gsub("[[:space:]]+"; " ")' 2>/dev/null || true)
+  fi
+  say "squad nightly: $at  ${sha:0:12}  $res  $url"
+  [ -z "$jobs" ] || printf '  failed: %s\n' "$jobs" | sed '2,$s/^/  failed: /'
+  [ "$(cat "$seen" 2>/dev/null)" != "$id" ] || return 0   # this run is on record: one event, one line, one notification
+  mkdir -p "$TEAM_DIR/observer"; put "$seen" "$id"
+  names=$(printf '%s' "$jobs" | tr '\n' ';' | sed 's/;/; /g')
+  log_event "$LEAD" - NIGHTLY "$res run=$id sha=$sha date=$at url=$url${names:+ failed: $names}"
+  [ "$res" = FAIL ] || return 0
+  lead_line "[squad] The nightly run of $at on $TEAM_BASE (${sha:0:12}) failed: ${names:-see the run}. Run: $url. Make a fix task for each failure (PROTOCOL, \"The fast gate and the nightly full run\"). (Notification: first finish what you were doing.)" || true
+  v_notify "squad: the nightly run failed" "$(basename "$REPO"), $at, ${sha:0:12}: ${names:-see the run}. $url"
+}
+NIGHTLY_POLL=${SQUAD_NIGHTLY_POLL:-600}   # seconds between two questions of the watch to GitHub
+nightly_tick() { # the watch: the same check, silent, once per NIGHTLY_POLL; a new run is handled once (cmd_nightly)
+  local f="$TEAM_DIR/observer/.nightly-asked" now; now=$(date +%s)
+  [ -n "$NIGHTLY_WORKFLOW" ] && command -v "${SQUAD_GH:-gh}" >/dev/null 2>&1 || return 0
+  [ $((now - $(num_in "$f"))) -ge "$NIGHTLY_POLL" ] || return 0
+  mkdir -p "$TEAM_DIR/observer"; put "$f" "$now"
+  ( cmd_nightly ) >/dev/null 2>&1 || true
+}
 watchdog_tick() {
   local now last lastev wait key mk="$TEAM_DIR/observer/.watchdog" agents i name st text p7
   mkdir -p "$mk"; now=$(date +%s)
   # 1. a stall: no team event for stall_alert_minutes, and a verdict, a DONE or a test result is the newest event of a task
-  lastev=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 != "observer" && $5 != "IDLE" && $5 != "OBSERVE" && $5 != "STALLED" && $5 != "NOTIFY_NOT_SHOWN" && $5 !~ /^SEAT_/ { l = $1 " " $2 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null)
+  lastev=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $3 != "observer" && $5 != "IDLE" && $5 != "OBSERVE" && $5 != "STALLED" && $5 != "NOTIFY_NOT_SHOWN" && $5 != "NIGHTLY" && $5 !~ /^SEAT_/ { l = $1 " " $2 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null)
   if [ -n "$lastev" ]; then
     last=$(date -j -f '%Y-%m-%d %H:%M:%S' "$lastev" +%s 2>/dev/null || date -d "$lastev" +%s 2>/dev/null || echo "$now")
     agents=$(herdr_team agent list 2>/dev/null || echo '{"result":{"agents":[]}}')
@@ -2761,9 +2840,9 @@ watchdog_tick() {
       wait=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ {
           if ($4 ~ /^CANDIDATE-/ && $5 == "DISPATCH") { open[$4] = NR }
           if ($4 ~ /^CANDIDATE-/ && ($5 == "PASS" || $5 == "FAIL")) { delete open[$4]; ended = NR }
-          if ($4 ~ /^T-/ && $5 ~ /^(DISPATCH|DISPATCH_QUEUED|DONE|PASS|FAIL|APPROVE|CHANGES|MERGE|BLOCKED)$/) { e[$4] = $5; at[$4] = NR } }
+          if ($4 ~ /^T-/ && $5 ~ /^(DISPATCH|DISPATCH_QUEUED|DONE|PASS|FAIL|APPROVE|CHANGES|SENT_BACK|MERGE|BLOCKED)$/) { e[$4] = $5; at[$4] = NR } }
         END { held = 0; for (c in open) if (open[c] > held) held = open[c]
-          for (t in e) if (e[t] ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES)$/ && !(e[t] == "APPROVE" && held > at[t])) printf "%s %s ", t, e[t] }' "$TEAM_DIR/events.log" 2>/dev/null)
+          for (t in e) if (e[t] ~ /^(DONE|PASS|FAIL|APPROVE|CHANGES|SENT_BACK)$/ && !(e[t] == "APPROVE" && held > at[t])) printf "%s %s ", t, e[t] }' "$TEAM_DIR/events.log" 2>/dev/null)
       key="$mk/stall-$last"
       if [ -n "$wait" ] && [ ! -e "$key" ]; then
         [ -e "$key.logged" ] || { : >"$key.logged"; log_event "$LEAD" - STALLED "no event for $(( (now - last) / 60 )) min while waiting: $wait"; }
@@ -2812,6 +2891,7 @@ watchdog_tick() {
   notices_tick || true
   lead_lines_tick || true
   owner_wait_tick || true
+  nightly_tick || true
   return 0
 }
 
@@ -3067,8 +3147,9 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
 
 cmd_done() {
   [ $# -ge 3 ] || die "usage: squad done <seat> <task> <status>"
-  local seat=$1 task=$2 status=$3 i role="" report
+  local seat=$1 task=$2 status=$3 i role="" report culprit="" hint=""
   valid_task "$task"
+  if [ "${4:-}" = --task ]; then culprit=${5:-}; [ -n "$culprit" ] || die "--task takes a task ID."; valid_task "$culprit"; fi
   [[ "$status" =~ ^[A-Z_]{2,20}$ ]] || die "status '$status' must be one word in capitals (DONE, BLOCKED, PASS, FAIL, APPROVE, CHANGES, CONTRACT)."
   find_repo; load_conf
   i=$(seat_index "$seat") || die "no seat named '$seat' in this team."
@@ -3076,6 +3157,13 @@ cmd_done() {
   [ -z "${TEAM_ROLE:-}" ] || [ "$TEAM_ROLE" = "$seat" ] || die "$TEAM_ROLE cannot report for $seat: a seat reports only as itself."
   case "$task:$status" in CANDIDATE-*:PASS|CANDIDATE-*:FAIL) [ "$role" = tester ] || die "only the tester reports a candidate's $status." ;; esac
   case "$status" in APPROVE|CHANGES) [ "$role" = lead ] || [ "$role" = reviewer ] || die "only the lead or a reviewer gives a verdict." ;; esac
+  if [ -n "$culprit" ]; then   # ticket 028: the tester names the task it holds responsible for a candidate's FAIL
+    case "$task:$status" in CANDIDATE-*:FAIL) ;; *) die "--task names the task that failed a candidate: squad done <tester> CANDIDATE-<n> FAIL --task <ID>." ;; esac
+    sed -n 's/^task=\([^:]*\):.*/\1/p' "$TEAM_DIR/candidates/$task" 2>/dev/null | grep -qxF -- "$culprit" \
+      || die "$culprit is not a task of $task (its tasks: $(sed -n 's/^task=\([^:]*\):.*/\1/p' "$TEAM_DIR/candidates/$task" 2>/dev/null | tr '\n' ' '))."
+    hint=$(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$task/receipt" 2>/dev/null | head -1 || true)
+    hint=" The tester names $culprit${hint:+; the log of the failed step: $TEAM_DIR/receipts/$task/$hint}. The next candidate without it: squad candidate CANDIDATE-$(candidate_next) --from $task --without $culprit."
+  fi
   case "$role" in
     dev) report="$TEAM_DIR/reports/$task-dev.md" ;;
     tester) if [ "$status" = CONTRACT ]; then report="$TEAM_DIR/reports/$task-contract.md"; else report="$TEAM_DIR/reports/$task-test.md"; fi ;;
@@ -3089,10 +3177,11 @@ cmd_done() {
   case "$status" in APPROVE|CHANGES) head=$(git -C "$WT_ROOT/integration" rev-parse -q --verify "task/$task" 2>/dev/null || true) ;; esac
   [ -z "$report" ] || [ -f "$report" ] || say "squad: note — $report does not exist yet; write the report first."
   log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)${DONE_UNTESTED:+ untested=$DONE_UNTESTED}${head:+ head=$head}${build:+ build=$build}"
+  [ -z "$culprit" ] || log_event "$seat" "$task" CANDIDATE_FAIL "task=$culprit"
   [ "$seat" = "$LEAD" ] && return 0
   # Codex injects a message that arrives mid-turn into the running turn and
   # would drop the unfinished step; told to finish first, it does (tested).
-  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}${DONE_NOTE:+ ($DONE_NOTE)}. (Notification: first finish what you were doing, then handle this.)"
+  local msg="[squad] $seat finished $task: $status${report:+ — report: $report}${DONE_NOTE:+ ($DONE_NOTE)}.$hint (Notification: first finish what you were doing, then handle this.)"
   notice_keep "$seat" "$task" "$status" "$msg"
   if seat_dialog "$LEAD"; then   # nothing is typed into a lead that shows a dialog: the watch sends the kept notice when it is free (notices_tick)
     : >"$TEAM_DIR/observer/.notices/.unsent-$task.$seat"
@@ -4214,6 +4303,7 @@ case "$cmd" in
   merge)   cmd_merge "$@" ;;
   candidate) cmd_candidate "$@" ;;
   notify)  cmd_notify "$@" ;;
+  nightly) cmd_nightly ;;
   consult) cmd_consult "$@" ;;
   plan)    cmd_plan "$@" ;;
   ui-setup) find_repo; load_conf; cmd_ui_setup ;;

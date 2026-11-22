@@ -68,6 +68,7 @@ Each repository's team runs in its own herdr session, named after the repository
 | `squad down` | Stops the team: closes its herdr workspace and every agent in it. Worktrees, branches and `.team/` stay. |
 | `squad clean` | Removes the team's worktrees. Worktrees with uncommitted work are kept, and branches are never deleted. |
 | `squad config` | Creates or shows your personal default team. |
+| `squad nightly` | Shows the newest scheduled run of the full suite on GitHub for the integration branch: its date, commit, result, and the failed jobs with their URLs. It needs `gh` and the `nightly_workflow` setting; without them, or with no run yet, it says so and does nothing else. See "The fast gate and the nightly full run". |
 | `squad wait-owner "<what>"` | The lead's command when the team can only wait for you: you get a notification now and a reminder every `owner_reminder_hours`; the stall alarm is silent meanwhile. `squad wait-owner --done` or a new dispatch ends the wait. |
 | `squad feedback "<text>"` | Your feedback after testing: saved in `.team/FEEDBACK.md`, logged, sent to the lead, who turns it into a task or a decision. When the lead shows a dialog the command says that the line is held; `squad watch` sends it when the lead is free. |
 | `squad update-conf` | Adds the settings and seats a new squad version needs to `.team/team.conf` and says what it added. `squad up` and `squad init` run it; a file that has everything is left alone. |
@@ -129,6 +130,7 @@ setup pnpm install --frozen-lockfile
 - **notify_os** (on): a notification to you is also an operating-system notification (macOS, through `osascript`). **notify_os off** keeps herdr's notification only.
 - **seat_restart** (off): `squad watch` ends and starts no seat. For a seat that is gone with a task open, or that runs without its squad options, it writes the event and tells you to run `squad up`. **seat_restart on**: the watch starts such a seat again by itself, with the guards in "The watch" below.
 - **flake_rerun** (1): a step of a `squad heavy --batch` run that fails is run once more alone. When it passes then, the batch goes on, and the flake is on record: a `FLAKE` event, one line in `.team/flakes.log`, and `flakes=<step>` in the candidate's receipt. `flake_rerun 0`: any failure fails the batch.
+- **nightly_workflow** (empty: off): the file name of the GitHub Actions workflow that runs the full suite once a night on the integration branch, for example `nightly_workflow nightly.yml`. With it, `squad nightly` reads the newest scheduled run through `gh`, and `squad watch` asks GitHub every 10 minutes: each new run is one `NIGHTLY PASS` or `NIGHTLY FAIL` event; a failed run is one line to the lead and one notification to you, with the failed jobs.
 - **verify_hook off** writes `.agents-verify-off` into every team worktree, so a global Stop hook that runs the whole repository's verify at every turn end skips them. The tester's runs are the gate.
 - **session** is the herdr session name (default: the repository's name).
 - **setup** runs once in every new worktree, so each agent can build and test.
@@ -195,12 +197,39 @@ lead   adjudicates each finding, checks the screens: squad done lead T-001 APPRO
 lead   writes tasks/CANDIDATE-1.md (its rows) and tasks/CANDIDATE-1.checks (its commands), then squad candidate CANDIDATE-1 T-001 T-002
 lead   squad dispatch tester CANDIDATE-1       ▶ tester runs squad heavy tester CANDIDATE-1 --batch …checks on that commit; a task's own PASS does not count
 lead   after the tester's PASS on CANDIDATE-1: squad merge CANDIDATE-1  (the integration branch becomes exactly that commit)
+tester a failed candidate: squad done tester CANDIDATE-1 FAIL --task T-002   (the task it holds responsible; the receipt names the failed step and its log)
+lead   squad candidate CANDIDATE-2 --from CANDIDATE-1 --without T-002  ▶ the other tasks go on with no new review; T-002 goes back to its dev
 lead   a real issue: squad consult "<question>" ▶ GPT brainstorms from official sources; both views go into DECISIONS.md
 observer  measures every pass, writes observer/NOW.md and SUGGESTIONS.md; the lead adopts or rejects each one
 lead   converge, LESSONS.md, READY.md ──▶ you   (only when everything is green)
 ```
 
 A team needs a tester seat to merge: `squad merge` takes only a candidate that the tester passed (add a `tester` seat to team.conf first).
+
+### The fast gate and the nightly full run
+
+One machine has one test lock, and a full suite on every candidate makes that lock the team's queue. With `nightly_workflow` set, each candidate runs only the fast checks (lint, types, build, unit tests, the tests of the changed parts), and the full suite runs once a night in GitHub Actions on the integration branch. The workflow is your project's own file; squad only reads its result. An example, `.github/workflows/nightly.yml` (put your project's commands in it; `team/integration` is the default `base`):
+
+```yaml
+name: Nightly full suite
+on:
+  schedule:
+    - cron: "0 2 * * *"   # GitHub runs a schedule on the default branch only
+permissions:
+  contents: read
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: team/integration   # the team's integration branch
+      - run: npm ci
+      - run: npm test             # the full suite
+```
+
+Then `nightly_workflow nightly.yml` in `.team/team.conf`. `squad nightly` prints the newest scheduled run and its failed jobs; the lead makes a fix task for each failure.
 
 | File in `.team/` | Purpose |
 |---|---|
@@ -212,7 +241,7 @@ A team needs a tester seat to merge: `squad merge` takes only a candidate that t
 | `tasks/<ID>.md` | One complete brief per task: goal, files, acceptance table, dev check, check command, consumers, what to do when a check outside breaks, red run for bugs, visual check, references. |
 | `reports/` | The contract, the dev's, the tester's and the review reports, each with the acceptance table and its evidence. Screenshots in `reports/<ID>-shots/`. |
 | `events.log` | One line per dispatch, report, heavy run, merge, decision, consult, trouble and restart, with date and time. |
-| `receipts/CANDIDATE-<n>/` | The runner's `receipt` of a candidate run (the commit, each step's exit code, the flaky steps) and one log per step (`step-<i>.log`; `step-<i>.first.log` is the failed first run of a flaky step). Kept after a failure too. |
+| `receipts/CANDIDATE-<n>/` | The runner's `receipt` of a candidate run (the commit, each step's exit code, the flaky steps, and one `failed=` line for each failed step: the step, its exit code and its log file) and one log per step (`step-<i>.log`; `step-<i>.first.log` is the failed first run of a flaky step). Kept after a failure too. |
 | `flakes.log` | One line per batch step that failed once and passed when run again alone. |
 | `observer/NOW.md`, `observer/SUGGESTIONS.md` | What is wrong now and what it costs; ranked changes with their evidence and status. |
 | `LESSONS.md` | At the end: each finding that came back, and the cheapest change that stops it next time. |
