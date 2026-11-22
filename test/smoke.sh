@@ -2425,6 +2425,39 @@ printf '2026-01-01 09:00:00 dev-b T-173 DISPATCH round=1\n2026-01-01 09:05:00 de
 rep28=$(printf q | MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle"},{"name":"dev-b","agent_status":"idle"}]}}' "$squad" report --live 2>/dev/null || true)
 check "028: the seat of a task that was sent back shows SENT BACK, not APPROVED" grep -qE '^  . dev-b +dev +SENT BACK +T-173' <<<"$rep28"
 cp "$tmp/events.keep" .team/events.log
+# CodeRabbit (PR #28): a candidate with two failed steps: the lead's lines, the SENT_BACK event and the dev's dispatch text name both logs
+task28 11 team/integration; task28 12 team/integration
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-9.md
+printf 'test ! -f t11.txt || { echo t11 breaks; exit 4; }\ntest ! -f t12.txt || { echo t12 breaks; exit 5; }\ntrue\n' >.team/tasks/CANDIDATE-9.checks
+"$squad" candidate CANDIDATE-9 T-11 T-12 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-9 --batch .team/tasks/CANDIDATE-9.checks >/dev/null 2>&1 || true
+R9="$tmp/b28/.team/receipts/CANDIDATE-9"
+printf 'RESULT: FAIL\n' >.team/reports/CANDIDATE-9-test.md
+reset_log; MOCK_AGENTS="$ag28" MOCK_PANE_TEXT="$rdy" "$squad" "done" tester CANDIDATE-9 FAIL --task T-12 >/dev/null 2>&1 || true
+check "PR 28: two failed steps: the receipt has two failed lines, and the lead's line after FAIL --task names both step logs" sh -c "[ \$(grep -c '^failed=' $R9/receipt) = 2 ] && grep -q 'agent prompt lead .*tester finished CANDIDATE-9: FAIL.*T-12.*$R9/step-1.log, $R9/step-2.log.*--from CANDIDATE-9 --without T-12' '$MOCK_LOG'"
+"$squad" candidate CANDIDATE-10 --from CANDIDATE-9 --without T-12 >"$tmp/cout" 2>&1 || true
+check "PR 28: two failed steps: the SENT_BACK event names both step logs in one log= field" grep -q " lead T-12 SENT_BACK from=CANDIDATE-9 log=$R9/step-1.log,$R9/step-2.log\$" .team/events.log
+check "PR 28: two failed steps: the command's answer names both step logs in one line" sh -c "[ \$(grep -c 'T-12' '$tmp/cout') = 1 ] && grep -q 'T-12 .*sent back.*$R9/step-1.log, $R9/step-2.log' '$tmp/cout'"
+printf '%s dev-a T-2 DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+rm -f "$tmp/state"; reset_log; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-12 >/dev/null 2>&1 || true
+check "PR 28: two failed steps: the task dispatched with no text names both step logs" grep -q "agent prompt dev-a .*T-12 .*CANDIDATE-9 failed.*$R9/step-1.log, $R9/step-2.log" "$MOCK_LOG"
+# CodeRabbit (PR #28): every task of the failed candidate is left out: nothing is built, each task is sent back with the log
+printf '%s dev-a T-12 DONE\n' "$(date '+%Y-%m-%d %H:%M:%S')" >>.team/events.log
+task28 13 team/integration
+cp .team/tasks/CANDIDATE-1.md .team/tasks/CANDIDATE-11.md; printf 'test ! -f t13.txt || { echo t13 breaks; exit 6; }\n' >.team/tasks/CANDIDATE-11.checks
+"$squad" candidate CANDIDATE-11 T-13 >/dev/null 2>&1 || true
+"$squad" heavy tester CANDIDATE-11 --batch .team/tasks/CANDIDATE-11.checks >/dev/null 2>&1 || true
+R11="$tmp/b28/.team/receipts/CANDIDATE-11"
+check "PR 28: a wrong ID beside the only task is refused, and nothing is logged" sh -c "! '$squad' candidate CANDIDATE-12 --from CANDIDATE-11 --without T-13 --without T-99 >/dev/null 2>&1 && ! grep -q ' SENT_BACK from=CANDIDATE-11' .team/events.log"
+"$squad" candidate CANDIDATE-12 --from CANDIDATE-11 --without T-13 >"$tmp/cout" 2>&1 && crc=0 || crc=$?
+check "PR 28: a one-task candidate without its task: no candidate is built, no number is used, exit 0" sh -c "[ $crc = 0 ] && ! test -e .team/candidates/CANDIDATE-12 && ! git -C '$I' rev-parse -q --verify candidate/CANDIDATE-12 && ! test -e .team/tasks/CANDIDATE-12.md && ! test -e .team/tasks/CANDIDATE-12.checks && ! grep -q ' CANDIDATE-12 ' .team/events.log"
+check "PR 28: the only task is logged SENT_BACK once, with the step log" sh -c "[ \$(grep -c ' lead T-13 SENT_BACK from=CANDIDATE-11 log=$R11/step-1.log\$' .team/events.log) = 1 ] && [ \$(grep -c ' T-13 SENT_BACK' .team/events.log) = 1 ]"
+check "PR 28: the answer names the task and the step log in one line, and says that a plain new candidate comes after the new approval" sh -c "[ \$(grep -c 'T-13' '$tmp/cout') = 1 ] && grep -q 'T-13 .*sent back.*$R11/step-1.log' '$tmp/cout' && grep -q 'plain new candidate' '$tmp/cout'"
+"$squad" candidate CANDIDATE-12 --from CANDIDATE-11 --without T-13 >/dev/null 2>&1 && crc=0 || crc=$?
+check "PR 28: a second identical call logs no second SENT_BACK" sh -c "[ $crc = 0 ] && [ \$(grep -c ' T-13 SENT_BACK' .team/events.log) = 1 ]"
+rm -f "$tmp/state"; reset_log; MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=5 "$squad" dispatch dev-a T-13 >/dev/null 2>&1 || true
+check "PR 28: the dispatch of that task carries the failed-candidate text and the step log" grep -q "agent prompt dev-a .*T-13 .*CANDIDATE-11 failed.*$R11/step-1.log" "$MOCK_LOG"
+check "PR 28: the lead's role file says what to do when the failed candidate has no task left" grep -qF 'no task left' .team/roles/lead.md
 check "028: the lead's and the tester's role files name the two commands" sh -c "grep -qF -- '--from CANDIDATE-<n> --without <ID>' .team/roles/lead.md && grep -qF -- 'FAIL --task <ID>' .team/roles/tester.md"
 
 # ---- 029 · the full suite once a night: squad reads the night's result -----------------

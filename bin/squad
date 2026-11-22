@@ -995,7 +995,8 @@ default_task_line() { # <role> <task> <round>
     dev) local sb; sb=$(awk -v t="$2" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 ~ /^(SENT_BACK|APPROVE|CHANGES|PASS|FAIL|MERGE)$/ { l = $0 } END { print l }' "$TEAM_DIR/events.log" 2>/dev/null || true)
          # sent back from a candidate: the newest review is the APPROVE, so the line names the candidate and its step log
          if [[ "$sb" == *" $2 SENT_BACK from="* ]]; then sb=${sb#* SENT_BACK from=}
-           if [[ "$sb" == *" log="* ]]; then echo "$2 was sent back: its candidate ${sb%% *} failed. Read the log of the step that failed, ${sb#* log=}, fix what it shows, update your report."
+           if [[ "$sb" == *" log="*,/* ]]; then sb="${sb%% *} ${sb#* log=}"; echo "$2 was sent back: its candidate ${sb%% *} failed. Read the logs of the steps that failed, ${sb//,\//, /}, fix what they show, update your report."
+           elif [[ "$sb" == *" log="* ]]; then echo "$2 was sent back: its candidate ${sb%% *} failed. Read the log of the step that failed, ${sb#* log=}, fix what it shows, update your report."
            else echo "$2 was sent back: its candidate ${sb%% *} failed. No failed step is on record: ask the lead what failed, fix it, update your report."; fi
          elif [ "$3" -gt 1 ] || [ -f "$TEAM_DIR/reports/$2-test.md" ]; then echo "$2 needs changes. Read the newest review in $TEAM_DIR/reports/$2-review-*.md (and $TEAM_DIR/reports/$2-test.md if it failed), fix every finding, update your report."
          else echo "Task $2 is yours. Read $TEAM_DIR/tasks/$2.md and follow your role file."; fi ;;
@@ -1307,10 +1308,25 @@ candidate_next() { # -> the first number above every candidate record, receipt a
     | sed -n 's/^\(candidate\/\)\{0,1\}CANDIDATE-\([0-9][0-9]*\)$/\2/p' | sort -n | tail -1 | awk '{ print $1 + 1 }'
 }
 
+failed_logs() { # <candidate> -> the log of each failed step of its run (the receipt's failed= lines): full paths, joined by a comma
+  local l out=""
+  while IFS= read -r l; do out="$out${out:+,}$TEAM_DIR/receipts/$1/$l"; done < <(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$1/receipt" 2>/dev/null)
+  printf '%s' "$out"
+}
+candidate_sent_back() { # <failed candidate> <tasks, joined by a comma> <why>: each task is open for its dev again, once for one failed candidate
+  local t flog what="The log of the step that failed"
+  flog=$(failed_logs "$1"); case "$flog" in *,/*) what="The logs of the steps that failed" ;; esac
+  for t in ${2//,/ }; do
+    awk -v t="$t" -v f="from=$1" '$4 == t && $5 == "SENT_BACK" && $6 == f { n = 1 } END { exit !n }' "$TEAM_DIR/events.log" 2>/dev/null \
+      || log_event "$LEAD" "$t" SENT_BACK "from=$1${flog:+ log=$flog}"
+    if [ -n "$flog" ]; then say "$t is sent back to its dev: $3. $what in $1: ${flog//,\//, /}. Dispatch it at once: squad dispatch <dev> $t \"<what failed, and the log>\""
+    else say "$t is sent back to its dev: $3; no failed step is on record for $1 (no step log). Dispatch it at once: squad dispatch <dev> $t \"<what failed>\""; fi
+  done
+}
 CAND_COPY_B="" CAND_COPY_C=""   # the brief and the check list that --from copied: a refused rebuild removes them (globals: the trap runs after the locals are gone)
 cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the base and the lead's approved task commits
   find_repo; load_conf
-  local cand=${1:-} t h v tmp base sha brief checks I="$WT_ROOT/integration" from="" without="" tasks="" flog="" rec="" r lo excl n norec=""
+  local cand=${1:-} t h v tmp base sha brief checks I="$WT_ROOT/integration" from="" without="" tasks="" rec="" r lo excl n norec=""
   local usage="usage: squad candidate CANDIDATE-<n> <task> [<task>...] | squad candidate CANDIDATE-<m> --from CANDIDATE-<n> --without <task>"
   [[ "$cand" =~ ^CANDIDATE-[0-9]+$ ]] && [ $# -ge 2 ] || die "$usage"
   shift
@@ -1332,7 +1348,11 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
       case " $tasks " in *" $t "*) ;; *) die "$t is not a task of $from (its tasks: $tasks)." ;; esac
       v=""; for h in $tasks; do [ "$h" = "$t" ] || v="$v $h"; done; tasks=${v# }
     done
-    [ -n "$tasks" ] || die "$from without $without has no task left: nothing to build."
+    if [ -z "$tasks" ]; then   # every task of $from goes back: nothing is built and no number is used
+      candidate_sent_back "$from" "$without" "$from has no task left, so $cand is not built and its number stays free"
+      say "When the lead has approved the fixes, build a plain new candidate: squad candidate $cand <task> [<task>...]"
+      return 0
+    fi
   fi
   # shellcheck disable=SC2086  # the task list is split into its IDs; each is checked by valid_task below
   set -- $tasks
@@ -1402,12 +1422,7 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
   say "$cand is ${sha:0:12} (candidate/$cand)${from:+, with $*}. The tester runs: squad heavy <tester> $cand --batch .team/tasks/$cand.checks"
   # the task that was left out is open for its dev again: its state is "sent back" (the lead's APPROVE of the other tasks stays)
   [ -n "$from" ] || return 0
-  flog=$(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$from/receipt" 2>/dev/null | head -1 || true); flog=${flog:+$TEAM_DIR/receipts/$from/$flog}
-  for t in ${without//,/ }; do
-    log_event "$LEAD" "$t" SENT_BACK "from=$from${flog:+ log=$flog}"
-    if [ -n "$flog" ]; then say "$t is sent back to its dev: it is not in $cand. The log of the step that failed in $from: $flog. Dispatch it at once: squad dispatch <dev> $t \"<what failed, and the log>\""
-    else say "$t is sent back to its dev: it is not in $cand; no failed step is on record for $from (no step log). Dispatch it at once: squad dispatch <dev> $t \"<what failed>\""; fi
-  done
+  candidate_sent_back "$from" "$without" "it is not in $cand"
 }
 
 # ---- squad notify: tell the seats at work that a rule changed ---------------
@@ -3225,8 +3240,9 @@ cmd_done() {
     case "$task:$status" in CANDIDATE-*:FAIL) ;; *) die "--task names the task that failed a candidate: squad done <tester> CANDIDATE-<n> FAIL --task <ID>." ;; esac
     sed -n 's/^task=\([^:]*\):.*/\1/p' "$TEAM_DIR/candidates/$task" 2>/dev/null | grep -qxF -- "$culprit" \
       || die "$culprit is not a task of $task (its tasks: $(sed -n 's/^task=\([^:]*\):.*/\1/p' "$TEAM_DIR/candidates/$task" 2>/dev/null | tr '\n' ' '))."
-    hint=$(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$task/receipt" 2>/dev/null | head -1 || true)
-    hint=" The tester names $culprit${hint:+; the log of the failed step: $TEAM_DIR/receipts/$task/$hint}. The next candidate without it: squad candidate CANDIDATE-$(candidate_next) --from $task --without $culprit."
+    hint=$(failed_logs "$task")
+    case "$hint" in *,/*) hint="; the logs of the failed steps: ${hint//,\//, /}" ;; ?*) hint="; the log of the failed step: $hint" ;; esac
+    hint=" The tester names $culprit$hint. The next candidate without it: squad candidate CANDIDATE-$(candidate_next) --from $task --without $culprit."
   fi
   case "$role" in
     dev) report="$TEAM_DIR/reports/$task-dev.md" ;;
