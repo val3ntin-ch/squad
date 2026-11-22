@@ -2652,6 +2652,8 @@ hv30 dev-a T-2 -- sh -c 'true # echo unit'; done30 dev-a T-2 DONE
 check "030: a command that only contains the check's text does not count" unit30
 hv30 dev-a T-2 -- echo a HEAVY_START sha=x limit=1m echo unit; done30 dev-a T-2 DONE
 check "030: a command that carries the words of a start event before the check's text does not count" unit30
+hv30 dev-a T-2 -- bash -c echo unit; done30 dev-a T-2 DONE
+check "030: one run of bash -c with the check's words is not a batch step and does not count" unit30
 hv30 dev-a T-2 --sample -- echo part '{shard}'
 s30=$(sed -n 's/.* dev-a T-2 HEAVY_START .* sample=[^ ]* in=[^ ]* //p' .team/events.log | tail -1)   # that run's command, as logged: echo part <k>/<n>
 echo "done_check $s30" >>.team/team.conf

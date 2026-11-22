@@ -3251,7 +3251,7 @@ done_gate() { # <index> <task> <status> <report>: refuse what is not proven
 
 done_checks() { # <index> <task>: a dev's DONE needs, for each done_check of team.conf, a 'squad heavy' run of this seat for
   # this task on the task's commit now (the head of the seat's worktree, as 'squad heavy' reads it), whose command is the
-  # check's command, whole (as written, or as the step of a batch: bash -c <command>), not a --sample run, and which
+  # check's command, whole (as written, or as a batch step with its step= field: bash -c <command>), not a --sample run, and which
   # ended with exit 0 (ticket 030). No done_check line: nothing is asked.
   [ -n "$DONE_CHECKS" ] || return 0
   local seat=${S_NAME[$1]} task=$2 full c missing="" n=0
@@ -3265,8 +3265,8 @@ done_checks() { # <index> <task>: a dev's DONE needs, for each done_check of tea
       $5 == "HEAVY_START" { ok = 0
         if ($6 == sha) { x = substr($0, index($0, " HEAVY_START ") + 13); c = ENVIRON["DONE_CHECK"]
           sub(/^sha=[^ ]* limit=[^ ]*/, "", x); sub(/^ waited=[^ ]*/, "", x); part = sub(/^ sample=[^ ]*/, "", x)
-          sub(/^ in=[^ ]*/, "", x); sub(/^ step=[^ ]*/, "", x); sub(/^ /, "", x)
-          ok = !part && (x == c || x == "bash -c " c) } }
+          sub(/^ in=[^ ]*/, "", x); st = sub(/^ step=[^ ]*/, "", x); sub(/^ /, "", x)
+          ok = !part && (x == c || (st && x == "bash -c " c)) } }
       $5 == "HEAVY_END" { if (ok && $6 == "rc=0") pass = 1; ok = 0 }
       END { exit !pass }' "$TEAM_DIR/events.log" 2>/dev/null && continue
     missing="$missing"$'\n'"  squad heavy $seat $task -- $c"; n=$((n + 1))
