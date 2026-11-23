@@ -105,6 +105,9 @@ check "new creates a project with the default team" "$squad" new proj
 cd proj
 check "team files exist" test -f .team/team.conf -a -f .team/ROSTER.md -a -f .team/roles/lead.md
 check "team files are excluded from git" test -z "$(git status --porcelain)"
+# Codex 0.161: "/new" in a git checkout opens the menu "Where should the new conversation run?", and squad types
+# nothing into a menu, so every dispatch failed (hive, 22 Nov 2026); "/clear" starts a new conversation with no menu
+check "roster gives a Codex seat /clear as its clear command, not /new" sh -c "grep 'rev-gpt' .team/ROSTER.md | grep -qF '/clear'"
 export HERDR_ENV=1
 
 reset_log
