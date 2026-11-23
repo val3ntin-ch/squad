@@ -27,7 +27,7 @@ The strongest model sits where one mistake costs the most: the plan and the deci
 
 ## Install
 
-Requirements: `git`, `jq`, [herdr](https://herdr.dev), Claude Code (`claude`) and Codex (`codex`), each signed in once by hand.
+Requirements: `git`, `jq`, [herdr](https://herdr.dev), Claude Code (`claude`) and Codex (`codex`, 0.161 or newer: squad resets a Codex seat with `/clear`), each signed in once by hand.
 
 ```bash
 git clone https://github.com/val3ntin-ch/squad ~/.squad
