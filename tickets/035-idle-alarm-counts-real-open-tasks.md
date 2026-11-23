@@ -1,5 +1,5 @@
 # 035 · The idle alarm counts only open tasks and names the tasks that wait for the owner
-Status: Approved (V!, 23 Nov 2026: option "b")
+Status: Approved (val3ntin-ch, 23 Nov 2026: option "b")
 Size: S (≤ 2 h)
 
 ## Goal
@@ -25,7 +25,7 @@ sees which tasks wait for the owner's decision, so the owner knows what unblocks
 
 Evidence: the three "035" checks in `test/smoke.sh` (they fail on `main`: the alarm said 8
 open tasks where 3 are open). On hive's real TASKS.md the new count is 14 (squad said 125),
-and the rows that wait for V! are T-136, T-141 and T-158.
+and the rows that wait for val3ntin-ch are T-136, T-141 and T-158.
 
 ## Plan
 - One awk over TASKS.md prints the open count and the IDs that wait for the owner.

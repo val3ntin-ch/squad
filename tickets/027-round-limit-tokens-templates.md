@@ -17,7 +17,7 @@ task exists (report ranks 8, 10 and 11).
 
 ## Done when
 - [ ] `squad dispatch` of round `round_limit + 1` of a task (default limit 5, a `team.conf`
-      setting) is refused with a message, a `ROUND_LIMIT` event is logged and V! gets one
+      setting) is refused with a message, a `ROUND_LIMIT` event is logged and val3ntin-ch gets one
       notification that names the task and its review files; a task whose newest verdict
       of the lead is APPROVE passes the limit (it goes back to its dev when its candidate
       fails).
@@ -43,8 +43,8 @@ One smoke test per "Done when" item; the token test uses a fixture session file.
 
 ## Assumptions & open questions
 - Report decisions 9, 10 and 12: the recommended options. Decision 15 (which other hive
-  practices move into the templates) stays open: V! approves them item by item.
-- V!, 21 Nov 2026: an approved task passes the limit (its candidate failed).
+  practices move into the templates) stays open: val3ntin-ch approves them item by item.
+- val3ntin-ch, 21 Nov 2026: an approved task passes the limit (its candidate failed).
 
 ## Verification
 Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).

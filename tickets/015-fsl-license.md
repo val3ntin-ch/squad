@@ -33,7 +33,7 @@ its owner. Each version becomes MIT two years after its release. The owner chose
 
 ## Assumptions & open questions
 - Open decision for the owner: the licensor name in the Notice line. Recommendation: your legal name
-  as it is in the git history ("Valentin C. Hetriuc"); a company name if squad should belong to a company.
+  (the name the owner gives); a company name if squad should belong to a company.
 - Assumption: nobody else has contributed code to squad, so the owner alone holds the copyright and may
   change the licence (the git history shows only the owner's commits; AI-generated co-authorship lines
   do not make another copyright holder). Not legal advice: a lawyer can confirm.

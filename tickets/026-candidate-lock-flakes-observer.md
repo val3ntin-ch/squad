@@ -12,7 +12,7 @@ observer passes ran while the team had no work (report ranks 4, 5, 6 and 9).
 - In: `squad candidate`, `squad heavy` (the lock, `--batch`), the candidate receipt, the
   observer timer in `squad watch`, the smoke tests, README, `templates/PROTOCOL.md`.
 - Out: `squad merge` and the conditions it checks (unchanged; the receipt's place and three
-  messages changed, the third is the refusal of an old plain-file receipt: V!, 21 Nov 2026); a second test lane; any change to which checks a
+  messages changed, the third is the refusal of an old plain-file receipt: val3ntin-ch, 21 Nov 2026); a second test lane; any change to which checks a
   team runs.
 
 ## Done when
@@ -44,9 +44,9 @@ One smoke test per "Done when" item.
 ## Assumptions & open questions
 - Report decision 8: option (b) is built (rerun the failed step alone once and record it).
   Option (c) (accept only when the step also passes on the integration branch with the
-  same test count) is not built: open decision for V!.
+  same test count) is not built: open decision for val3ntin-ch.
 - Report decision 14: option (b).
-- V!, 21 Nov 2026: old plain-file receipts are no longer read.
+- val3ntin-ch, 21 Nov 2026: old plain-file receipts are no longer read.
 
 ## Verification
 Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).

@@ -23,7 +23,7 @@ Squad's own commands stop causing lost work. Seen in hive on 20 and 21 Nov:
 - [ ] The same seat (live heavy run, or a place in the lock queue) gets no STALLED and no
       IDLE alarm.
 - [ ] `squad plan --help` (and `-h` on every command) prints help and changes no file.
-- [ ] A dev with no task for 30 min while open tasks exist sends V! one herdr notification
+- [ ] A dev with no task for 30 min while open tasks exist sends val3ntin-ch one herdr notification
       (seat, minutes idle, the number of open tasks), after the lead was told at 5 min.
 - [ ] `test/smoke.sh` passes, with a test for each item above that fails before the change.
 
@@ -51,5 +51,5 @@ Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a thr
 | A busy seat's dispatch stays queued, nothing cleared | PASS | smoke "024: a dispatch to a seat that waits in the heavy lock queue…"; real trial 1 (check F) |
 | No STALLED and no IDLE alarm for it | PASS | smoke "024: … is not stalled", "… gets no IDLE alarm" |
 | `-h` and `--help` print help, change no file | PASS | smoke "024: -h and --help print the help on every command"; real trial 1 (check A) |
-| A dev idle 30 min with open tasks: one notification to V! | PASS | smoke "024: at 30 min the owner gets one notification…", "trial 26: …" |
+| A dev idle 30 min with open tasks: one notification to val3ntin-ch | PASS | smoke "024: at 30 min the owner gets one notification…", "trial 26: …" |
 | `test/smoke.sh` passes | PASS | 851 passed, 0 failed; CI green |

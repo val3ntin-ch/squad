@@ -3,9 +3,9 @@ Status: Done — awaiting PR review
 Size: M (≤ 1 day)
 
 ## Goal
-Squad finds a stuck seat and either fixes it or tells V! within minutes. Today a seat can
+Squad finds a stuck seat and either fixes it or tells val3ntin-ch within minutes. Today a seat can
 stop for hours and nobody acts. Seen in hive:
-- dev-c waited 9 h (20 Nov 23:42 to 21 Nov 08:47) on a question only V! can answer.
+- dev-c waited 9 h (20 Nov 23:42 to 21 Nov 08:47) on a question only val3ntin-ch can answer.
   Squad told only the lead, which cannot answer it.
 - After the herdr restart of 17 Nov, seats ran for about 2.5 days without their squad
   options; the observer's passes were refused (no permission mode) until it was
@@ -18,12 +18,12 @@ stop for hours and nobody acts. Seen in hive:
 - Out: hive's own rules and tasks; herdr itself; any change to how reviews or tests run.
 
 ## Done when
-- [ ] A seat in herdr state `blocked` for 5 min gets a herdr notification to V! that names
+- [ ] A seat in herdr state `blocked` for 5 min gets a herdr notification to val3ntin-ch that names
       the seat, its task and the first line of its question; one notification per wait.
 - [ ] A seat that runs without its squad options (no `--append-system-prompt-file`
       `.team/seats/<seat>.md` in its process) or is gone is restarted with its full
-      options by `squad watch` with `seat_restart on` (default `off`: squad only tells V!), at most once per 10 min per seat, with an event line (after 3 restarts of a seat in
-      one hour squad stops and notifies V!);
+      options by `squad watch` with `seat_restart on` (default `off`: squad only tells val3ntin-ch), at most once per 10 min per seat, with an event line (after 3 restarts of a seat in
+      one hour squad stops and notifies val3ntin-ch);
       a lead or dev with an open task gets its task re-sent after the restart.
 - [ ] One stuck seat (blocked, stalled or dead) is reported while other seats work.
 - [ ] A long-running `squad watch` picks up a new `bin/squad` without a manual restart.
@@ -51,17 +51,17 @@ stop for hours and nobody acts. Seen in hive:
 One smoke test per "Done when" item, each failing before the change.
 
 ## Assumptions & open questions
-- V!'s notification is herdr's toast (already enabled, 17 Nov).
-- Squad never answers a seat's question or permission prompt itself; it only tells V!.
-- V!, 21 Nov 2026: the automatic restart ships switched off (`seat_restart off`); squad tells V! and types nothing.
+- val3ntin-ch's notification is herdr's toast (already enabled, 17 Nov).
+- Squad never answers a seat's question or permission prompt itself; it only tells val3ntin-ch.
+- val3ntin-ch, 21 Nov 2026: the automatic restart ships switched off (`seat_restart off`); squad tells val3ntin-ch and types nothing.
 
 ## Verification
 Independent verifier, 22 Nov 2026, on the pushed code; four real trials on a throwaway team (real herdr 0.9.5, real Claude Code 2.1.323 seats).
 
 | Item | Result | Evidence |
 |---|---|---|
-| A seat blocked 5 min tells V! (seat, task, question) | PASS | smoke "023: a seat blocked for 5 min…"; real trials 1 to 4: the hook tells V! at once |
-| A seat gone or without options: V! is told; restarted with `seat_restart on` (default off), limited | PASS | smoke "seat_restart off…", "023: … at most once in 10 min", "… after 3 restarts…"; real trial 1 (checks I, J) |
+| A seat blocked 5 min tells val3ntin-ch (seat, task, question) | PASS | smoke "023: a seat blocked for 5 min…"; real trials 1 to 4: the hook tells val3ntin-ch at once |
+| A seat gone or without options: val3ntin-ch is told; restarted with `seat_restart on` (default off), limited | PASS | smoke "seat_restart off…", "023: … at most once in 10 min", "… after 3 restarts…"; real trial 1 (checks I, J) |
 | One stuck seat is reported while others work | PASS | smoke "023: one stalled seat is told to the owner while other seats work" |
 | A running watch picks up a new `bin/squad` | PASS | smoke "023: a long-running squad watch runs the new bin/squad…"; real trial 1 (check M) |
 | `test/smoke.sh` passes | PASS | 851 passed, 0 failed (bash 5 and bash 3.2); CI green |

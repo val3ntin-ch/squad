@@ -5,7 +5,7 @@ Size: S (≤ 2 h) for squad; the workflow is the team's own task
 ## Goal
 The one test lock of the machine stops being the team's queue, at no cloud cost. In hive
 on 21 Nov the lock was held 17.2 of 18.6 hours, 84 % of it by Storybook browser tests, and
-11 of 19 candidates failed. V! decided (21 Nov): each candidate runs only fast checks
+11 of 19 candidates failed. val3ntin-ch decided (21 Nov): each candidate runs only fast checks
 (lint, types, build, unit tests, the Storybook tests of the changed components); the full
 suite runs once a night in GitHub Actions, and its failures become fix tasks.
 A full run of every candidate in CI was refused: about $110 to $290 a month (GitHub's
@@ -13,7 +13,7 @@ price page, 21 Nov 2026: Linux 2-core $0.006 a minute; estimate of the minutes).
 
 ## Scope
 - In: `squad nightly` (read the newest scheduled workflow run of the integration branch
-  through `gh`, print its result, log `NIGHTLY PASS|FAIL`, tell the lead and notify V! on
+  through `gh`, print its result, log `NIGHTLY PASS|FAIL`, tell the lead and notify val3ntin-ch on
   a failure, with the failed jobs); `templates/roles/lead.md`, `templates/roles/tester.md`
   and `templates/PROTOCOL.md` (fast gate per candidate, full suite at night, a failure
   becomes a fix task); a workflow example in the README; the smoke tests.
@@ -24,7 +24,7 @@ price page, 21 Nov 2026: Linux 2-core $0.006 a minute; estimate of the minutes).
 - [ ] `squad nightly` prints the newest scheduled run of the workflow (date, the workflow's commit,
       result, failed jobs with their URLs) and logs one `NIGHTLY` event per run.
 - [ ] `squad watch` runs that check once after each new scheduled run: on FAIL the lead
-      gets one line and V! one notification; on PASS only the event.
+      gets one line and val3ntin-ch one notification; on PASS only the event.
 - [ ] With no `gh`, no workflow or no run, `squad nightly` says so and exits 0; the watch
       stays silent.
 - [ ] The role files and PROTOCOL describe the fast gate and the nightly full run.

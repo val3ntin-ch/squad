@@ -41,8 +41,8 @@ Squad integrates the exact candidate that passed its required checks. The lead a
 
 ## Assumptions & open questions
 
-- **Open decision for V!** Option A adds the local candidate gate in this ticket. Option B moves the evidence and promotion gate into hosted CI first. Recommend A for the current setup. A later ticket can add independent release enforcement.
-- **Open decision for V!** For work already in progress, either retest before its next integration or keep the old path temporarily. Recommend retest so every new integration has evidence.
+- **Open decision for val3ntin-ch** Option A adds the local candidate gate in this ticket. Option B moves the evidence and promotion gate into hosted CI first. Recommend A for the current setup. A later ticket can add independent release enforcement.
+- **Open decision for val3ntin-ch** For work already in progress, either retest before its next integration or keep the old path temporarily. Recommend retest so every new integration has evidence.
 - A local receipt prevents workflow mistakes. Independent authority for release approval belongs in the delivery pilot.
 - Audit findings: the owner's local file `docs/research/2026-11-17-squad-factory-audit.md` (not in the repository).
 - Verification of the audit (17 Nov 2026): the local file `docs/research/2026-11-17-squad-factory-audit-verification.md` (not in the repository).

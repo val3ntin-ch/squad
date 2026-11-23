@@ -1,11 +1,11 @@
 # 033 · One dev per task; a sent-back task is reviewed again; the observer rests when nothing happened
-Status: Approved (V!, 23 Nov 2026: "ok all, proceed")
+Status: Approved (val3ntin-ch, 23 Nov 2026: "ok all, proceed")
 Size: M (≤ 1 day)
 
 ## Goal
 Close three gaps that the software-factory audit of 23 Nov 2026 found in hive's event log
-(V!, 23 Nov 2026: "I want all to be fixed"; for the failed batch: "automated and not man in
-the middle"). Squad's code enforces each rule; no rule waits for V!.
+(val3ntin-ch, 23 Nov 2026: "I want all to be fixed"; for the failed batch: "automated and not man in
+the middle"). Squad's code enforces each rule; no rule waits for val3ntin-ch.
 
 Measured on hive (event log, 13 to 23 Nov, 120 tasks):
 - One task went to two devs for 5 tasks, 3 of them since 22 Nov 02:34. T-180: dev-c got it,
@@ -60,10 +60,10 @@ approves, the batch is accepted).
 ## Assumptions & open questions
 - "Automated" means: squad refuses and tells the lead what to do next, and the lead (an
   agent) does it. Squad itself does not start the reviewer, because only the lead starts a
-  dispatch (V!'s rule of 18 Nov).
-- While V! sleeps: a task that reaches review round 5 stops and waits for V!; every other
+  dispatch (val3ntin-ch's rule of 18 Nov).
+- While val3ntin-ch sleeps: a task that reaches review round 5 stops and waits for val3ntin-ch; every other
   task goes on. This is the existing round limit.
-- Decided by V! (23 Nov 2026): when the reviewer seat exists but is down (dead, sign-in, a
+- Decided by val3ntin-ch (23 Nov 2026): when the reviewer seat exists but is down (dead, sign-in, a
   dialog), the sent-back task waits for the reviewer; the lead does not review in its place.
   A task that waits does not stop the other tasks.
-- Decided by V! (23 Nov 2026): after 5 review rounds a task waits for V!, as today.
+- Decided by val3ntin-ch (23 Nov 2026): after 5 review rounds a task waits for val3ntin-ch, as today.
