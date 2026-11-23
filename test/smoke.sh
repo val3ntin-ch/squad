@@ -1821,6 +1821,14 @@ check "024: and events.log has the line" grep -q ' dev-c - IDLE no task for 31 m
 printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | merged | - |\n' >.team/TASKS.md
 rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
 check "024: with no open task the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
+# 035: hive's status forms: merged, done, closed and not needed rows are not open; the rows that wait for the owner are named
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov 23:15 (candidate 74) | - |\n| T-002 | b | dev-a | merged (CANDIDATE-117) | - |\n| T-003 | c | dev-b | **done** 22 Nov: report only | - |\n| T-004 | d | - | **closed** 14 Nov: split | - |\n| T-008 | h | - | **Not needed**: covered | - |\n| T-005 | e | - | todo; waits for D-100 | - |\n| T-006 | f | - | todo | - |\n| T-007 | g | dev-c | **stopped** at the round limit; open decision for the owner | - |\n' >.team/TASKS.md
+echo $(( $(date +%s) - 1860 )) >.team/observer/.idle/dev-c; rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
+check "035: the owner's notification counts only the open rows and names the ones that wait for the owner" grep -q 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 3 open task(s) in TASKS.md; 2 wait for the owner: T-005 T-007' "$MOCK_LOG"
+check "035: the IDLE line says the same" grep -q ' dev-c - IDLE no task for 31 min, 3 open task(s), 2 wait for the owner (T-005 T-007): the owner is told' .team/events.log
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov | - |\n| T-003 | c | dev-b | **done** 22 Nov | - |\n' >.team/TASKS.md
+rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
+check "035: with only merged and done rows the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
 cp "$tmp/tasks.keep24" .team/TASKS.md; rm -rf .team/observer/.idle
 # ---- 2a · squad's own messages wait while the lead shows a dialog (herdr: blocked, or a menu in its pane) ----
 agents_lb='{"result":{"agents":[{"name":"dev-c","agent_status":"idle"},{"name":"lead","agent_status":"blocked"}]}}'

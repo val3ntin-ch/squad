@@ -2385,11 +2385,17 @@ idle_dev_check() { # <index> <state> <open task> <agents json> <the seat's scree
   # nothing happened: after IDLE_OWNER_MINUTES the owner is told once, when tasks are open (ticket 024), also when the
   # lead could not be told (it shows a dialog)
   if [ $((now - since)) -ge $((IDLE_OWNER_MINUTES * 60)) ] && [ ! -f "$a.owner" ]; then
-    local open; open=$(awk -F'|' '/^\| *T-[0-9]/ { st = $5; gsub(/^ +| +$/, "", st); if (st != "merged") n++ } END { print n + 0 }' "$TEAM_DIR/TASKS.md" 2>/dev/null || echo 0)
-    [ "$open" -gt 0 ] || return 0
+    # ticket 035: a row is open unless its status says merged, done, closed or not needed (hive writes "**merged** 21 Nov …");
+    # the open rows that wait for the owner are named, so the owner sees what unblocks the team
+    local open waits nw
+    read -r open waits < <(awk -F'|' '/^\| *T-[0-9]/ { st = tolower($5); if (st ~ /merged|done|closed|not needed/) next
+        n++; if (st ~ /waits for|open decision|decision for/) { id = $2; gsub(/ /, "", id); w = w " " id } }
+      END { print n + 0, w }' "$TEAM_DIR/TASKS.md" 2>/dev/null || echo 0)
+    [ "${open:-0}" -gt 0 ] || return 0
+    nw=0; [ -z "$waits" ] || nw=$(wc -w <<<"$waits" | tr -d ' ')
     : >"$a.owner"
-    log_event "$name" - IDLE "no task for $(( (now - since) / 60 )) min, $open open task(s): $OWNER_NAME is told"
-    v_notify "squad: $name has no task" "$name has had no task for $(( (now - since) / 60 )) min; $open open task(s) in TASKS.md."
+    log_event "$name" - IDLE "no task for $(( (now - since) / 60 )) min, $open open task(s)${waits:+, $nw wait for $OWNER_NAME ($waits)}: $OWNER_NAME is told"
+    v_notify "squad: $name has no task" "$name has had no task for $(( (now - since) / 60 )) min; $open open task(s) in TASKS.md${waits:+; $nw wait for $OWNER_NAME: $waits}."
   fi
 }
 
