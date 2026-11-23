@@ -33,8 +33,9 @@ Measured on hive (event log, 13 to 23 Nov, 120 tasks):
       tells the lead to dispatch the reviewer.
 - [x] A team with no reviewer seat keeps today's behaviour (the lead reviews), and the
       refusal message of the item above says so.
-- [x] The observer makes no pass when the event log has no new work event since its last
-      pass; its next pass comes with the next work event.
+- [x] The observer makes no timed pass when the event log has no new work event since its
+      last pass; its next pass comes with the next work event or the next alarm of the watch
+      (a stall, a blocked or dead seat), as before.
 - [ ] `test/smoke.sh` passes in CI, with a test for each item above that fails before the
       change.
 

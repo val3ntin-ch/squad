@@ -15,9 +15,9 @@ sees which tasks wait for the owner's decision, so the owner knows what unblocks
   lead's 5-minute line; the format of TASKS.md.
 
 ## Done when
-- [x] A row of TASKS.md counts as open only when its status cell contains none of the words
-      `merged`, `done`, `closed`, `not needed` (in any case, also inside `**…**` or with more
-      text after them).
+- [x] A row of TASKS.md counts as open unless the first word of its status cell is `merged`,
+      `done`, `closed` or `not needed` (in any case, also inside `**…**` or with more text
+      after it); "unmerged" or "reopened (was merged …)" stay open.
 - [x] The notification and the IDLE event line name the open rows that wait for the owner
       (a status with "waits for", "open decision" or "decision for"), by task ID.
 - [x] With no open row the owner is not told (as before).

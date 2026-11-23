@@ -44,10 +44,21 @@ One smoke test per code item; the measurement is a script with its output in the
   `merged`. Hive writes `**merged** 21 Nov 23:15 (candidate 74 …)` or `merged (CANDIDATE-117)`,
   so 104 merged tasks count as open: squad's count is 125, the real number of rows that are
   not merged in any form is 21.
-- None of the 21 was ready for a dev without val3ntin-ch or a new brief: 4 wait for val3ntin-ch (T-136, T-141,
-  T-158: decision D-100; T-148), 7 are done, closed or not needed, 5 are parent tasks whose
-  sub-tasks are all merged (T-157, T-159, T-161, T-162) or in a candidate (T-160i), 2 are
-  placeholders (T-2xx, T-3xx), 2 need a brief (T-164, T-167), 1 is a harness in progress (T-150).
+- None of the 21 was ready for a dev without val3ntin-ch or a new brief:
+  - 4 wait for val3ntin-ch: T-136, T-141, T-158 (decision D-100), T-148.
+  - 6 are done, closed or not needed: T-128, T-170, T-172, T-174, T-176, T-179.
+  - 6 are parent tasks whose sub-tasks are merged or in a candidate: T-157, T-159, T-160,
+    T-161, T-162, T-164.
+  - 1 is approved and in a candidate: T-160i.
+  - 2 are placeholders: T-2xx, T-3xx.
+  - 1 needs its brief: T-167. 1 is a harness in progress: T-150.
+- Commands (read 23 Nov 2026 on `/Users/v/v-dev/hive/.team/TASKS.md`, changed 22 Nov 22:31):
+  - squad's old count: `awk -F'|' '/^\| *T-[0-9]/ { st = $5; gsub(/^ +| +$/, "", st); if (st != "merged") n++ } END { print n }'` → 125
+  - rows not merged in any form: `awk -F'|' '/^\| *T-[0-9]/ { if (tolower($5) !~ /merged/) n++ } END { print n }'` → 21
+- Known limit: TASKS.md has no history (it is not in git), so this is one reading of the table
+  at the end of the night, not one reading per alarm. The 9 alarms to the owner in the log
+  (13 to 22 Nov) reported 116 to 125 open tasks, the same size as the miscount on this
+  reading.
 - Result: the free devs had no ready task; a ready list per dev would have held nothing. The
   "Done when" rule of this ticket applies: no code for the ready list.
 

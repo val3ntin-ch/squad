@@ -1450,7 +1450,7 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
     # approved against the review of the old commit failed the next candidate too). A team with no reviewer seat: the lead's review.
     r=$(sent_back_from "$t")
     if [ -n "$r" ] && has_role reviewer && ! reviewer_approved "$t" "$h" "${r#* }"; then
-      die "$t was sent back from ${r%% *}, and no reviewer has approved its commit ${h:0:12}: dispatch the reviewer first (squad dispatch $(first_role reviewer) $t), then build the candidate. A reviewer seat that is down: the task waits for it."
+      die "$t was sent back from ${r%% *}, and no reviewer has approved its commit ${h:0:12}: dispatch the reviewer first (squad dispatch $(first_role reviewer) $t), then build the candidate. A reviewer seat that is down: the task waits for it. (A team with no reviewer seat: the lead's APPROVE is enough.)"
     fi
     if [ -n "$from" ]; then   # the same approved commits as the earlier candidate: its record names each task's commit
       r=$(awk -v t="$t" 'index($0, "task=" t ":") == 1 { print substr($0, length(t) + 7); exit }' "$rec" 2>/dev/null || true)
