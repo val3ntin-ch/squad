@@ -19,12 +19,13 @@ sees which tasks wait for the owner's decision, so the owner knows what unblocks
       `done`, `closed` or `not needed` (in any case, also inside `**…**` or with more text
       after it); "unmerged" or "reopened (was merged …)" stay open.
 - [x] The notification and the IDLE event line name the open rows that wait for the owner
-      (a status with "waits for", "open decision" or "decision for"), by task ID.
+      (a status with "open decision", "decision for", "waits for D-<n>" or "waits for <owner>";
+      "waits for T-<n>" is a dependency), by task ID.
 - [x] With no open row the owner is not told (as before).
 - [ ] `test/smoke.sh` passes in CI, with a test for each item that fails before the change.
 
 Evidence: the three "035" checks in `test/smoke.sh` (they fail on `main`: on the first test table the
-old count is 9 where 4 rows are open). On hive's real TASKS.md the new count is 14 (squad said 125),
+old count is 10 where 5 rows are open). On hive's real TASKS.md the new count is 14 (squad said 125),
 and the rows that wait for val3ntin-ch are T-136, T-141 and T-158.
 
 ## Plan
@@ -34,7 +35,7 @@ and the rows that wait for val3ntin-ch are T-136, T-141 and T-158.
 ## Tests
 Smoke: a TASKS.md with hive's real status forms (`**merged** 21 Nov …`, `merged (CANDIDATE-1)`,
 `**done** …`, `**closed** …`, `**not needed**`, `todo; waits for D-100`, `todo`, a stopped row
-with an open decision, `reopened (was merged …)`): the count is 4 and two IDs are named.
+with an open decision, `reopened (was merged …)`): the count is 5 and two IDs are named.
 
 ## Assumptions & open questions
 - A row whose first word is "done" is not open, also when it says "waits for" later (hive's

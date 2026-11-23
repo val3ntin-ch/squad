@@ -1822,10 +1822,10 @@ printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|--
 rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
 check "024: with no open task the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
 # 035: hive's status forms: merged, done, closed and not needed rows are not open; the rows that wait for the owner are named
-printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov 23:15 (candidate 74) | - |\n| T-002 | b | dev-a | merged (CANDIDATE-117) | - |\n| T-003 | c | dev-b | **done** 22 Nov: report only | - |\n| T-004 | d | - | **closed** 14 Nov: split | - |\n| T-008 | h | - | **Not needed**: covered | - |\n| T-005 | e | - | todo; waits for D-100 | - |\n| T-006 | f | - | todo | - |\n| T-007 | g | dev-c | **stopped** at the round limit; open decision for the owner | - |\n| T-009 | i | - | reopened (was merged 21 Nov) | - |\n' >.team/TASKS.md
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov 23:15 (candidate 74) | - |\n| T-002 | b | dev-a | merged (CANDIDATE-117) | - |\n| T-003 | c | dev-b | **done** 22 Nov: report only | - |\n| T-004 | d | - | **closed** 14 Nov: split | - |\n| T-008 | h | - | **Not needed**: covered | - |\n| T-005 | e | - | todo; waits for D-100 | - |\n| T-006 | f | - | todo | - |\n| T-007 | g | dev-c | **stopped** at the round limit; open decision for the owner | - |\n| T-009 | i | - | reopened (was merged 21 Nov) | - |\n| T-010 | j | - | todo; waits for T-006 | - |\n' >.team/TASKS.md
 echo $(( $(date +%s) - 1860 )) >.team/observer/.idle/dev-c; rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
-check "035: the owner's notification counts only the open rows and names the ones that wait for the owner" grep -q 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 4 open task(s) in TASKS.md; 2 wait for the owner: T-005 T-007' "$MOCK_LOG"
-check "035: the IDLE line says the same" grep -q ' dev-c - IDLE no task for 31 min, 4 open task(s), 2 wait for the owner (T-005 T-007): the owner is told' .team/events.log
+check "035: the owner's notification counts only the open rows and names the ones that wait for the owner" grep -q 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 5 open task(s) in TASKS.md; 2 wait for the owner: T-005 T-007' "$MOCK_LOG"
+check "035: the IDLE line says the same" grep -q ' dev-c - IDLE no task for 31 min, 5 open task(s), 2 wait for the owner (T-005 T-007): the owner is told' .team/events.log
 printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov | - |\n| T-003 | c | dev-b | **done** 22 Nov | - |\n' >.team/TASKS.md
 rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
 check "035: with only merged and done rows the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
@@ -2760,7 +2760,8 @@ d33 dev-b T-339 --reassign >/dev/null
 check "033: a --reassign that is refused for another reason moves nothing" sh -c "! grep -q ' T-339 REASSIGNED' .team/events.log"
 e33 dev-b T-346 DISPATCH round=1; rm -f "$tmp/state"
 out33=$(d33 dev-a T-346 --reassign)
-check "033: --reassign moves the task and logs REASSIGNED with both seats" sh -c "! grep -q 'is with' <<<'$out33' && grep -q ' lead T-346 REASSIGNED dev-b -> dev-a\$' .team/events.log"
+check "033: --reassign is accepted" refuses grep -q 'is with' <<<"$out33"
+check "033: --reassign logs REASSIGNED with both seats" grep -q ' lead T-346 REASSIGNED dev-b -> dev-a$' .team/events.log
 check "033: after --reassign the old holder is refused without --reassign" grep -q 'T-346 is with dev-a' <<<"$(d33 dev-b T-346)"
 e33 dev-b T-350 DISPATCH round=1; printf 'x\n' >.team/reports/T-350-contract.md; echo working >"$tmp/state"
 MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=60 "$squad" dispatch dev-a T-350 --reassign >/dev/null 2>&1 || true
@@ -2838,7 +2839,7 @@ printf '2026-11-21 09:00:00 dev-a T-351 DISPATCH round=1\n' >.team/events.log; r
 check "033: an open task gets the observer's first pass" obs33
 echo $(( $(date +%s) - 7200 )) >$O33/.last-pass
 check "033: no timed pass when no work event came since the last pass" refuses obs33
-printf '2026-11-21 09:30:00 observer - OBSERVE pass=2 20 min\n2026-11-21 09:31:00 dev-a - IDLE no task for 5 min\n' >>.team/events.log
+printf '2026-11-21 09:30:00 observer - OBSERVE pass=2 20 min\n2026-11-21 09:31:00 dev-a - IDLE no task for 5 min\n2026-11-21 09:32:00 dev-a - SEAT_NO_OPTIONS\n' >>.team/events.log
 check "033: the observer's own line and an idle line are no work events" refuses obs33
 printf '2026-11-21 09:40:00 dev-a T-351 HEAVY_START sha=abc true\n' >>.team/events.log
 check "033: the next work event brings the timed pass back" obs33

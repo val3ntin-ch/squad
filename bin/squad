@@ -2394,9 +2394,9 @@ idle_dev_check() { # <index> <state> <open task> <agents json> <the seat's scree
     # ticket 035: a row is open unless its status says merged, done, closed or not needed (hive writes "**merged** 21 Nov …");
     # the open rows that wait for the owner are named, so the owner sees what unblocks the team
     local open waits nw
-    read -r open waits < <(awk -F'|' '/^\| *T-[0-9]/ { st = tolower($5); h = st; gsub(/[*_`]/, "", h); sub(/^ +/, "", h)
+    read -r open waits < <(awk -F'|' -v o="$(printf '%s' "$OWNER_NAME" | tr '[:upper:]' '[:lower:]')" '/^\| *T-[0-9]/ { st = tolower($5); h = st; gsub(/[*_`]/, "", h); sub(/^ +/, "", h)
         if (h ~ /^(merged|done|closed|not needed)([^a-z]|$)/) next   # only the first word of the status: unmerged or reopened rows stay open
-        n++; if (st ~ /waits for|open decision|decision for/) { id = $2; gsub(/ /, "", id); w = w " " id } }
+        n++; if (st ~ /open decision|decision for|waits for d-[0-9]/ || index(st, "waits for " o)) { id = $2; gsub(/ /, "", id); w = w " " id } }
       END { print n + 0, w }' "$TEAM_DIR/TASKS.md" 2>/dev/null || echo 0)
     [ "${open:-0}" -gt 0 ] || return 0
     nw=0; [ -z "$waits" ] || nw=$(wc -w <<<"$waits" | tr -d ' ')
@@ -3182,7 +3182,7 @@ observe_tick() {
   # (the marks too: the merge that closed the last task is no "new event" for the next pass)
   # ticket 033: a timed pass needs a work event since the last pass (hive: 43 passes in 14 h in which nothing happened).
   # The watch's own lines and the observer's are no work; a stall the watch finds is a mark above and brings a pass.
-  local work; work=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 !~ /^(OBSERVE|IDLE|STALLED|SEAT_[A-Z]+)$/ { n++ } END { print n + 0 }' "$TEAM_DIR/events.log" 2>/dev/null || echo 0)
+  local work; work=$(awk '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $5 !~ /^(OBSERVE|IDLE|STALLED|SEAT_[A-Z_]+)$/ { n++ } END { print n + 0 }' "$TEAM_DIR/events.log" 2>/dev/null || echo 0)
   if ! team_has_work; then [ "$last" = 0 ] || { echo "$now" >"$dir/.last-pass"; echo "${marks:-0}" >"$dir/.last-marks"; echo "$work" >"$dir/.last-work"; }; return 0; fi
   prev=$(cat "$dir/.last-marks" 2>/dev/null || echo 0)
   if [ "$last" = 0 ]; then due="first pass"
