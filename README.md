@@ -124,7 +124,7 @@ setup pnpm install --frozen-lockfile
 - **owner visual** (in the shipped presets, and added to older teams by `update-conf`): you test what can be seen and give feedback; the lead decides everything else from sources and marks only a visible difference `to test by the owner`, with a `See:` line (where to look). **owner all**: every provisional decision waits for you. Your name in squad's messages and the agents' role files is "the owner"; set `owner_name <name>` in `.team/team.conf` (for example `owner_name Alice`) to have them use your name.
 - **upgrade off** keeps squad from adding new settings and seats to this file. Without it, `squad up` and `squad init` run `squad update-conf`: whatever the team's preset has and team.conf lacks is added at the end, with a note; nothing that is there is changed.
 - **stall_minutes**: a seat with an open task that has not worked for this long is stalled.
-- **observe_minutes** is the longest gap between two observer passes. The observer gets no pass while no task is open (every dispatched task is merged or withdrawn, and no candidate run is in progress); the first event that opens work starts the timer again.
+- **observe_minutes** is the longest gap between two observer passes; a timed pass comes only when a work event (not an observer, idle or stall line) was logged since the last pass. The observer gets no pass while no task is open (every dispatched task is merged or withdrawn, and no candidate run is in progress); the first event that opens work starts the timer again.
 - **notice_redeliver_minutes** (15): a `DONE`, a verdict or a `BLOCKED` that the lead has not acted on is sent to the lead again this often. **notice_owner_minutes** (30): after this long without an action of the lead, you get one notification.
 - **owner_reminder_hours** (4): how often `squad wait-owner` reminds you while the team waits for you.
 - **notify_os** (on): a notification to you is also an operating-system notification (macOS, through `osascript`). **notify_os off** keeps herdr's notification only.
@@ -200,7 +200,7 @@ lead   writes tasks/CANDIDATE-1.md (its rows) and tasks/CANDIDATE-1.checks (its 
 lead   squad dispatch tester CANDIDATE-1       ▶ tester runs squad heavy tester CANDIDATE-1 --batch …checks on that commit; a task's own PASS does not count
 lead   after the tester's PASS on CANDIDATE-1: squad merge CANDIDATE-1  (the integration branch becomes exactly that commit)
 tester a failed candidate: squad done tester CANDIDATE-1 FAIL --task T-002   (the task it holds responsible; the receipt names the failed step and its log)
-lead   squad candidate CANDIDATE-2 --from CANDIDATE-1 --without T-002  ▶ the other tasks go on with no new review; T-002 goes back to its dev (squad dispatch <dev> T-002 with no text names the failed candidate and the step log)
+lead   squad candidate CANDIDATE-2 --from CANDIDATE-1 --without T-002  ▶ the other tasks go on with no new review; T-002 goes back to its dev (squad dispatch <dev> T-002 with no text names the failed candidate and the step log); its fix needs the reviewer's APPROVE of the new commit before a candidate takes it again
 lead   a real issue: squad consult "<question>" ▶ GPT brainstorms from official sources; both views go into DECISIONS.md
 observer  measures every pass, writes observer/NOW.md and SUGGESTIONS.md; the lead adopts or rejects each one
 lead   converge, LESSONS.md, READY.md ──▶ you   (only when everything is green)

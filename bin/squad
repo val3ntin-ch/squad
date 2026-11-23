@@ -3347,6 +3347,11 @@ cmd_done() {
   log_event "$seat" "$task" "$status" "${report:+report=$(basename "$report")}" "$(usage_tag)${DONE_UNTESTED:+ untested=$DONE_UNTESTED}${head:+ head=$head}${build:+ build=$build}"
   [ -z "$culprit" ] || log_event "$seat" "$task" CANDIDATE_FAIL "task=$culprit"
   [ "$seat" = "$LEAD" ] && return 0
+  # ticket 033: a sent-back task's fix goes to the reviewer before the next candidate (squad candidate refuses it until then)
+  if [ "$role:$status" = dev:DONE ] && has_role reviewer; then
+    local sb; sb=$(sent_back_from "$task")
+    [ -z "$sb" ] || hint="$hint This task was sent back from $sb: dispatch $(first_role reviewer) on it before the next candidate."
+  fi
   # Codex injects a message that arrives mid-turn into the running turn and
   # would drop the unfinished step; told to finish first, it does (tested).
   local msg="[squad] $seat finished $task: $status${report:+ — report: $report}${DONE_NOTE:+ ($DONE_NOTE)}.$hint (Notification: first finish what you were doing, then handle this.)"

@@ -2767,6 +2767,10 @@ e33 rev T-341 APPROVE report=T-341-review-2.md head=0000000000000000000000000000
 check "033: a reviewer APPROVE of another commit does not count" refuses c33 2 T-341
 e33 rev T-341 APPROVE report=T-341-review-2.md "head=$(git -C "$I33" rev-parse task/T-341)"
 check "033: with the reviewer's APPROVE of the current commit the candidate is built" c33 2 T-341
+# the dev's DONE on a sent-back task tells the lead to dispatch the reviewer
+reset_log; e33 dev-a T-341 DISPATCH round=3
+MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle"}]}}' MOCK_PANE_TEXT='❯ ' "$squad" "done" dev-a T-341 DONE >/dev/null 2>&1 || true
+check "033: the DONE notice of a sent-back task tells the lead to dispatch the reviewer" grep -q 'agent prompt lead .*finished T-341: DONE.*sent back from CANDIDATE-0: dispatch rev on it' "$MOCK_LOG"
 # a team with no reviewer seat: the lead's review stays enough
 cd "$tmp"; "$squad" new p33b >/dev/null 2>&1; cd p33b; reset_log
 printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat tester claude tester -\nupgrade off\n' >.team/team.conf

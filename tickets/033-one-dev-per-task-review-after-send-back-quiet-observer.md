@@ -25,18 +25,22 @@ Measured on hive (event log, 13 to 23 Nov, 120 tasks):
   limit (it stays 5, and the new review rounds count for it); the heavy lock; ticket 031.
 
 ## Done when
-- [ ] `squad dispatch <dev> <task>` is refused while another dev seat holds that task (a
+- [x] `squad dispatch <dev> <task>` is refused while another dev seat holds that task (a
       dispatch with no DONE, BLOCKED or WITHDRAWN after it); the message names the holder.
       `squad dispatch --reassign` moves the task and logs `REASSIGNED`.
-- [ ] After a task is sent back from a failed batch, `squad candidate` refuses that task
+- [x] After a task is sent back from a failed batch, `squad candidate` refuses that task
       until a reviewer verdict APPROVE names the task's current commit. The dev's DONE notice
       tells the lead to dispatch the reviewer.
-- [ ] A team with no reviewer seat keeps today's behaviour (the lead reviews), and the
+- [x] A team with no reviewer seat keeps today's behaviour (the lead reviews), and the
       refusal message of the item above says so.
-- [ ] The observer makes no pass when the event log has no new work event since its last
+- [x] The observer makes no pass when the event log has no new work event since its last
       pass; its next pass comes with the next work event.
 - [ ] `test/smoke.sh` passes in CI, with a test for each item above that fails before the
       change.
+
+Evidence for the ticked items: the 25 checks of the block "033" in `test/smoke.sh` (one dev per
+task 12, sent-back review 8, observer 5); run alone they pass on this branch, and the 12 that
+test new behaviour fail on `main`. The real trial for the sent-back case: see "Verification".
 
 ## Plan
 - Holder of a task: read from `events.log` the newest `DISPATCH` to a dev seat for the task
