@@ -2737,7 +2737,7 @@ e33 dev-a T-333 DISPATCH round=1; e33 dev-a T-333 DISPATCH_NOT_STARTED no runnin
 check "033: a dispatch that did not start holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-333)"
 e33 dev-a T-334 DISPATCH round=1; e33 lead T-334 WITHDRAWN
 check "033: a withdrawn task is held by nobody" refuses grep -q 'is with' <<<"$(d33 dev-b T-334)"
-e33 dev-a T-335 DISPATCH round=1; e33 dev-a T-335 DISPATCH_QUEUED waits for dev-a to be free; e33 dev-a T-335 DISPATCH_DROPPED already sent or done
+e33 dev-a T-335 DISPATCH round=1; e33 dev-a T-335 DISPATCH_QUEUED waits for dev-a to be free; e33 dev-a T-335 DISPATCH_DROPPED "already sent or done"
 check "033: a dropped second copy does not free the task (the dev still works on the first)" grep -q 'T-335 is with dev-a' <<<"$(d33 dev-b T-335)"
 out33=$(d33 dev-b T-335 --reassign)
 check "033: --reassign moves the task and logs REASSIGNED with both seats" sh -c "! grep -q 'is with' <<<'$out33' && grep -q ' lead T-335 REASSIGNED dev-a -> dev-b\$' .team/events.log"
