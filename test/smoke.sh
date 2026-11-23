@@ -816,7 +816,8 @@ check "a Claude seat records its session id from its SessionStart hook" sh -c "e
 check "the session-id hook never fails" sh -c "echo 'not json' | '$squad' session-id dev-b"
 check "Claude seats start with the hook settings" grep -qE "^herdr agent start dev-b --kind claude .* --settings $tmp/proj4/.team/seats/dev-b.settings.json" "$MOCK_LOG"
 check "the settings run squad session-id for the seat" sh -c "jq -e '.hooks.SessionStart[0].hooks[0].command | contains(\"session-id\") and contains(\"dev-b\")' .team/seats/dev-b.settings.json"
-mkdir -p "$tmp/home/.claude/projects/x" && : >"$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
+# a conversation that can be resumed has at least one user turn (an empty one is refused by Claude Code)
+mkdir -p "$tmp/home/.claude/projects/x" && printf '{"type":"user","message":{"role":"user","content":"hi"}}\n' >"$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
 echo 22222222-0000-0000-0000-000000000000 >.team/seats/dev-c.session
 mkdir -p "$CODEX_HOME/sessions/2026/11/13"
 printf '{"type":"session_meta","payload":{"id":"cdx-0001"}}\n' >"$CODEX_HOME/sessions/2026/11/13/rollout-2026-11-13T10-00-00-cdx-0001.jsonl"
@@ -831,7 +832,23 @@ SQUAD_FRESH=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "up --fresh starts new conversations" refuses grep -qE '^herdr agent start .* (--resume|-- resume) ' "$MOCK_LOG"
 reset_log; rm -f .team/.briefed/*
 MOCK_FAIL_RESUME=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
-check "a refused resume falls back to a fresh start once, and says so" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG' && grep -q ' dev-b - FRESH_START resume of' .team/events.log"
+# 036: a refused resume never starts the seat fresh (hive, 23 Nov 2026: a fresh lead began "continue Phase 3" while the team was stopped)
+check "036: a refused resume leaves the seat stopped: no fresh start" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG'"
+check "036: and logs RESUME_FAILED and tells the owner" sh -c "grep -q ' dev-b - RESUME_FAILED resume of 11111111-2222-3333-4444-555555555555 was refused' .team/events.log && grep -q 'notification show squad: dev-b could not resume' '$MOCK_LOG'"
+# 036: an empty session recorded after the real one (an exit with "Move to background") is passed over for the newest one with a turn
+reset_log; rm -f .team/.briefed/*
+printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/33333333-0000-0000-0000-000000000000.jsonl"
+printf '11111111-2222-3333-4444-555555555555\n33333333-0000-0000-0000-000000000000\n' >.team/seats/dev-b.sessions
+echo 33333333-0000-0000-0000-000000000000 >.team/seats/dev-b.session
+MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+check "036: an empty recorded session is passed over: the seat resumes its newest conversation with a turn" grep -qE '^herdr agent start dev-b --kind claude .* -- --resume 11111111-2222-3333-4444-555555555555 ' "$MOCK_LOG"
+# 036: an empty session that a /clear started is meant to be empty: the seat starts fresh, it does not go back past the clear
+reset_log; rm -f .team/.briefed/*
+echo '{"session_id":"44444444-0000-0000-0000-000000000000","source":"clear"}' | "$squad" session-id dev-b
+printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/44444444-0000-0000-0000-000000000000.jsonl"
+check "036: the hook records a session that a /clear started" grep -qx 44444444-0000-0000-0000-000000000000 .team/seats/dev-b.cleared
+MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+check "036: after a /clear with no turn yet the seat starts fresh, not in the conversation before the clear" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG'"
 reset_log; rm -f .team/.briefed/*
 check "a layout with no client attached (height 0) still starts" env MOCK_WIDTH=0 MOCK_HEIGHT=0 "$squad" up
 sleep 30 & other_up=$!; ln -s "$other_up" .team/up.lock
