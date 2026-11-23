@@ -1822,10 +1822,10 @@ printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|--
 rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
 check "024: with no open task the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
 # 035: hive's status forms: merged, done, closed and not needed rows are not open; the rows that wait for the owner are named
-printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov 23:15 (candidate 74) | - |\n| T-002 | b | dev-a | merged (CANDIDATE-117) | - |\n| T-003 | c | dev-b | **done** 22 Nov: report only | - |\n| T-004 | d | - | **closed** 14 Nov: split | - |\n| T-008 | h | - | **Not needed**: covered | - |\n| T-005 | e | - | todo; waits for D-100 | - |\n| T-006 | f | - | todo | - |\n| T-007 | g | dev-c | **stopped** at the round limit; open decision for the owner | - |\n' >.team/TASKS.md
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov 23:15 (candidate 74) | - |\n| T-002 | b | dev-a | merged (CANDIDATE-117) | - |\n| T-003 | c | dev-b | **done** 22 Nov: report only | - |\n| T-004 | d | - | **closed** 14 Nov: split | - |\n| T-008 | h | - | **Not needed**: covered | - |\n| T-005 | e | - | todo; waits for D-100 | - |\n| T-006 | f | - | todo | - |\n| T-007 | g | dev-c | **stopped** at the round limit; open decision for the owner | - |\n| T-009 | i | - | reopened (was merged 21 Nov) | - |\n' >.team/TASKS.md
 echo $(( $(date +%s) - 1860 )) >.team/observer/.idle/dev-c; rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
-check "035: the owner's notification counts only the open rows and names the ones that wait for the owner" grep -q 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 3 open task(s) in TASKS.md; 2 wait for the owner: T-005 T-007' "$MOCK_LOG"
-check "035: the IDLE line says the same" grep -q ' dev-c - IDLE no task for 31 min, 3 open task(s), 2 wait for the owner (T-005 T-007): the owner is told' .team/events.log
+check "035: the owner's notification counts only the open rows and names the ones that wait for the owner" grep -q 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 4 open task(s) in TASKS.md; 2 wait for the owner: T-005 T-007' "$MOCK_LOG"
+check "035: the IDLE line says the same" grep -q ' dev-c - IDLE no task for 31 min, 4 open task(s), 2 wait for the owner (T-005 T-007): the owner is told' .team/events.log
 printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov | - |\n| T-003 | c | dev-b | **done** 22 Nov | - |\n' >.team/TASKS.md
 rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
 check "035: with only merged and done rows the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
@@ -2762,6 +2762,23 @@ e33 dev-b T-346 DISPATCH round=1; rm -f "$tmp/state"
 out33=$(d33 dev-a T-346 --reassign)
 check "033: --reassign moves the task and logs REASSIGNED with both seats" sh -c "! grep -q 'is with' <<<'$out33' && grep -q ' lead T-346 REASSIGNED dev-b -> dev-a\$' .team/events.log"
 check "033: after --reassign the old holder is refused without --reassign" grep -q 'T-346 is with dev-a' <<<"$(d33 dev-b T-346)"
+e33 dev-b T-350 DISPATCH round=1; printf 'x\n' >.team/reports/T-350-contract.md; echo working >"$tmp/state"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=60 "$squad" dispatch dev-a T-350 --reassign >/dev/null 2>&1 || true
+check "033: a --reassign to a busy dev logs REASSIGNED, then DISPATCH_QUEUED" sh -c "grep -E ' T-350 (REASSIGNED|DISPATCH_QUEUED)' .team/events.log | awk '{print \$5}' | tr '\n' ' ' | grep -qx 'REASSIGNED DISPATCH_QUEUED '"
+check "033: the queued request does not carry --reassign" sh -c "! grep -qa -- '--reassign' .team/seats/dev-a.pending/*T-350"
+pkill -f 'dispatch dev-a T-350' 2>/dev/null || true; rm -f .team/seats/dev-a.pending/*T-350 .team/seats/dev-a.dispatching; echo idle >"$tmp/state"
+# review 2 of 033: a reassignment whose send failed gives the task back to the old holder; a queued delivery that squad refuses ends
+# with DISPATCH_FAILED, so it holds nothing
+e33 dev-b T-348 DISPATCH round=1; e33 lead T-348 REASSIGNED "dev-b -> dev-a"; e33 dev-a T-348 DISPATCH round=1; e33 dev-a T-348 DISPATCH_FAILED could not send
+check "033: a reassignment whose send failed leaves the task with the old holder" grep -q 'T-348 is with dev-b' <<<"$(d33 dev-c T-348 2>&1; d33 dev-a T-348)"
+e33 dev-b T-349 DISPATCH round=1; e33 lead T-349 REASSIGNED "dev-b -> dev-a"; e33 dev-a T-349 DISPATCH round=1; e33 dev-a T-349 DONE report=T-349-dev.md
+check "033: once the new dev reports, the old holder holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-349)"
+printf 'x\n' >.team/reports/T-347-contract.md; e33 dev-a T-347 DONE; echo working >"$tmp/state"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-347 >/dev/null 2>&1 || true
+for r in 1 2 3 4 5; do printf 'VERDICT: CHANGES\n' >".team/reports/T-347-review-$r.md"; done
+echo idle >"$tmp/state"
+k=0; until grep -q ' dev-a T-347 DISPATCH_FAILED' .team/events.log || [ $k -ge 100 ]; do sleep 0.1; k=$((k + 1)); done
+check "033: a queued delivery that squad refuses ends with DISPATCH_FAILED and holds nothing" sh -c "grep -q ' dev-a T-347 DISPATCH_FAILED queued dispatch refused' .team/events.log && ! grep -q ' dev-a T-347 DISPATCH round' .team/events.log"
 
 # a task sent back from a failed candidate needs the reviewer's APPROVE of its current commit (hive: T-182, batches 119 and 121)
 I33="$tmp/p33-team/integration"; DA33="$tmp/p33-team/dev-a"

@@ -38,9 +38,13 @@ Measured on hive (event log, 13 to 23 Nov, 120 tasks):
 - [ ] `test/smoke.sh` passes in CI, with a test for each item above that fails before the
       change.
 
-Evidence for the ticked items: the 25 checks of the block "033" in `test/smoke.sh` (one dev per
-task 12, sent-back review 8, observer 5); run alone they pass on this branch, and the 12 that
-test new behaviour fail on `main`. The real trial for the sent-back case: see "Verification".
+Evidence for the ticked items: the 39 checks of the block "033" in `test/smoke.sh`; run alone
+they pass on this branch, and the 22 that test new behaviour fail on `main`. Two review rounds
+(GPT and Claude) found 9 real defects; each is fixed with a check in that block.
+
+Not run: the real trial with live agents for the sent-back case (planned in "Tests"). The rule
+reads only the event log and the task branches, and types nothing into a seat, so the checks
+with the stand-in herdr cover it; the CI run covers the whole suite.
 
 ## Plan
 - Holder of a task: read from `events.log` the newest `DISPATCH` to a dev seat for the task
