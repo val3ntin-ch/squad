@@ -260,7 +260,10 @@ seat_cwd() { # index -> working directory
 clear_cmd() { # agent kind -> command that resets its conversation
   case "$1" in
     claude) echo "/clear" ;;
-    codex|opencode) echo "/new" ;;
+    # Codex 0.161: "/new" in a git checkout asks "Where should the new conversation run?" (the worktrees feature), and a
+    # seat that shows a menu gets nothing typed; "/clear" starts a new conversation with no question (measured 23 Nov 2026)
+    codex) echo "/clear" ;;
+    opencode) echo "/new" ;;
     *) echo "-" ;;
   esac
 }
