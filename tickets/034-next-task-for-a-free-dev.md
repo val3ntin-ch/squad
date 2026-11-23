@@ -1,5 +1,5 @@
 # 034 · A free dev gets its next task without waiting for an alarm
-Status: Approved (V!, 23 Nov 2026: "ok all, proceed"); the measurement comes first
+Status: Measured 23 Nov 2026: the ready list is not needed (no code); a new defect waits for V!
 Size: M (≤ 1 day)
 
 ## Goal
@@ -38,3 +38,24 @@ One smoke test per code item; the measurement is a script with its output in the
 - Open decision for V!: this changes the rule of 18 Nov that only the lead starts a
   dispatch: here squad starts one that the lead queued. Options: (a) keep the rule and set
   `idle_minutes 2`; (b) the ready list. Recommendation: (b), after the measurement.
+
+## Measurement (23 Nov 2026, hive's TASKS.md as of 22 Nov 22:31 and events.log)
+- The idle alarm to V! counts every row of TASKS.md whose status cell is not exactly
+  `merged`. Hive writes `**merged** 21 Nov 23:15 (candidate 74 …)` or `merged (CANDIDATE-117)`,
+  so 104 merged tasks count as open: squad's count is 125, the real number of rows that are
+  not merged in any form is 21.
+- None of the 21 was ready for a dev without V! or a new brief: 4 wait for V! (T-136, T-141,
+  T-158: decision D-100; T-148), 7 are done, closed or not needed, 5 are parent tasks whose
+  sub-tasks are all merged (T-157, T-159, T-161, T-162) or in a candidate (T-160i), 2 are
+  placeholders (T-2xx, T-3xx), 2 need a brief (T-164, T-167), 1 is a harness in progress (T-150).
+- Result: the free devs had no ready task; a ready list per dev would have held nothing. The
+  "Done when" rule of this ticket applies: no code for the ready list.
+
+## New defect found (not built: open decision for V!)
+The alarm "no task for 30 min, 124 open task(s): V! is told" is wrong twice: the number is
+wrong, and the real reason (the work waits for V!'s decisions) is not named.
+- Option (a): count a row as open only when its status does not contain `merged`, `done`,
+  `closed` or `not needed`.
+- Option (b): as (a), and the notification names the rows that wait for V! ("waits for V!",
+  "D-<n>" in the status), so V! sees what unblocks the team.
+- Recommendation: (b), as a small ticket 035.
