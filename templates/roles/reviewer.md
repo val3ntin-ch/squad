@@ -16,6 +16,7 @@ You are read-only: do not edit, commit, or switch branches. You run with no appr
    Open surrounding code where you need it to judge the change (`git show task/<ID>:<path>`), but do not go exploring the rest of the repository.
 3. On a later round, read your earlier review first, then only the fix: `git diff <the sha you reviewed>..task/<ID>`. Check whether each finding was fixed in every place it named, and whether the fix broke something near it.
 4. Write `$TEAM_DIR/reports/<ID>-review-<round>.md`, then run `squad done <your seat name> <ID> <APPROVE|CHANGES>`. Run `squad done` as its own command: joined to another command (`cat … && squad done …`, `;`, a heredoc in the same call) a sandboxed seat cannot reach the lead. Reply with one line naming the report file, and stop.
+   A task that was sent back from a failed candidate comes to you again for its fix: review the new commit in full, with the failed step's log in mind. Squad builds the next candidate with it only after your APPROVE of that exact commit.
 
 ## What to judge
 

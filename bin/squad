@@ -1039,19 +1039,27 @@ seat_model_arg() { # <index> -> the --model / -m value in the seat's arguments, 
 task_holder() { # <task> <seat> -> another dev seat that holds the task: its dispatch (sent, or waiting in its queue) has no DONE or BLOCKED after it
   # a dispatch that failed frees what waited in the queue, one that did not start frees what was sent; a dropped second
   # copy frees nothing (the dev works on the first). MERGE, WITHDRAWN and REASSIGNED free the task for every seat.
-  awk -v t="$1" -v me="$2" -v devs=" $(dev_seats) " '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t {
-      s = $3; e = $5
+  awk -v t="$1" -v me="$2" -v devs=" $(dev_seats) " '{ if ($1 ~ /^[0-9][0-9][0-9][0-9]-/) { s = $3; id = $4; e = $5 } else { s = $2; id = $3; e = $4 } }
+    (id "") == (t "") {
       if (e == "MERGE" || e == "WITHDRAWN" || e == "REASSIGNED") { split("", w); split("", q); next }
       if (!index(devs, " " s " ")) next
       if (e == "DISPATCH") { w[s] = 1; q[s] = 0 } else if (e == "DISPATCH_QUEUED") q[s] = 1
-      else if (e == "DISPATCH_FAILED") q[s] = 0; else if (e == "DISPATCH_NOT_STARTED") w[s] = 0
+      else if (e == "DISPATCH_FAILED") { if (q[s]) q[s] = 0; else w[s] = 0 }   # a queued copy failed, or the direct send did
+      else if (e == "DISPATCH_NOT_STARTED") w[s] = 0
       else if (e == "DONE" || e == "BLOCKED") { w[s] = 0; q[s] = 0 } }
     END { for (s in w) if (w[s] && s != me) { print s; exit } for (s in q) if (q[s] && s != me) { print s; exit } }' "$TEAM_DIR/events.log" 2>/dev/null || true
 }
+REASSIGN_FROM=""
+reassign_commit() { # <seat> <task>: log the move that --reassign asked for, once, when the dispatch is accepted
+  [ -z "$REASSIGN_FROM" ] || log_event "$LEAD" "$2" REASSIGNED "$REASSIGN_FROM -> $1"
+  REASSIGN_FROM=""
+}
 cmd_dispatch() {
   find_repo; load_conf
-  local seat=${1:-} task=${2:-} escalate=0 reassign=0 holder started=0 i role kind clear text round deferred=0
-  local -a orig=("$@")
+  local seat=${1:-} task=${2:-} escalate=0 reassign=0 holder started=0 i role kind clear text round deferred=0 a
+  # a queued delivery runs without --reassign: the move is logged once, when this call is accepted (REASSIGN_FROM)
+  local -a orig=(); for a in "$@"; do [ "$a" = --reassign ] || orig+=("$a"); done
+  REASSIGN_FROM=""
   [ -n "$seat" ] && [ -n "$task" ] || die "usage: squad dispatch <seat> <task> [--escalate] [--reassign] [text...]"
   valid_task "$task"
   shift 2
@@ -1064,7 +1072,7 @@ cmd_dispatch() {
     holder=$(task_holder "$task" "$seat")
     if [ -n "$holder" ]; then
       [ "$reassign" = 1 ] || die "$task is with $holder (its dispatch has no DONE or BLOCKED yet): one dev per task. Not sent. To move the task: squad dispatch $seat $task --reassign, and tell $holder to stop."
-      log_event "$LEAD" "$task" REASSIGNED "$holder -> $seat"
+      REASSIGN_FROM=$holder   # logged with the DISPATCH or DISPATCH_QUEUED line: a dispatch refused later moves nothing
     fi
   fi
   # the gate holds a task's first start; a task already under way (its test, review, a fix) goes on
@@ -1149,6 +1157,7 @@ cmd_dispatch() {
   # logged before the task is sent: a fast seat's report can never come before its dispatch
   [ "$started" = 1 ] || plan_gate "$task"   # again: the plan may have changed during the waits above
   if held; then return 0; fi
+  reassign_commit "$seat" "$task"
   log_event "$seat" "$task" DISPATCH "$([ "${CONTRACT_TEXT:-0}" = 1 ] && printf 'contract=1 ')round=$round${model:+ model=$model} $(usage_tag)"
   herdr_team agent prompt "$seat" "$text" >/dev/null || { log_event "$seat" "$task" DISPATCH_FAILED "could not send"; die "could not send the task to $seat."; }
   # started = the pane shows a running turn, or the task left the input line (Gas Town: submit_verify.go)
@@ -1198,6 +1207,7 @@ dispatch_queue() { # <seat> <task> <the dispatch arguments...>: wait in the back
   local seat=$1 task=$2; shift 2
   local log="$TEAM_DIR/seats/$seat.queue.log" since contract=0 a
   contract=$(request_kind "$@")
+  reassign_commit "$seat" "$task"
   mkdir -p "$TEAM_DIR/seats/$seat.pending"
   since=$(wc -l <"$TEAM_DIR/events.log" | tr -d ' ')   # before the QUEUED line: a DISPATCH right after it still counts
   log_event "$seat" "$task" DISPATCH_QUEUED "$([ "$contract" = 1 ] && printf 'contract=1 ')waits for $seat to be free"
@@ -1352,13 +1362,18 @@ failed_logs() { # <candidate> -> the log of each failed step of its run (the rec
   while IFS= read -r l; do out="$out${out:+,}$TEAM_DIR/receipts/$1/$l"; done < <(sed -n 's/^failed=.* log=//p' "$TEAM_DIR/receipts/$1/receipt" 2>/dev/null)
   printf '%s' "$out"
 }
-sent_back_from() { # <task> -> the candidate its newest SENT_BACK names, while no MERGE of the task came after it
-  awk -v t="$1" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t { if ($5 == "SENT_BACK") { x = $6; sub(/^from=/, "", x) } else if ($5 == "MERGE") x = "" } END { print x }' "$TEAM_DIR/events.log" 2>/dev/null || true
+sent_back_from() { # <task> -> "<candidate> <line>": the newest failed candidate that names the task (SENT_BACK, or the tester's
+  # CANDIDATE_FAIL task=<task>), while no MERGE of the task came after it; nothing when the task was never sent back
+  awk -v t="$1" '$1 ~ /^[0-9][0-9][0-9][0-9]-/ {
+      if ($4 == t && $5 == "SENT_BACK") { x = $6; sub(/^from=/, "", x); n = NR }
+      else if ($5 == "CANDIDATE_FAIL" && $6 == "task=" t) { x = $4; n = NR }
+      else if ($4 == t && $5 == "MERGE") x = "" }
+    END { if (x != "") print x, n }' "$TEAM_DIR/events.log" 2>/dev/null || true
 }
-reviewer_approved() { # <task> <commit>: a reviewer seat logged APPROVE for exactly this commit of the task
+reviewer_approved() { # <task> <commit> <line>: the newest reviewer verdict on the task after that line is APPROVE of exactly this commit
   local i n revs=""; n=$(seat_count); for ((i = 0; i < n; i++)); do [ "${S_ROLE[$i]}" = reviewer ] && revs="$revs ${S_NAME[$i]}"; done
-  awk -v t="$1" -v h="head=$2" -v revs="$revs " '$1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && $5 == "APPROVE" && index(revs, " " $3 " ") {
-      for (i = 6; i <= NF; i++) if ($i == h) f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null
+  awk -v t="$1" -v h="head=$2" -v after="${3:-0}" -v revs="$revs " 'NR > after && $1 ~ /^[0-9][0-9][0-9][0-9]-/ && $4 == t && ($5 == "APPROVE" || $5 == "CHANGES") && index(revs, " " $3 " ") {
+      f = 0; if ($5 == "APPROVE") for (i = 6; i <= NF; i++) if ($i == h) f = 1 } END { exit !f }' "$TEAM_DIR/events.log" 2>/dev/null
 }
 candidate_sent_back() { # <failed candidate> <tasks, joined by a comma> <why>: each task is open for its dev again, once for one failed candidate
   local t flog what="The log of the step that failed"
@@ -1428,8 +1443,8 @@ cmd_candidate() { # squad candidate CANDIDATE-<n> <task...>: one commit from the
     # ticket 033: the fix of a task that failed in a candidate is reviewed before the next candidate (hive, 22 Nov 2026: a fix
     # approved against the review of the old commit failed the next candidate too). A team with no reviewer seat: the lead's review.
     r=$(sent_back_from "$t")
-    if [ -n "$r" ] && has_role reviewer && ! reviewer_approved "$t" "$h"; then
-      die "$t was sent back from $r, and no reviewer has approved its commit ${h:0:12}: dispatch the reviewer first (squad dispatch $(first_role reviewer) $t), then build the candidate. A reviewer seat that is down: the task waits for it."
+    if [ -n "$r" ] && has_role reviewer && ! reviewer_approved "$t" "$h" "${r#* }"; then
+      die "$t was sent back from ${r%% *}, and no reviewer has approved its commit ${h:0:12}: dispatch the reviewer first (squad dispatch $(first_role reviewer) $t), then build the candidate. A reviewer seat that is down: the task waits for it."
     fi
     if [ -n "$from" ]; then   # the same approved commits as the earlier candidate: its record names each task's commit
       r=$(awk -v t="$t" 'index($0, "task=" t ":") == 1 { print substr($0, length(t) + 7); exit }' "$rec" 2>/dev/null || true)
@@ -3350,7 +3365,7 @@ cmd_done() {
   # ticket 033: a sent-back task's fix goes to the reviewer before the next candidate (squad candidate refuses it until then)
   if [ "$role:$status" = dev:DONE ] && has_role reviewer; then
     local sb; sb=$(sent_back_from "$task")
-    [ -z "$sb" ] || hint="$hint This task was sent back from $sb: dispatch $(first_role reviewer) on it before the next candidate."
+    [ -z "$sb" ] || hint="$hint This task was sent back from ${sb%% *}: dispatch $(first_role reviewer) on it before the next candidate."
   fi
   # Codex injects a message that arrives mid-turn into the running turn and
   # would drop the unfinished step; told to finish first, it does (tested).

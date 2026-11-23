@@ -2739,9 +2739,21 @@ e33 dev-a T-334 DISPATCH round=1; e33 lead T-334 WITHDRAWN
 check "033: a withdrawn task is held by nobody" refuses grep -q 'is with' <<<"$(d33 dev-b T-334)"
 e33 dev-a T-335 DISPATCH round=1; e33 dev-a T-335 DISPATCH_QUEUED waits for dev-a to be free; e33 dev-a T-335 DISPATCH_DROPPED "already sent or done"
 check "033: a dropped second copy does not free the task (the dev still works on the first)" grep -q 'T-335 is with dev-a' <<<"$(d33 dev-b T-335)"
-out33=$(d33 dev-b T-335 --reassign)
-check "033: --reassign moves the task and logs REASSIGNED with both seats" sh -c "! grep -q 'is with' <<<'$out33' && grep -q ' lead T-335 REASSIGNED dev-a -> dev-b\$' .team/events.log"
-check "033: after --reassign the old holder needs --reassign too" grep -q 'T-335 is with dev-b' <<<"$(e33 dev-b T-335 DISPATCH round=1; d33 dev-a T-335)"
+# review of 033: a direct send that failed holds nothing; a line of an older squad (no date) counts; a refused --reassign moves nothing
+e33 dev-a T-336 DISPATCH round=1; e33 dev-a T-336 DISPATCH_FAILED could not send
+check "033: a direct send that failed holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-336)"
+e33 dev-a T-337 DISPATCH round=1; e33 dev-a T-337 DISPATCH_QUEUED waits for dev-a to be free; e33 dev-a T-337 DISPATCH_FAILED not at its prompt
+check "033: a failed queued second copy does not free the first" grep -q 'T-337 is with dev-a' <<<"$(d33 dev-b T-337)"
+printf '10:00:00 dev-a T-338 DISPATCH\n' >>.team/events.log
+check "033: a dispatch line of an older squad (no date) holds the task" grep -q 'T-338 is with dev-a' <<<"$(d33 dev-b T-338)"
+e33 dev-a T-339 DISPATCH round=1; printf 'x\n' >.team/reports/T-339-contract.md
+for r in 1 2 3 4 5; do printf 'VERDICT: CHANGES\n' >".team/reports/T-339-review-$r.md"; done
+d33 dev-b T-339 --reassign >/dev/null
+check "033: a --reassign that is refused for another reason moves nothing" sh -c "! grep -q ' T-339 REASSIGNED' .team/events.log"
+e33 dev-b T-346 DISPATCH round=1; rm -f "$tmp/state"
+out33=$(d33 dev-a T-346 --reassign)
+check "033: --reassign moves the task and logs REASSIGNED with both seats" sh -c "! grep -q 'is with' <<<'$out33' && grep -q ' lead T-346 REASSIGNED dev-b -> dev-a\$' .team/events.log"
+check "033: after --reassign the old holder is refused without --reassign" grep -q 'T-346 is with dev-a' <<<"$(d33 dev-b T-346)"
 
 # a task sent back from a failed candidate needs the reviewer's APPROVE of its current commit (hive: T-182, batches 119 and 121)
 I33="$tmp/p33-team/integration"; DA33="$tmp/p33-team/dev-a"
@@ -2766,7 +2778,21 @@ check "033: the refused candidate used no number" test ! -e .team/candidates/CAN
 e33 rev T-341 APPROVE report=T-341-review-2.md head=0000000000000000000000000000000000000000
 check "033: a reviewer APPROVE of another commit does not count" refuses c33 2 T-341
 e33 rev T-341 APPROVE report=T-341-review-2.md "head=$(git -C "$I33" rev-parse task/T-341)"
+e33 rev T-341 CHANGES report=T-341-review-3.md "head=$(git -C "$I33" rev-parse task/T-341)"
+check "033: a later reviewer CHANGES of the same commit cancels its APPROVE" refuses c33 2 T-341
+e33 rev T-341 APPROVE report=T-341-review-2.md "head=$(git -C "$I33" rev-parse task/T-341)"
 check "033: with the reviewer's APPROVE of the current commit the candidate is built" c33 2 T-341
+# review of 033: the tester's FAIL that names a task is a send-back mark too (no --from rebuild needed); a second send-back needs a new
+# review; a merge clears the mark
+t33 T-344 one; e33 tester CANDIDATE-7 FAIL report=CANDIDATE-7-test.md; e33 tester CANDIDATE-7 CANDIDATE_FAIL task=T-344; t33 T-344 fix
+check "033: after the tester names a task in a failed candidate, a plain candidate refuses it without a review" grep -q 'T-344 was sent back from CANDIDATE-7' <<<"$(c33 3 T-344 || true)"
+e33 rev T-344 APPROVE report=T-344-review-2.md "head=$(git -C "$I33" rev-parse task/T-344)"
+e33 lead T-344 SENT_BACK from=CANDIDATE-8
+check "033: an APPROVE from before the newest send-back does not count" grep -q 'T-344 was sent back from CANDIDATE-8' <<<"$(c33 3 T-344 || true)"
+e33 lead T-344 MERGE abc
+check "033: a merge clears the send-back mark" c33 3 T-344
+e33 dev-a T-345 DISPATCH round=1; e33 dev-a T-345 BLOCKED report=T-345-dev.md
+check "033: a BLOCKED dev holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-345)"
 # the dev's DONE on a sent-back task tells the lead to dispatch the reviewer
 reset_log; e33 dev-a T-341 DISPATCH round=3
 MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle"}]}}' MOCK_PANE_TEXT='❯ ' "$squad" "done" dev-a T-341 DONE >/dev/null 2>&1 || true

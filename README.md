@@ -200,7 +200,8 @@ lead   writes tasks/CANDIDATE-1.md (its rows) and tasks/CANDIDATE-1.checks (its 
 lead   squad dispatch tester CANDIDATE-1       ▶ tester runs squad heavy tester CANDIDATE-1 --batch …checks on that commit; a task's own PASS does not count
 lead   after the tester's PASS on CANDIDATE-1: squad merge CANDIDATE-1  (the integration branch becomes exactly that commit)
 tester a failed candidate: squad done tester CANDIDATE-1 FAIL --task T-002   (the task it holds responsible; the receipt names the failed step and its log)
-lead   squad candidate CANDIDATE-2 --from CANDIDATE-1 --without T-002  ▶ the other tasks go on with no new review; T-002 goes back to its dev (squad dispatch <dev> T-002 with no text names the failed candidate and the step log); its fix needs the reviewer's APPROVE of the new commit before a candidate takes it again
+lead   squad candidate CANDIDATE-2 --from CANDIDATE-1 --without T-002  ▶ the other tasks go on with no new review; T-002 goes back to its dev (squad dispatch <dev> T-002 with no text names the failed candidate and the step log); its fix needs the reviewer's APPROVE of the new commit before a candidate takes it again (also when the tester's FAIL names the task and the lead builds a plain new candidate)
+lead   squad dispatch dev-b T-003  ▶ refused while dev-a holds T-003 (a dispatch with no DONE or BLOCKED yet): one dev per task; squad dispatch dev-b T-003 --reassign moves it
 lead   a real issue: squad consult "<question>" ▶ GPT brainstorms from official sources; both views go into DECISIONS.md
 observer  measures every pass, writes observer/NOW.md and SUGGESTIONS.md; the lead adopts or rejects each one
 lead   converge, LESSONS.md, READY.md ──▶ you   (only when everything is green)
