@@ -107,7 +107,7 @@ check "team files exist" test -f .team/team.conf -a -f .team/ROSTER.md -a -f .te
 check "team files are excluded from git" test -z "$(git status --porcelain)"
 # Codex 0.161: "/new" in a git checkout opens the menu "Where should the new conversation run?", and squad types
 # nothing into a menu, so every dispatch failed (hive, 22 Nov 2026); "/clear" starts a new conversation with no menu
-check "roster gives a Codex seat /clear as its clear command, not /new" sh -c "grep 'rev-gpt' .team/ROSTER.md | grep -qF '/clear'"
+check "roster gives a Codex seat /clear as its clear command, not /new" sh -c "grep 'rev-sol' .team/ROSTER.md | grep -qF '/clear'"
 export HERDR_ENV=1
 
 reset_log
@@ -129,6 +129,12 @@ check "integration branch exists" git show-ref --verify --quiet refs/heads/team/
 check "up works from inside a team worktree" sh -c "cd '$tmp/proj-team/dev-a' && '$squad' status"
 other='{"result":{"agents":[{"name":"lead","pane_id":"w9:p1","workspace_id":"w9","agent":"codex"}]}}'
 check "up refuses when a seat name runs in another workspace" refuses env MOCK_AGENTS="$other" "$squad" up
+
+# ticket 032: the reset that a dispatch types into a Codex seat is /clear (the team's state is put back: later checks count events)
+cp .team/events.log "$tmp/ev032" 2>/dev/null || : >"$tmp/ev032"; reset_log
+MOCK_AGENTS='{"result":{"agents":[{"name":"rev-sol","agent_status":"idle","pane_id":"w2:p4","agent":"codex"}]}}' MOCK_PANE_TEXT='› ' SQUAD_DISPATCH_WAIT=2 "$squad" dispatch rev-sol T-032 >/dev/null 2>&1 || true
+check "032: a dispatch resets a Codex seat with /clear" sh -c "grep -q '^herdr agent prompt rev-sol /clear ' '$MOCK_LOG' && ! grep -q '^herdr agent prompt rev-sol /new' '$MOCK_LOG'"
+cp "$tmp/ev032" .team/events.log; rm -rf .team/seats/rev-sol.pending .team/seats/rev-sol.dispatching .team/observer/.watchdog
 
 # resume: the team workspace exists; lead runs, rev-sol's agent runs unnamed
 reset_log

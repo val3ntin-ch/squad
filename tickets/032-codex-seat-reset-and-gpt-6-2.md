@@ -29,12 +29,18 @@ Cause (measured on Codex 0.161.0, 23 Nov 2026, in a throwaway session outside hi
   typed by squad into any menu; the review rules; hive's files (see "Hive", below).
 
 ## Done when
-- [ ] Squad resets a Codex seat with `/clear`; an opencode seat keeps `/new`.
-- [ ] Real trial on `/Users/v/v-dev/squad-trial` with a Codex seat started without
+- [x] Squad resets a Codex seat with `/clear`; an opencode seat keeps `/new`.
+      Evidence: smoke checks "roster gives a Codex seat /clear…", "032: a dispatch resets a
+      Codex seat with /clear" (both fail on `main`), "roster gives opencode its clear command".
+- [x] Real trial on `/Users/v/v-dev/squad-trial` with a Codex seat started without
       `--disable worktrees`: two dispatches in a row are delivered, each logs `DISPATCH`,
       none logs `DISPATCH_FAILED`, and the second starts with an empty conversation.
+      Evidence: `squad-trial/evidence8/NOTES.md` (23 Nov 2026, Codex 0.161.0, gpt-6.1-sol):
+      with the squad of PR #28 the dispatch failed as on hive; with this change both were
+      delivered in 7 s and answered.
 - [ ] `test/smoke.sh` passes in CI, with a test for the Codex reset command that fails before
-      the change.
+      the change. (The two new checks pass on the branch and fail on `main` in a short run;
+      the full suite runs in CI after the push.)
 
 ## Plan
 - `clear_cmd`: `codex) echo "/clear"`, `opencode) echo "/new"`.
