@@ -6,8 +6,8 @@ Size: M (≤ 1 day)
 A dev that reports DONE starts its next task at once, also while val3ntin-ch sleeps. Today the lead
 gives the next task after the 5-minute idle alarm, and val3ntin-ch gets a notification after 30 min.
 
-Measured on hive, 22 Nov 19:26 to 22:31: 8 idle alarms, 4 of them "no task for 30 min, 124
-open task(s): val3ntin-ch is told". Assumed, not measured: that those open tasks were ready for a dev;
+Measured on hive, 22 Nov 19:26 to 22:31: 7 idle alarms, 3 of them "no task for 30 min, 124
+open task(s): <owner> is told". Assumed, not measured: that those open tasks were ready for a dev;
 many may wait for val3ntin-ch's answers.
 
 ## Scope

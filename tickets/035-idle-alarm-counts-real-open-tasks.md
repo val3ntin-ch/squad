@@ -23,8 +23,8 @@ sees which tasks wait for the owner's decision, so the owner knows what unblocks
 - [x] With no open row the owner is not told (as before).
 - [ ] `test/smoke.sh` passes in CI, with a test for each item that fails before the change.
 
-Evidence: the three "035" checks in `test/smoke.sh` (they fail on `main`: the alarm said 8
-open tasks where 3 are open). On hive's real TASKS.md the new count is 14 (squad said 125),
+Evidence: the three "035" checks in `test/smoke.sh` (they fail on `main`: on the first test table the
+old count is 9 where 4 rows are open). On hive's real TASKS.md the new count is 14 (squad said 125),
 and the rows that wait for val3ntin-ch are T-136, T-141 and T-158.
 
 ## Plan
@@ -34,8 +34,10 @@ and the rows that wait for val3ntin-ch are T-136, T-141 and T-158.
 ## Tests
 Smoke: a TASKS.md with hive's real status forms (`**merged** 21 Nov …`, `merged (CANDIDATE-1)`,
 `**done** …`, `**closed** …`, `**not needed**`, `todo; waits for D-100`, `todo`, a stopped row
-with an open decision): the count is 3 and two IDs are named.
+with an open decision, `reopened (was merged …)`): the count is 4 and two IDs are named.
 
 ## Assumptions & open questions
+- A row whose first word is "done" is not open, also when it says "waits for" later (hive's
+  T-148: "**done** … waits for V!"); it is not named.
 - "Waits for the owner" is read from the status words that hive's lead uses today; a row
   written another way is counted as open but not named.
