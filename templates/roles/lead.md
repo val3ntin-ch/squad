@@ -146,6 +146,8 @@ A busy seat is no reason to wait: `squad dispatch` to a seat at work answers "qu
 
 If `squad dispatch` fails, read the seat's pane: `herdr agent read <seat> --source visible`.
 
+One dev per task: `squad dispatch` refuses a task that another dev holds (a dispatch with no DONE or BLOCKED yet). To move it on purpose: `squad dispatch <dev> <ID> --reassign`, and tell the first dev to stop.
+
 Keep every dev busy: when a dev is free and a task is ready, dispatch it at once. A task that failed in a candidate run, or that other tasks are built on, is the next task of its dev, before any new task.
 
 **One heavy run at a time.** The tester is the only seat that runs the full checks, one task at a time. You never run the full checks yourself; in a review you run only the single command a row needs.
@@ -175,7 +177,7 @@ Keep every dev busy: when a dev is free and a task is ready, dispatch it at once
 | tester `PASS` on a task | dispatch the reviewer seat if the roster has one, else review it yourself |
 | tester `FAIL` on a task | dispatch the dev again; the line points it at the test report |
 | tester `PASS` on `CANDIDATE-<n>` | `squad merge CANDIDATE-<n>` |
-| tester `FAIL` on `CANDIDATE-<n>` | `squad candidate CANDIDATE-<m> --from CANDIDATE-<n> --without <ID>` and dispatch the tester on it; dispatch the task the tester names to its dev again (its ID, not the candidate's). With no task left, the command builds nothing: dispatch each task to its dev, then build a plain new candidate from the approved fixes |
+| tester `FAIL` on `CANDIDATE-<n>` | `squad candidate CANDIDATE-<m> --from CANDIDATE-<n> --without <ID>` and dispatch the tester on it; dispatch the task the tester names to its dev again (its ID, not the candidate's). With no task left, the command builds nothing: dispatch each task to its dev, then build a plain new candidate from the approved fixes. A task that was sent back needs a reviewer's APPROVE of its new commit before `squad candidate` takes it again: after its dev's DONE, dispatch the reviewer on it (a reviewer seat that is down: the task waits for it; a team with no reviewer seat: your own APPROVE is enough) |
 | `[squad] The nightly run … failed` | read the failed jobs; write a fix task for each failure and dispatch it before new work |
 | reviewer `APPROVE` / `CHANGES` | adjudicate (below), then merge or send the dev back |
 | your review: approve | the task goes into the next candidate; after the tester's PASS on that candidate, `squad merge CANDIDATE-<n>`; dispatch the next ready task meanwhile |

@@ -1,5 +1,5 @@
 # 030 · A notice always reaches the lead; DONE needs the cheap checks; a seat can run without MCP servers
-Status: Done — awaiting PR review (approved by V! on 22 Nov 2026: "fix it, also be sure that if needed we fix all now"; the three changes of scope below: V!, 22 Nov 2026, "yes to pr 28")
+Status: Done — awaiting PR review (approved by val3ntin-ch on 22 Nov 2026: "fix it, also be sure that if needed we fix all now"; the three changes of scope below: val3ntin-ch, 22 Nov 2026, "yes to pr 28")
 Size: M (≤ 1 day)
 
 ## Goal
@@ -19,7 +19,7 @@ Remove the three largest losses measured on hive after tickets 023 to 027 were i
   start options of a Claude seat, `templates/roles/dev.md`, `templates/roles/reviewer.md`,
   `templates/roles/tester.md` (the same "own command" sentence), `templates/PROTOCOL.md`,
   the smoke tests, README.
-- In (added in the build; V!, 22 Nov 2026): the short lock `mutex()` takes its claim in one
+- In (added in the build; val3ntin-ch, 22 Nov 2026): the short lock `mutex()` takes its claim in one
   step (a file made by bash with `set -C`, not `mkdir`, which is not a one-step claim on
   the Rust coreutils 0.2.2 to 0.10.0), and every place that releases such a lock removes
   the file. This includes the one line that releases the lock in `squad merge` and in
@@ -37,7 +37,7 @@ Remove the three largest losses measured on hive after tickets 023 to 027 were i
       task's current commit whose command is the text, whole (as written, or as a step of a
       `--batch` run; a `--sample` run and a narrowed run do not count), and which ended
       with exit 0; the refusal names each missing check and the commit. With no
-      `done_check` line nothing changes. (V!, 22 Nov 2026: the first text said "contains
+      `done_check` line nothing changes. (val3ntin-ch, 22 Nov 2026: the first text said "contains
       the text"; review showed that a partial run then passes.)
 - [x] With `seat_mcp none` a Claude seat starts with no MCP server (verified on the real
       Claude Code CLI); `seat_mcp inherit` (the default) starts it as today; the setting
@@ -61,7 +61,7 @@ Remove the three largest losses measured on hive after tickets 023 to 027 were i
 One smoke test per "Done when" item; the `seat_mcp` item also by one real `claude -p` call.
 
 ## Assumptions & open questions
-- Open decision for V!: which hive seats get `seat_mcp none` (the devs may use the
+- Open decision for val3ntin-ch: which hive seats get `seat_mcp none` (the devs may use the
   Playwright MCP server for screenshots), and hive's `done_check` lines (proposed: the
   unit tests of `@hive/ui`, of `@hive/storybook`'s non-browser tests, and `knip`).
 - Known limits (review of commit 11a4161, 22 Nov 2026):
@@ -90,5 +90,5 @@ Independent verifier, 22 Nov 2026, on the pushed code (b405fd1); a real trial on
 | Role files: `squad done` as its own command; the dev runs the `done_check` commands | PASS | diff of `dev.md`, `reviewer.md`, `tester.md`, `PROTOCOL.md`; 2 smoke checks |
 | `test/smoke.sh` passes in CI, with a test for each item that fails before the change | PASS | CI run 45023015654 on b405fd1: Ubuntu and macOS (bash 5 and bash 3.2) green; the 47 "030:" checks against 94270ab: 36 fail |
 | The short lock claims in one step (added scope) | PASS | smoke "030: three callers of one mutex at once…" with a stand-in `mkdir`; real trial check D |
-| The three changes against the first ticket text (whole-command match, the lock, `tester.md` and the lock release in merge and candidate) | PASS | V!, 22 Nov 2026: "yes to pr 28" |
+| The three changes against the first ticket text (whole-command match, the lock, `tester.md` and the lock release in merge and candidate) | PASS | val3ntin-ch, 22 Nov 2026: "yes to pr 28" |
 

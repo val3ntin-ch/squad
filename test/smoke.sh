@@ -1830,6 +1830,14 @@ check "024: and events.log has the line" grep -q ' dev-c - IDLE no task for 31 m
 printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | merged | - |\n' >.team/TASKS.md
 rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
 check "024: with no open task the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
+# 035: hive's status forms: merged, done, closed and not needed rows are not open; the rows that wait for the owner are named
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov 23:15 (candidate 74) | - |\n| T-002 | b | dev-a | merged (CANDIDATE-117) | - |\n| T-003 | c | dev-b | **done** 22 Nov: report only | - |\n| T-004 | d | - | **closed** 14 Nov: split | - |\n| T-008 | h | - | **Not needed**: covered | - |\n| T-005 | e | - | todo; waits for D-100 | - |\n| T-006 | f | - | todo | - |\n| T-007 | g | dev-c | **stopped** at the round limit; open decision for the owner | - |\n| T-009 | i | - | reopened (was merged 21 Nov) | - |\n| T-010 | j | - | todo; waits for T-006 | - |\n' >.team/TASKS.md
+echo $(( $(date +%s) - 1860 )) >.team/observer/.idle/dev-c; rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
+check "035: the owner's notification counts only the open rows and names the ones that wait for the owner" grep -q 'notification show squad: dev-c has no task --body dev-c has had no task for 31 min; 5 open task(s) in TASKS.md; 2 wait for the owner: T-005 T-007' "$MOCK_LOG"
+check "035: the IDLE line says the same" grep -q ' dev-c - IDLE no task for 31 min, 5 open task(s), 2 wait for the owner (T-005 T-007): the owner is told' .team/events.log
+printf '# Tasks\n\n| ID | Title | Owner | Status | Depends on |\n|---|---|---|---|---|\n| T-001 | a | dev-a | **merged** 21 Nov | - |\n| T-003 | c | dev-b | **done** 22 Nov | - |\n' >.team/TASKS.md
+rm -f .team/observer/.idle/dev-c.told.owner; reset_log; idle24
+check "035: with only merged and done rows the owner is not told" refuses grep -q 'notification show squad: dev-c' "$MOCK_LOG"
 cp "$tmp/tasks.keep24" .team/TASKS.md; rm -rf .team/observer/.idle
 # ---- 2a · squad's own messages wait while the lead shows a dialog (herdr: blocked, or a menu in its pane) ----
 agents_lb='{"result":{"agents":[{"name":"dev-c","agent_status":"idle"},{"name":"lead","agent_status":"blocked"}]}}'
@@ -2723,6 +2731,129 @@ touch -t 202601010000 .team/.feedback.lock
 check "030: and when it is older than a minute it is left over from a crash: the next caller takes it" sh -c "'$squad' feedback 'after a stale lock' >/dev/null 2>&1 && grep -q 'after a stale lock' .team/FEEDBACK.md && test ! -e .team/.feedback.lock"
 rm -rf .team/.feedback.lock; : >.team/.feedback.lock; touch -t 202601010000 .team/.feedback.lock
 check "030: a stale lock file is taken the same way" sh -c "'$squad' feedback 'after a stale file' >/dev/null 2>&1 && grep -q 'after a stale file' .team/FEEDBACK.md && test ! -e .team/.feedback.lock"
+
+# ---- 033 · one dev per task; a sent-back task is reviewed again; the observer rests when nothing happened ----------
+cd "$tmp"; "$squad" new p33 >/dev/null 2>&1; cd p33; reset_log
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat dev-b claude dev -\nseat rev claude reviewer dev-a,dev-b\nseat tester claude tester -\nseat observer claude observer -\nupgrade off\n' >.team/team.conf
+"$squad" up >/dev/null 2>&1 || true
+e33() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>.team/events.log; }   # <seat> <task> <EVENT...>
+d33() { MOCK_DYNAMIC=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch "$@" 2>&1 || true; }   # its messages
+# one dev per task (hive, 22 Nov 2026: T-180 went to dev-c and 80 s later to dev-a)
+e33 dev-a T-331 DISPATCH round=1; reset_log; rm -f "$tmp/state"
+check "033: a task that one dev holds is refused for another dev, and the message names the holder" sh -c "MOCK_DYNAMIC=1 '$squad' dispatch dev-b T-331 2>&1 | grep -q 'T-331 is with dev-a'"
+check "033: the refused dispatch exits with an error and types nothing" sh -c "! MOCK_DYNAMIC=1 '$squad' dispatch dev-b T-331 >/dev/null 2>&1 && ! grep -q 'agent prompt dev-b' '$MOCK_LOG'"
+check "033: the holder itself gets its task again" refuses grep -q 'is with' <<<"$(d33 dev-a T-331)"
+check "033: the tester gets a task that a dev holds" refuses grep -q 'is with' <<<"$(d33 tester T-331)"
+e33 dev-a T-331 DONE report=T-331-dev.md
+check "033: after the holder's DONE another dev takes the next round" refuses grep -q 'is with' <<<"$(d33 dev-b T-331)"
+e33 dev-a T-332 DISPATCH_QUEUED waits for dev-a to be free
+check "033: a task that waits in one dev's queue is refused for another dev" grep -q 'T-332 is with dev-a' <<<"$(d33 dev-b T-332)"
+e33 dev-a T-332 DISPATCH_FAILED not at its prompt
+check "033: a queued dispatch that failed holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-332)"
+e33 dev-a T-333 DISPATCH round=1; e33 dev-a T-333 DISPATCH_NOT_STARTED no running turn in 20s
+check "033: a dispatch that did not start holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-333)"
+e33 dev-a T-334 DISPATCH round=1; e33 lead T-334 WITHDRAWN
+check "033: a withdrawn task is held by nobody" refuses grep -q 'is with' <<<"$(d33 dev-b T-334)"
+e33 dev-a T-335 DISPATCH round=1; e33 dev-a T-335 DISPATCH_QUEUED waits for dev-a to be free; e33 dev-a T-335 DISPATCH_DROPPED "already sent or done"
+check "033: a dropped second copy does not free the task (the dev still works on the first)" grep -q 'T-335 is with dev-a' <<<"$(d33 dev-b T-335)"
+# review of 033: a direct send that failed holds nothing; a line of an older squad (no date) counts; a refused --reassign moves nothing
+e33 dev-a T-336 DISPATCH round=1; e33 dev-a T-336 DISPATCH_FAILED could not send
+check "033: a direct send that failed holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-336)"
+e33 dev-a T-337 DISPATCH round=1; e33 dev-a T-337 DISPATCH_QUEUED waits for dev-a to be free; e33 dev-a T-337 DISPATCH_FAILED not at its prompt
+check "033: a failed queued second copy does not free the first" grep -q 'T-337 is with dev-a' <<<"$(d33 dev-b T-337)"
+printf '10:00:00 dev-a T-338 DISPATCH\n' >>.team/events.log
+check "033: a dispatch line of an older squad (no date) holds the task" grep -q 'T-338 is with dev-a' <<<"$(d33 dev-b T-338)"
+e33 dev-a T-339 DISPATCH round=1; printf 'x\n' >.team/reports/T-339-contract.md
+for r in 1 2 3 4 5; do printf 'VERDICT: CHANGES\n' >".team/reports/T-339-review-$r.md"; done
+d33 dev-b T-339 --reassign >/dev/null
+check "033: a --reassign that is refused for another reason moves nothing" sh -c "! grep -q ' T-339 REASSIGNED' .team/events.log"
+e33 dev-b T-346 DISPATCH round=1; rm -f "$tmp/state"
+out33=$(d33 dev-a T-346 --reassign)
+check "033: --reassign is accepted" refuses grep -q 'is with' <<<"$out33"
+check "033: --reassign logs REASSIGNED with both seats" grep -q ' lead T-346 REASSIGNED dev-b -> dev-a$' .team/events.log
+check "033: after --reassign the old holder is refused without --reassign" grep -q 'T-346 is with dev-a' <<<"$(d33 dev-b T-346)"
+e33 dev-b T-350 DISPATCH round=1; printf 'x\n' >.team/reports/T-350-contract.md; echo working >"$tmp/state"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=60 "$squad" dispatch dev-a T-350 --reassign >/dev/null 2>&1 || true
+check "033: a --reassign to a busy dev logs REASSIGNED, then DISPATCH_QUEUED" sh -c "grep -E ' T-350 (REASSIGNED|DISPATCH_QUEUED)' .team/events.log | awk '{print \$5}' | tr '\n' ' ' | grep -qx 'REASSIGNED DISPATCH_QUEUED '"
+check "033: the queued request does not carry --reassign" sh -c "! grep -qa -- '--reassign' .team/seats/dev-a.pending/*T-350"
+pkill -f 'dispatch dev-a T-350' 2>/dev/null || true; rm -f .team/seats/dev-a.pending/*T-350 .team/seats/dev-a.dispatching; echo idle >"$tmp/state"
+# review 2 of 033: a reassignment whose send failed gives the task back to the old holder; a queued delivery that squad refuses ends
+# with DISPATCH_FAILED, so it holds nothing
+e33 dev-b T-348 DISPATCH round=1; e33 lead T-348 REASSIGNED "dev-b -> dev-a"; e33 dev-a T-348 DISPATCH round=1; e33 dev-a T-348 DISPATCH_FAILED could not send
+check "033: a reassignment whose send failed leaves the task with the old holder" grep -q 'T-348 is with dev-b' <<<"$(d33 dev-c T-348 2>&1; d33 dev-a T-348)"
+e33 dev-b T-349 DISPATCH round=1; e33 lead T-349 REASSIGNED "dev-b -> dev-a"; e33 dev-a T-349 DISPATCH round=1; e33 dev-a T-349 DONE report=T-349-dev.md
+check "033: once the new dev reports, the old holder holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-349)"
+printf 'x\n' >.team/reports/T-347-contract.md; e33 dev-a T-347 DONE; echo working >"$tmp/state"
+MOCK_DYNAMIC=1 SQUAD_QUEUE_POLL=1 SQUAD_DISPATCH_WAIT=3 "$squad" dispatch dev-a T-347 >/dev/null 2>&1 || true
+for r in 1 2 3 4 5; do printf 'VERDICT: CHANGES\n' >".team/reports/T-347-review-$r.md"; done
+echo idle >"$tmp/state"
+k=0; until grep -q ' dev-a T-347 DISPATCH_FAILED' .team/events.log || [ $k -ge 100 ]; do sleep 0.1; k=$((k + 1)); done
+check "033: a queued delivery that squad refuses ends with DISPATCH_FAILED and holds nothing" sh -c "grep -q ' dev-a T-347 DISPATCH_FAILED queued dispatch refused' .team/events.log && ! grep -q ' dev-a T-347 DISPATCH round' .team/events.log"
+
+# a task sent back from a failed candidate needs the reviewer's APPROVE of its current commit (hive: T-182, batches 119 and 121)
+I33="$tmp/p33-team/integration"; DA33="$tmp/p33-team/dev-a"
+t33() { # <task> <file text>: one more commit on the task's branch, DONE, and the lead's APPROVE of that commit
+  git -C "$DA33" switch -q "task/$1" 2>/dev/null || git -C "$DA33" switch -q -c "task/$1" team/integration
+  echo "$2" >"$DA33/$1.txt" && git -C "$DA33" add "$1.txt" && git -C "$DA33" commit -qm "$1 $2"
+  e33 dev-a "$1" DISPATCH round=1; e33 dev-a "$1" DONE
+  printf 'x\n' >".team/reports/$1-review-1.md"; "$squad" "done" lead "$1" APPROVE >/dev/null 2>&1 || true
+}
+c33() { # <n> <task...>: build CANDIDATE-<n>; its messages
+  printf '# CANDIDATE-%s\n## Acceptance\n| # | Check |\n|---|---|\n| 1 | the suite passes |\n' "$1" >".team/tasks/CANDIDATE-$1.md"; printf 'true\n' >".team/tasks/CANDIDATE-$1.checks"
+  local n=$1; shift; "$squad" candidate "CANDIDATE-$n" "$@" 2>&1
+}
+t33 T-341 one; t33 T-342 one
+check "033: a task that was never sent back needs no reviewer verdict (as before)" c33 1 T-342
+e33 lead T-341 SENT_BACK from=CANDIDATE-0
+t33 T-341 fix
+out33=$(c33 2 T-341 || true)
+check "033: a sent-back task with no reviewer APPROVE of its commit is refused for a candidate" grep -q 'T-341 was sent back from CANDIDATE-0' <<<"$out33"
+check "033: the refusal names the reviewer seat to dispatch" grep -q 'squad dispatch rev T-341' <<<"$out33"
+check "033: the refused candidate used no number" test ! -e .team/candidates/CANDIDATE-2
+e33 rev T-341 APPROVE report=T-341-review-2.md head=0000000000000000000000000000000000000000
+check "033: a reviewer APPROVE of another commit does not count" refuses c33 2 T-341
+e33 rev T-341 APPROVE report=T-341-review-2.md "head=$(git -C "$I33" rev-parse task/T-341)"
+e33 rev T-341 CHANGES report=T-341-review-3.md "head=$(git -C "$I33" rev-parse task/T-341)"
+check "033: a later reviewer CHANGES of the same commit cancels its APPROVE" refuses c33 2 T-341
+e33 rev T-341 APPROVE report=T-341-review-2.md "head=$(git -C "$I33" rev-parse task/T-341)"
+check "033: with the reviewer's APPROVE of the current commit the candidate is built" c33 2 T-341
+# review of 033: the tester's FAIL that names a task is a send-back mark too (no --from rebuild needed); a second send-back needs a new
+# review; a merge clears the mark
+t33 T-344 one; e33 tester CANDIDATE-7 FAIL report=CANDIDATE-7-test.md; e33 tester CANDIDATE-7 CANDIDATE_FAIL task=T-344; t33 T-344 fix
+check "033: after the tester names a task in a failed candidate, a plain candidate refuses it without a review" grep -q 'T-344 was sent back from CANDIDATE-7' <<<"$(c33 3 T-344 || true)"
+e33 rev T-344 APPROVE report=T-344-review-2.md "head=$(git -C "$I33" rev-parse task/T-344)"
+e33 lead T-344 SENT_BACK from=CANDIDATE-8
+check "033: an APPROVE from before the newest send-back does not count" grep -q 'T-344 was sent back from CANDIDATE-8' <<<"$(c33 3 T-344 || true)"
+e33 lead T-344 MERGE abc
+check "033: a merge clears the send-back mark" c33 3 T-344
+e33 dev-a T-345 DISPATCH round=1; e33 dev-a T-345 BLOCKED report=T-345-dev.md
+check "033: a BLOCKED dev holds nothing" refuses grep -q 'is with' <<<"$(d33 dev-b T-345)"
+# the dev's DONE on a sent-back task tells the lead to dispatch the reviewer
+reset_log; e33 dev-a T-341 DISPATCH round=3
+MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle"}]}}' MOCK_PANE_TEXT='❯ ' "$squad" "done" dev-a T-341 DONE >/dev/null 2>&1 || true
+check "033: the DONE notice of a sent-back task tells the lead to dispatch the reviewer" grep -q 'agent prompt lead .*finished T-341: DONE.*sent back from CANDIDATE-0: dispatch rev on it' "$MOCK_LOG"
+# a team with no reviewer seat: the lead's review stays enough
+cd "$tmp"; "$squad" new p33b >/dev/null 2>&1; cd p33b; reset_log
+printf 'seat lead claude lead -\nseat dev-a claude dev -\nseat tester claude tester -\nupgrade off\n' >.team/team.conf
+"$squad" up >/dev/null 2>&1 || true
+I33="$tmp/p33b-team/integration"; DA33="$tmp/p33b-team/dev-a"
+t33 T-343 one; e33 lead T-343 SENT_BACK from=CANDIDATE-0; t33 T-343 fix
+check "033: with no reviewer seat a sent-back task goes into a candidate on the lead's APPROVE" c33 1 T-343
+cd "$tmp/p33"
+
+# the observer makes no timed pass when nothing happened since its last pass (hive: 43 passes in 14 h with no work event)
+O33=.team/observer; mkdir -p $O33
+obs33() { reset_log; MOCK_DYNAMIC=1 "$squad" watch --once --observe >/dev/null 2>&1 || true; grep -q 'agent prompt observer Observer pass' "$MOCK_LOG"; }
+printf '2026-11-21 09:00:00 dev-a T-351 DISPATCH round=1\n' >.team/events.log; rm -f $O33/.last-pass $O33/.last-marks $O33/.last-work $O33/.pass
+check "033: an open task gets the observer's first pass" obs33
+echo $(( $(date +%s) - 7200 )) >$O33/.last-pass
+check "033: no timed pass when no work event came since the last pass" refuses obs33
+printf '2026-11-21 09:30:00 observer - OBSERVE pass=2 20 min\n2026-11-21 09:31:00 dev-a - IDLE no task for 5 min\n2026-11-21 09:32:00 dev-a - SEAT_NO_OPTIONS\n' >>.team/events.log
+check "033: the observer's own line and an idle line are no work events" refuses obs33
+printf '2026-11-21 09:40:00 dev-a T-351 HEAVY_START sha=abc true\n' >>.team/events.log
+check "033: the next work event brings the timed pass back" obs33
+echo $(( $(date +%s) - 7200 )) >$O33/.last-pass; rm -f $O33/.last-work
+check "033: a team from an older squad (no count on record) keeps its timed pass" obs33
 echo
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]
