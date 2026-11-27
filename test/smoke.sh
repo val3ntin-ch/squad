@@ -66,8 +66,8 @@ case "$1 $2" in
   "agent start")
     if [ "$3" = "${MOCK_FAIL:-}" ]; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
     if [ "$3" = "${MOCK_TAKEN:-}" ]; then echo "{\"error\":{\"code\":\"agent_name_taken\",\"message\":\"agent name $3 is already used\"}}" >&2; exit 1; fi
-    # MOCK_FAIL_RESUME=1: the agent refuses an old conversation
-    if [ "${MOCK_FAIL_RESUME:-}" = 1 ] && case " $* " in *" --resume "*|*" -- resume "*) true ;; *) false ;; esac; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
+    # MOCK_FAIL_RESUME=1: the agent refuses an old conversation (=<seat>: only that seat's)
+    if { [ "${MOCK_FAIL_RESUME:-}" = 1 ] || [ "${MOCK_FAIL_RESUME:-}" = "$3" ]; } && case " $* " in *" --resume "*|*" -- resume "*) true ;; *) false ;; esac; then echo '{"error":"agent_not_ready"}' >&2; exit 1; fi
     # MOCK_BUSY=N: the first N starts answer like a shell that is still starting
     bf="$(dirname "$MOCK_LOG")/busy"; b=$(cat "$bf" 2>/dev/null || echo 0)
     if [ "$b" -lt "${MOCK_BUSY:-0}" ]; then echo $((b + 1)) >"$bf"
@@ -831,10 +831,27 @@ reset_log; rm -f .team/.briefed/*
 SQUAD_FRESH=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "up --fresh starts new conversations" refuses grep -qE '^herdr agent start .* (--resume|-- resume) ' "$MOCK_LOG"
 reset_log; rm -f .team/.briefed/*
-MOCK_FAIL_RESUME=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+# the fresh start above set the floor and cleared .session: dev-b's conversation counts again
+echo 0 >.team/seats/dev-b.floor; echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session; echo cdx-0001 >.team/seats/rev-gpt.session
+MOCK_FAIL_RESUME=dev-b MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true
 # 036: a refused resume never starts the seat fresh (hive, 23 Nov 2026: a fresh lead began "continue Phase 3" while the team was stopped)
 check "036: a refused resume leaves the seat stopped: no fresh start" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG'"
-check "036: and logs RESUME_FAILED and tells the owner" sh -c "grep -q ' dev-b - RESUME_FAILED resume of 11111111-2222-3333-4444-555555555555 was refused' .team/events.log && grep -q 'notification show squad: dev-b could not resume' '$MOCK_LOG'"
+check "036: and logs RESUME_FAILED and tells the owner" sh -c "grep -q ' dev-b - RESUME_FAILED the resume of 11111111-2222-3333-4444-555555555555 did not start' .team/events.log && grep -q 'notification show squad: dev-b could not resume' '$MOCK_LOG'"
+check "036 (review): a seat resumed in a run that stopped early keeps its mark for the restart note" test -f .team/seats/rev-gpt.resumed
+reset_log; rm -f .team/.briefed/rev-gpt
+ws4='{"result":{"workspaces":[{"workspace_id":"w5","label":"proj4 team"}]}}'
+panes4='{"result":{"panes":[{"pane_id":"w5:p1","label":"lead"},{"pane_id":"w5:p2","label":"dev-a"},{"pane_id":"w5:p3","label":"dev-b"},{"pane_id":"w5:p4","label":"dev-c"},{"pane_id":"w5:p5","label":"tester"},{"pane_id":"w5:p6","label":"rev-gpt"},{"pane_id":"w5:p7","label":"observer"},{"pane_id":"w5:p8","label":"planner"},{"pane_id":"w5:p9","label":"plan-gpt"}]}}'
+evn=$(wc -l <.team/events.log)
+MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"rev-gpt","agent_status":"idle","pane_id":"w5:p6","workspace_id":"w5","agent":"codex"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
+check "036 (review): the next run counts that seat as resumed, not as started blank" sh -c "tail -n +$((evn + 1)) .team/events.log | grep -qE ' squad - RESTART resumed: .*rev-gpt' && test ! -f .team/seats/rev-gpt.resumed"
+reset_log; rm -f .team/.briefed/*; echo 0 >.team/seats/dev-b.floor; echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session
+MOCK_FAIL_RESUME=1 MOCK_PANE_TEXT='Do you trust the files in this folder?' MOCK_WIDTH=160 "$squad" up >"$tmp/up036.out" 2>&1 || true
+check "036 (review): a resume that stops on a dialog gets the dialog's hint, not only the fresh-start way out" grep -q 'choose trust' "$tmp/up036.out"
+# 036 (review): the owner goes back to a conversation from before the floor: it counts again
+printf 'aaaa-r\ncccc-c\n' >.team/seats/dev-z.sessions; echo 1 >.team/seats/dev-z.floor
+echo '{"session_id":"aaaa-r","source":"resume"}' | "$squad" session-id dev-z
+check "036 (review): a conversation from before the floor in use again counts again" sh -c "test \"\$(tail -1 .team/seats/dev-z.sessions)\" = aaaa-r && test \"\$(cat .team/seats/dev-z.floor)\" = 0"
+rm -f .team/seats/dev-z.*
 # 036: the way out the notice names: only the named seat starts fresh, the others still resume
 reset_log; rm -f .team/.briefed/*
 MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1
@@ -846,6 +863,11 @@ echo '{"session_id":"88888888-0000-0000-0000-000000000000","source":"startup"}' 
 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "036: after up --fresh <seat>, a restart does not resume the conversation from before it" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG'"
 check "036: up --fresh names only seats of the team" sh -c "! '$squad' up --fresh dev-zz >/dev/null 2>&1 && '$squad' up --fresh dev-zz 2>&1 | grep -q \"'dev-zz' is not a seat\""
+# 036 (review): a fresh start that fails before the agent records its session does not leave the old one to resume
+reset_log; rm -f .team/.briefed/*
+echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session
+MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
+check "036: a fresh start clears the recorded session" test ! -s .team/seats/dev-b.session
 echo 0 >.team/seats/dev-b.floor
 # 036: an empty session recorded after the real one (an exit with "Move to background") is passed over for the newest one with a turn
 reset_log; rm -f .team/.briefed/*

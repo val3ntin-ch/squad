@@ -4119,6 +4119,12 @@ session_id() {
   # a new or cleared session waits for no background work; a compaction keeps the session and what it waits for
   local source; source=$(jq -r '.source // empty' <<<"$json")
   case "$source" in startup|resume|clear) rm -f "$TEAM_DIR/seats/$seat.background" ;; esac
+  # a conversation from before the floor in use again (the owner wrote it into .session): it counts again
+  local list=$TEAM_DIR/seats/$seat.sessions ln fl
+  ln=$(grep -nxF -- "$id" "$list" 2>/dev/null | head -1 | cut -d: -f1); fl=$(cat "$TEAM_DIR/seats/$seat.floor" 2>/dev/null || echo 0)
+  if [ -n "$ln" ] && [[ "$fl" =~ ^[0-9]+$ ]] && [ "$ln" -le "$fl" ]; then
+    { grep -vxF -- "$id" "$list"; printf '%s\n' "$id"; } >"$list.tmp" && mv "$list.tmp" "$list"; put "$TEAM_DIR/seats/$seat.floor" "$((fl - 1))"
+  fi
   grep -qxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" 2>/dev/null || printf '%s\n' "$id" >>"$TEAM_DIR/seats/$seat.sessions"   # .sessions: every one, for 'squad tokens'
   # a /clear means a blank page: no resume goes back past it (.floor: the sessions recorded before it)
   [ "$source" != clear ] || resume_floor "$seat" "$(grep -nxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" | head -1 | cut -d: -f1)"
@@ -4232,20 +4238,27 @@ start_seat() { # <index> <pane>
     if [ -f "$TEAM_DIR/seats/$name.started" ] && [ "$fresh" != 1 ]; then
       log_event "$name" - FRESH_START "no saved conversation to resume (none had a message yet, or it was deleted)"
     fi
-    [ "$kind" != claude ] || { mkdir -p "$TEAM_DIR/seats"; resume_floor "$name" "$(( $(cat "$TEAM_DIR/seats/$name.sessions" 2>/dev/null | wc -l) + 1 ))"; }
+    # a fresh start is a blank page: no session from before it is resumed, also when the agent fails before its hook
+    # records the new one (the owner can still write a session into .session to resume it)
+    [ "$kind" != claude ] || { mkdir -p "$TEAM_DIR/seats"; rm -f "$TEAM_DIR/seats/$name.session"; resume_floor "$name" "$(( $(cat "$TEAM_DIR/seats/$name.sessions" 2>/dev/null | wc -l) + 1 ))"; }
   fi
   [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
   if [ -n "$resume_id" ] && ! start_agent "${start_args[@]}"; then
-    # never start fresh in its place: a fresh seat has lost its context and acts on a blank page
-    log_event "$name" - RESUME_FAILED "resume of $resume_id was refused; the seat stays stopped"
-    v_notify "squad: $name could not resume" "Conversation $resume_id was refused. Fix .team/seats/$name.session, or start it fresh: squad up --fresh $name"
-    say "  $name could not resume $resume_id; it stays stopped (squad up --fresh $name starts it fresh)"
+    # never start fresh in its place: a fresh seat has lost its context and acts on a blank page. herdr gives the
+    # same error for a refused conversation, a dialog and a slow load, so the pane says which one it is.
+    log_event "$name" - RESUME_FAILED "the resume of $resume_id did not start; the seat stays stopped"
+    v_notify "squad: $name could not resume" "Conversation $resume_id did not start: see its pane. Only when that conversation is gone: squad up --fresh $name"
+    say "  $name did not resume $resume_id; it stays stopped. See its pane; only when that conversation is gone: squad up --fresh $name"
+    STUCK_ON_TRUST=0
+    explain_stuck "$name" "$pane" "$START_ERR"
+    [ "$STUCK_ON_TRUST" = 1 ] && TRUST_WAIT="$TRUST_WAIT$kind "
     START_FAILED=1
     return 0
   fi
   if [ -n "$resume_id" ] || start_agent "${start_args[@]}"; then
     mkdir -p "$TEAM_DIR/seats"; : >"$TEAM_DIR/seats/$name.started"
-    if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name")
+    # .resumed: the seat came back in its conversation and still needs the restart note, also when this run stops early
+    if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name"); : >"$TEAM_DIR/seats/$name.resumed"
     else say "  started $name ($kind${args:+ $args})"; fi
     STARTED+=("$name")
   else
@@ -4414,7 +4427,10 @@ cmd_up() {
     name=${S_NAME[$i]}; pane=${PANES[$i]}
     if [ -n "$(jq -r --arg n "$name" '.result.agents[] | select(.name == $n) | .pane_id' <<<"$agents_json")" ]; then
       if is_briefed "$name"; then say "  $name already running"
-      else say "  $name already running, not briefed yet"; STARTED+=("$name"); fi
+      else
+        say "  $name already running, not briefed yet"; STARTED+=("$name")
+        [ ! -f "$TEAM_DIR/seats/$name.resumed" ] || RESUMED+=("$name")   # resumed by a run that stopped before the briefing
+      fi
       continue
     fi
     # an agent herdr detected in the seat's pane but never named (its start
@@ -4448,6 +4464,7 @@ cmd_up() {
       [ "${S_ROLE[$i]}" = observer ] || continue
       case " ${RESUMED[*]} " in *" ${S_NAME[$i]} "*) seat_dialog "${S_NAME[$i]}" || herdr agent prompt "${S_NAME[$i]}" "$(restart_note) Write that as your next pass." >/dev/null || true ;; esac
     done
+    for name in "${RESUMED[@]}"; do rm -f "$TEAM_DIR/seats/$name.resumed"; done
   fi
 
   say ""
