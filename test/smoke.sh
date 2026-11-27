@@ -835,6 +835,10 @@ MOCK_FAIL_RESUME=1 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 # 036: a refused resume never starts the seat fresh (hive, 23 Nov 2026: a fresh lead began "continue Phase 3" while the team was stopped)
 check "036: a refused resume leaves the seat stopped: no fresh start" sh -c "grep -qE '^herdr agent start dev-b .* -- --resume ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b --kind claude .* -- --model claude-opus-5-5' '$MOCK_LOG'"
 check "036: and logs RESUME_FAILED and tells the owner" sh -c "grep -q ' dev-b - RESUME_FAILED resume of 11111111-2222-3333-4444-555555555555 was refused' .team/events.log && grep -q 'notification show squad: dev-b could not resume' '$MOCK_LOG'"
+# 036: the way out the notice names: only the named seat starts fresh, the others still resume
+reset_log; rm -f .team/.briefed/*
+MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1
+check "036: up --fresh <seat> starts only that seat fresh" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG' && grep -qE '^herdr agent start rev-gpt --kind codex .* -- resume cdx-0001 ' '$MOCK_LOG'"
 # 036: an empty session recorded after the real one (an exit with "Move to background") is passed over for the newest one with a turn
 reset_log; rm -f .team/.briefed/*
 printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/33333333-0000-0000-0000-000000000000.jsonl"

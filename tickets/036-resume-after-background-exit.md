@@ -17,7 +17,7 @@ ticket a seat always comes back in its real conversation, or squad stops and say
 ## Done when
 - [ ] A session file that holds an empty conversation (no user message) does not replace the
       last real one: squad keeps the last session that has at least one turn.
-- [ ] When a resume fails, squad does not start the lead fresh with a "continue" line: it
+- [ ] When a resume fails, squad does not start a seat fresh with a "continue" line: it
       logs `RESUME_FAILED`, tells the owner, and leaves the seat stopped until `squad up
       --fresh <seat>` or a fixed session file.
 - [ ] Real trial on the throwaway team: a seat with a background shell exits with "Move to

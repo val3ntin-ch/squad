@@ -30,8 +30,9 @@ squad $VERSION - a team of coding agents on your repository, inside herdr
 Usage:
   squad new <dir> [--preset NAME]   create a new project with git and a team
   squad init [--preset NAME]        add a team to the current repository
-  squad up [--fresh]                start or resume the team in this repository's own herdr session
-                                    (from any terminal; --fresh: new conversations, no resume)
+  squad up [--fresh [seat...]]      start or resume the team in this repository's own herdr session
+                                    (from any terminal; --fresh: new conversations, no resume;
+                                    --fresh <seat>...: only those seats start fresh)
   squad brief                       start the lead again (and brief seats that need it)
   squad status                      show seats, agent states and the task table
   squad down                        stop the team (close its herdr workspace)
@@ -4116,7 +4117,10 @@ session_id() {
   [ -n "$seat" ] && [ -n "$id" ] || return 0
   find_repo; mkdir -p "$TEAM_DIR/seats"; printf '%s\n' "$id" >"$TEAM_DIR/seats/$seat.session"
   # a new or cleared session waits for no background work; a compaction keeps the session and what it waits for
-  case "$(jq -r '.source // empty' <<<"$json")" in startup|resume|clear) rm -f "$TEAM_DIR/seats/$seat.background" ;; esac
+  local source; source=$(jq -r '.source // empty' <<<"$json")
+  case "$source" in startup|resume|clear) rm -f "$TEAM_DIR/seats/$seat.background" ;; esac
+  # a session a /clear started is meant to be empty: resume must not go back past the clear
+  [ "$source" = clear ] && printf '%s\n' "$id" >>"$TEAM_DIR/seats/$seat.cleared"
   grep -qxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" 2>/dev/null || printf '%s\n' "$id" >>"$TEAM_DIR/seats/$seat.sessions"   # .sessions: every one, for 'squad tokens'
 }
 
@@ -4135,9 +4139,19 @@ seat_resume_id() { # <index> -> the conversation to resume, or nothing
   local i=$1 id f
   case "${S_KIND[$i]}" in
     claude)
-      id=$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null) || return 0
-      [ -n "$id" ] || return 0
-      for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do [ -f "$f" ] && { echo "$id"; return 0; }; done ;;
+      # the recorded session, then older ones newest first: the first one with a user turn. An exit with
+      # "Move to background" records a new, empty session that Claude Code refuses to resume.
+      local seats=$TEAM_DIR/seats/${S_NAME[$i]} first=1
+      while IFS= read -r id; do
+        [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || continue
+        for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do
+          [ -f "$f" ] && grep -q '"type":"user"' "$f" && { echo "$id"; return 0; }
+        done
+        # an empty session after a /clear: start fresh, as the clear meant
+        [ "$first" = 1 ] && grep -qxF -- "$id" "$seats.cleared" 2>/dev/null && return 0
+        first=0
+      done < <(cat "$seats.session" 2>/dev/null; awk '{ l[NR] = $0 } END { for (n = NR; n > 0; n--) print l[n] }' "$seats.sessions" 2>/dev/null)
+      ;;
     codex)
       # the newest interactive Codex session started in this seat's folder; only
       # when no other Codex seat shares that folder (it could be the other's)
@@ -4193,30 +4207,25 @@ start_seat() { # <index> <pane>
   fi
   [ "$kind" = claude ] && agent_args+=(--settings "$(write_seat_settings "$i")")
   [ "$kind" != claude ] || write_local_hooks "$(seat_cwd "$i")"
-  local resume_id=""
-  [ "${SQUAD_FRESH:-0}" = 1 ] || resume_id=$(seat_resume_id "$i")
+  local resume_id="" fresh=${SQUAD_FRESH:-0}
+  case "${SQUAD_FRESH_SEATS:-}" in *" $name "*) fresh=1 ;; esac
+  [ "$fresh" = 1 ] || resume_id=$(seat_resume_id "$i")
   if [ -n "$resume_id" ]; then
     case "$kind" in
       claude) agent_args=(--resume "$resume_id" "${agent_args[@]}") ;;
       codex) agent_args=(resume "$resume_id" "${agent_args[@]}") ;;
     esac
-  elif [ -f "$TEAM_DIR/seats/$name.started" ] && [ "${SQUAD_FRESH:-0}" != 1 ]; then
+  elif [ -f "$TEAM_DIR/seats/$name.started" ] && [ "$fresh" != 1 ]; then
     log_event "$name" - FRESH_START "no saved conversation to resume (none had a message yet, or it was deleted)"
   fi
-  local -a fresh_args=("${start_args[@]}")
   [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
   if [ -n "$resume_id" ] && ! start_agent "${start_args[@]}"; then
-    # the agent refused the old conversation: start it fresh once, and say so
-    log_event "$name" - FRESH_START "resume of $resume_id was refused"
-    say "  $name could not resume $resume_id; starting it fresh"
-    resume_id=""
-    case "$kind" in
-      claude) agent_args=("${agent_args[@]:2}") ;;
-      codex) agent_args=("${agent_args[@]:2}") ;;
-    esac
-    start_args=("${fresh_args[@]}")
-    [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
-    herdr pane run "$pane" "clear" >/dev/null 2>&1 || true
+    # never start fresh in its place: a fresh seat has lost its context and acts on a blank page
+    log_event "$name" - RESUME_FAILED "resume of $resume_id was refused; the seat stays stopped"
+    v_notify "squad: $name could not resume" "Conversation $resume_id was refused. Fix .team/seats/$name.session, or start it fresh: squad up --fresh $name"
+    say "  $name could not resume $resume_id; it stays stopped (squad up --fresh $name starts it fresh)"
+    START_FAILED=1
+    return 0
   fi
   if [ -n "$resume_id" ] || start_agent "${start_args[@]}"; then
     mkdir -p "$TEAM_DIR/seats"; : >"$TEAM_DIR/seats/$name.started"
@@ -4501,7 +4510,7 @@ case "$cmd:${1:-}" in herdr:*) ;; *:-h|*:--help) usage; exit 0 ;; esac
 case "$cmd" in
   new)     cmd_new "$@" ;;
   init)    cmd_init "$@" ;;
-  up)      [ "${1:-}" = --fresh ] && export SQUAD_FRESH=1; cmd_up ;;
+  up)      if [ "${1:-}" = --fresh ]; then shift; if [ "$#" -gt 0 ]; then export SQUAD_FRESH_SEATS=" $* "; else export SQUAD_FRESH=1; fi; fi; cmd_up ;;
   brief)   cmd_brief ;;
   status)  cmd_status ;;
   clean)   cmd_clean ;;
