@@ -839,6 +839,14 @@ check "036: and logs RESUME_FAILED and tells the owner" sh -c "grep -q ' dev-b -
 reset_log; rm -f .team/.briefed/*
 MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1
 check "036: up --fresh <seat> starts only that seat fresh" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG' && grep -qE '^herdr agent start rev-gpt --kind codex .* -- resume cdx-0001 ' '$MOCK_LOG'"
+# 036 (review): a seat started fresh that has no turn yet does not go back to the conversation from before the fresh start
+reset_log; rm -f .team/.briefed/*
+printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/88888888-0000-0000-0000-000000000000.jsonl"
+echo '{"session_id":"88888888-0000-0000-0000-000000000000","source":"startup"}' | "$squad" session-id dev-b
+MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+check "036: after up --fresh <seat>, a restart does not resume the conversation from before it" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG'"
+check "036: up --fresh names only seats of the team" sh -c "! '$squad' up --fresh dev-zz >/dev/null 2>&1 && '$squad' up --fresh dev-zz 2>&1 | grep -q \"'dev-zz' is not a seat\""
+echo 0 >.team/seats/dev-b.floor
 # 036: an empty session recorded after the real one (an exit with "Move to background") is passed over for the newest one with a turn
 reset_log; rm -f .team/.briefed/*
 printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/33333333-0000-0000-0000-000000000000.jsonl"
@@ -846,11 +854,31 @@ printf '11111111-2222-3333-4444-555555555555\n33333333-0000-0000-0000-0000000000
 echo 33333333-0000-0000-0000-000000000000 >.team/seats/dev-b.session
 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "036: an empty recorded session is passed over: the seat resumes its newest conversation with a turn" grep -qE '^herdr agent start dev-b --kind claude .* -- --resume 11111111-2222-3333-4444-555555555555 ' "$MOCK_LOG"
+# 036 (review): a /clear, then an exit with "Move to background": the empty session after the clear wins, the seat starts fresh
+reset_log; rm -f .team/.briefed/*
+for c in 55555555-0000-0000-0000-000000000000 66666666-0000-0000-0000-000000000000; do printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/$c.jsonl"; done
+touch -t 202611230900 "$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
+touch -t 202611231000 "$tmp/home/.claude/projects/x/55555555-0000-0000-0000-000000000000.jsonl"
+touch -t 202611231100 "$tmp/home/.claude/projects/x/66666666-0000-0000-0000-000000000000.jsonl"
+printf '11111111-2222-3333-4444-555555555555\n55555555-0000-0000-0000-000000000000\n66666666-0000-0000-0000-000000000000\n' >.team/seats/dev-b.sessions
+echo 1 >.team/seats/dev-b.floor   # the /clear started 55555555: the one session before it does not count
+echo 66666666-0000-0000-0000-000000000000 >.team/seats/dev-b.session
+MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+check "036: a /clear then a background exit: the seat starts fresh, not in the conversation before the clear" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG'"
+# 036 (review): the conversation used last wins, not the one recorded last for the first time
+reset_log; rm -f .team/.briefed/*; echo 0 >.team/seats/dev-b.floor
+printf '{"type":"user","message":{"role":"user","content":"b"}}\n' >"$tmp/home/.claude/projects/x/77777777-0000-0000-0000-000000000000.jsonl"
+touch -t 202611231200 "$tmp/home/.claude/projects/x/77777777-0000-0000-0000-000000000000.jsonl"
+touch -t 202611231300 "$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
+printf '11111111-2222-3333-4444-555555555555\n77777777-0000-0000-0000-000000000000\n66666666-0000-0000-0000-000000000000\n' >.team/seats/dev-b.sessions
+echo 66666666-0000-0000-0000-000000000000 >.team/seats/dev-b.session
+MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
+check "036: the seat resumes the conversation it used last, not the newest one in the list" grep -qE '^herdr agent start dev-b --kind claude .* -- --resume 11111111-2222-3333-4444-555555555555 ' "$MOCK_LOG"
 # 036: an empty session that a /clear started is meant to be empty: the seat starts fresh, it does not go back past the clear
 reset_log; rm -f .team/.briefed/*
 echo '{"session_id":"44444444-0000-0000-0000-000000000000","source":"clear"}' | "$squad" session-id dev-b
 printf '{"type":"ai-title","aiTitle":"x"}\n' >"$tmp/home/.claude/projects/x/44444444-0000-0000-0000-000000000000.jsonl"
-check "036: the hook records a session that a /clear started" grep -qx 44444444-0000-0000-0000-000000000000 .team/seats/dev-b.cleared
+check "036: a /clear sets the floor: the sessions before it are never resumed" sh -c "test \"\$(cat .team/seats/dev-b.floor)\" = \"\$(( \$(grep -nxF 44444444-0000-0000-0000-000000000000 .team/seats/dev-b.sessions | cut -d: -f1) - 1 ))\""
 MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1
 check "036: after a /clear with no turn yet the seat starts fresh, not in the conversation before the clear" sh -c "grep -qE '^herdr agent start dev-b --kind claude ' '$MOCK_LOG' && ! grep -qE '^herdr agent start dev-b .* --resume ' '$MOCK_LOG'"
 reset_log; rm -f .team/.briefed/*

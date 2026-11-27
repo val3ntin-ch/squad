@@ -4119,9 +4119,12 @@ session_id() {
   # a new or cleared session waits for no background work; a compaction keeps the session and what it waits for
   local source; source=$(jq -r '.source // empty' <<<"$json")
   case "$source" in startup|resume|clear) rm -f "$TEAM_DIR/seats/$seat.background" ;; esac
-  # a session a /clear started is meant to be empty: resume must not go back past the clear
-  [ "$source" = clear ] && printf '%s\n' "$id" >>"$TEAM_DIR/seats/$seat.cleared"
   grep -qxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" 2>/dev/null || printf '%s\n' "$id" >>"$TEAM_DIR/seats/$seat.sessions"   # .sessions: every one, for 'squad tokens'
+  # a /clear means a blank page: no resume goes back past it (.floor: the sessions recorded before it)
+  [ "$source" != clear ] || resume_floor "$seat" "$(grep -nxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" | head -1 | cut -d: -f1)"
+}
+resume_floor() { # <seat> <line of the first session that counts>: sessions recorded before that line are never resumed
+  put "$TEAM_DIR/seats/$1.floor" "$(( ${2:-1} - 1 ))"
 }
 
 record_sessions() { # <agents json>: herdr knows each running seat's conversation; keep it for resume
@@ -4139,18 +4142,28 @@ seat_resume_id() { # <index> -> the conversation to resume, or nothing
   local i=$1 id f
   case "${S_KIND[$i]}" in
     claude)
-      # the recorded session, then older ones newest first: the first one with a user turn. An exit with
-      # "Move to background" records a new, empty session that Claude Code refuses to resume.
-      local seats=$TEAM_DIR/seats/${S_NAME[$i]} first=1
-      while IFS= read -r id; do
-        [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] || continue
+      # the seat's recorded conversations, the one used last first (its transcript changed last): the first with a
+      # user turn is resumed. An exit with "Move to background" records an empty one, which Claude Code refuses.
+      # Only sessions after the floor count: a /clear or a fresh start means a blank page, never one from before it.
+      local seats=$TEAM_DIR/seats/${S_NAME[$i]} files=() seen=" "
+      # the recorded one first: the seat's last start, or what the owner wrote there to fix a resume
+      id=$(cat "$seats.session" 2>/dev/null) || id=""
+      if [[ "$id" =~ ^[A-Za-z0-9-]+$ ]]; then
         for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do
           [ -f "$f" ] && grep -q '"type":"user"' "$f" && { echo "$id"; return 0; }
         done
-        # an empty session after a /clear: start fresh, as the clear meant
-        [ "$first" = 1 ] && grep -qxF -- "$id" "$seats.cleared" 2>/dev/null && return 0
-        first=0
-      done < <(cat "$seats.session" 2>/dev/null; awk '{ l[NR] = $0 } END { for (n = NR; n > 0; n--) print l[n] }' "$seats.sessions" 2>/dev/null)
+      fi
+      while IFS= read -r id; do
+        [[ "$id" =~ ^[A-Za-z0-9-]+$ ]] && [ "${seen#* "$id" }" = "$seen" ] || continue
+        seen="$seen$id "
+        for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do [ -f "$f" ] && files+=("$f"); done
+      done < <(awk -v f="$(cat "$seats.floor" 2>/dev/null || echo 0)" 'NR > f + 0' "$seats.sessions" 2>/dev/null)
+      [ "${#files[@]}" -gt 0 ] || return 0
+      # shellcheck disable=SC2012  # ls -t: the portable sort by change time; the names are ids squad checked
+      while IFS= read -r f; do
+        id=$(basename "$f" .jsonl)
+        if grep -q '"type":"user"' "$f"; then echo "$id"; return 0; fi
+      done < <(ls -t "${files[@]}")
       ;;
     codex)
       # the newest interactive Codex session started in this seat's folder; only
@@ -4215,8 +4228,11 @@ start_seat() { # <index> <pane>
       claude) agent_args=(--resume "$resume_id" "${agent_args[@]}") ;;
       codex) agent_args=(resume "$resume_id" "${agent_args[@]}") ;;
     esac
-  elif [ -f "$TEAM_DIR/seats/$name.started" ] && [ "$fresh" != 1 ]; then
-    log_event "$name" - FRESH_START "no saved conversation to resume (none had a message yet, or it was deleted)"
+  else
+    if [ -f "$TEAM_DIR/seats/$name.started" ] && [ "$fresh" != 1 ]; then
+      log_event "$name" - FRESH_START "no saved conversation to resume (none had a message yet, or it was deleted)"
+    fi
+    [ "$kind" != claude ] || { mkdir -p "$TEAM_DIR/seats"; resume_floor "$name" "$(( $(cat "$TEAM_DIR/seats/$name.sessions" 2>/dev/null | wc -l) + 1 ))"; }
   fi
   [ "${#agent_args[@]}" -gt 0 ] && start_args+=(-- "${agent_args[@]}")
   if [ -n "$resume_id" ] && ! start_agent "${start_args[@]}"; then
@@ -4306,6 +4322,7 @@ cmd_up() {
   if [ "${HERDR_ENV:-}" = 1 ]; then up_lock; fi
   if [ -f "$TEAM_DIR/team.conf" ]; then update_conf; else cmd_init; fi
   load_conf
+  local s; for s in ${SQUAD_FRESH_SEATS:-}; do seat_index "$s" >/dev/null || die "squad up --fresh: '$s' is not a seat of this team."; done
   if [ "${HERDR_ENV:-}" != 1 ]; then up_from_outside; return; fi
   require_herdr
   check_session
