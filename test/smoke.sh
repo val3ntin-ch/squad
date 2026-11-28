@@ -857,6 +857,17 @@ rm -f .team/seats/observer.resumed
 reset_log; : >.team/.briefed/lead; : >.team/seats/lead.resumed
 MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle","pane_id":"w5:p1","workspace_id":"w5","agent":"claude"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
 check "036 (CodeRabbit): a briefed lead with the resumed mark gets the restart note" sh -c "grep -q '^herdr agent prompt lead .*restarted the team' '$MOCK_LOG' && test ! -f .team/seats/lead.resumed"
+# 036 (CodeRabbit): a fresh start clears a pending resumed mark; an adopted agent whose resume timed out keeps it
+reset_log; : >.team/seats/dev-b.resumed
+MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
+check "036 (CodeRabbit): a fresh start clears the seat's resumed mark" test ! -f .team/seats/dev-b.resumed
+reset_log; rm -f .team/.briefed/* .team/seats/dev-b.resumed; echo 0 >.team/seats/dev-b.floor; echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session
+MOCK_FAIL_RESUME=dev-b MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true
+check "036 (CodeRabbit): a resume that did not become ready leaves the resumed mark for an adoption" test -f .team/seats/dev-b.resumed
+reset_log; evn=$(wc -l <.team/events.log)
+MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":null,"agent_status":"idle","pane_id":"w5:p3","workspace_id":"w5","agent":"claude"}]}}' MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true
+check "036 (CodeRabbit): the adopted agent is counted as resumed" sh -c "tail -n +$((evn + 1)) .team/events.log | grep -qE ' squad - RESTART resumed: .*dev-b'"
+rm -f .team/seats/dev-b.resumed
 # 036 (CodeRabbit): a watch pass does not put a session from before the floor back into .session
 printf 'aaaa-old\ncccc-new\n' >.team/seats/dev-z.sessions; echo 1 >.team/seats/dev-z.floor; echo cccc-new >.team/seats/dev-z.session
 printf 'seat dev-z claude dev -\n' >>.team/team.conf

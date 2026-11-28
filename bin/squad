@@ -4241,11 +4241,14 @@ start_seat() { # <index> <pane>
   case "${SQUAD_FRESH_SEATS:-}" in *" $name "*) fresh=1 ;; esac
   [ "$fresh" = 1 ] || resume_id=$(seat_resume_id "$i")
   if [ -n "$resume_id" ]; then
+    # .resumed before the start: an agent whose start timed out and that a later run adopts still had its conversation
+    mkdir -p "$TEAM_DIR/seats"; : >"$TEAM_DIR/seats/$name.resumed"
     case "$kind" in
       claude) agent_args=(--resume "$resume_id" "${agent_args[@]}") ;;
       codex) agent_args=(resume "$resume_id" "${agent_args[@]}") ;;
     esac
   else
+    rm -f "$TEAM_DIR/seats/$name.resumed"   # a fresh start gets the fresh-start brief, never the restart note
     if [ -f "$TEAM_DIR/seats/$name.started" ] && [ "$fresh" != 1 ]; then
       log_event "$name" - FRESH_START "no saved conversation to resume (none had a message yet, or it was deleted)"
     fi
@@ -4269,7 +4272,7 @@ start_seat() { # <index> <pane>
   if [ -n "$resume_id" ] || start_agent "${start_args[@]}"; then
     mkdir -p "$TEAM_DIR/seats"; : >"$TEAM_DIR/seats/$name.started"
     # .resumed: the seat came back in its conversation and still needs the restart note, also when this run stops early
-    if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name"); : >"$TEAM_DIR/seats/$name.resumed"
+    if [ -n "$resume_id" ]; then say "  resumed $name ($kind, conversation $resume_id)"; RESUMED+=("$name")
     else say "  started $name ($kind${args:+ $args})"; fi
     STARTED+=("$name")
   else
@@ -4449,6 +4452,7 @@ cmd_up() {
     if [ -n "$detected" ] && herdr agent rename "$pane" "$name" >/dev/null; then
       say "  adopted the running $detected in $name's pane"
       STARTED+=("$name")
+      [ ! -f "$TEAM_DIR/seats/$name.resumed" ] || RESUMED+=("$name")   # its start was a resume that timed out
       continue
     fi
     case "$TRUST_WAIT" in
