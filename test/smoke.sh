@@ -848,6 +848,27 @@ check "036 (review): the next run counts that seat as resumed, not as started bl
 reset_log; mkdir -p .team/.briefed; : >.team/.briefed/observer; : >.team/seats/observer.resumed
 MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"observer","agent_status":"idle","pane_id":"w5:p7","workspace_id":"w5","agent":"claude"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
 check "036 (CodeRabbit): a briefed observer with the resumed mark gets the restart note" sh -c "grep -q '^herdr agent prompt observer .*restart' '$MOCK_LOG' && test ! -f .team/seats/observer.resumed"
+# 036 (CodeRabbit): the observer's mark stays when its note could not be sent, so a later run sends it again
+reset_log; : >.team/seats/observer.resumed
+MOCK_FAIL_PROMPT=observer MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"observer","agent_status":"idle","pane_id":"w5:p7","workspace_id":"w5","agent":"claude"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
+check "036 (CodeRabbit): a restart note that could not be sent keeps the observer's mark" test -f .team/seats/observer.resumed
+rm -f .team/seats/observer.resumed
+# 036 (CodeRabbit): a resumed lead that is already briefed gets its restart note by prompt
+reset_log; : >.team/.briefed/lead; : >.team/seats/lead.resumed
+MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"lead","agent_status":"idle","pane_id":"w5:p1","workspace_id":"w5","agent":"claude"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
+check "036 (CodeRabbit): a briefed lead with the resumed mark gets the restart note" sh -c "grep -q '^herdr agent prompt lead .*restarted the team' '$MOCK_LOG' && test ! -f .team/seats/lead.resumed"
+# 036 (CodeRabbit): a watch pass does not put a session from before the floor back into .session
+printf 'aaaa-old\ncccc-new\n' >.team/seats/dev-z.sessions; echo 1 >.team/seats/dev-z.floor; echo cccc-new >.team/seats/dev-z.session
+printf 'seat dev-z claude dev -\n' >>.team/team.conf
+MOCK_AGENTS='{"result":{"agents":[{"name":"dev-z","agent_status":"idle","agent_session":{"value":"aaaa-old"}}]}}' "$squad" watch --once >/dev/null 2>&1 || true
+check "036 (CodeRabbit): a stale session from the watch does not replace the one after a /clear" grep -qx cccc-new .team/seats/dev-z.session
+sed -i.bak '/^seat dev-z /d' .team/team.conf && rm -f .team/team.conf.bak .team/seats/dev-z.*
+# 036 (CodeRabbit): a transcript that cannot be read is not taken for an empty one: squad tries the resume
+reset_log; rm -f .team/.briefed/*; echo 0 >.team/seats/dev-b.floor; echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session
+chmod 000 "$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
+MOCK_WIDTH=160 "$squad" up >/dev/null 2>&1 || true
+chmod 644 "$tmp/home/.claude/projects/x/11111111-2222-3333-4444-555555555555.jsonl"
+check "036 (CodeRabbit): an unreadable transcript is resumed, not replaced by a fresh start" grep -qE '^herdr agent start dev-b --kind claude .* -- --resume 11111111-2222-3333-4444-555555555555 ' "$MOCK_LOG"
 reset_log; rm -f .team/.briefed/*; echo 0 >.team/seats/dev-b.floor; echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session
 MOCK_FAIL_RESUME=1 MOCK_PANE_TEXT='Do you trust the files in this folder?' MOCK_WIDTH=160 "$squad" up >"$tmp/up036.out" 2>&1 || true
 check "036 (review): a resume that stops on a dialog gets the dialog's hint, not only the fresh-start way out" grep -q 'choose trust' "$tmp/up036.out"

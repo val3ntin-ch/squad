@@ -4129,6 +4129,11 @@ session_id() {
   # a /clear means a blank page: no resume goes back past it (.floor: the sessions recorded before it)
   [ "$source" != clear ] || resume_floor "$seat" "$(grep -nxF -- "$id" "$TEAM_DIR/seats/$seat.sessions" | head -1 | cut -d: -f1)"
 }
+before_floor() { # <seat> <id>: the id is listed at or before the seat's floor
+  local ln fl; ln=$(grep -nxF -- "$2" "$TEAM_DIR/seats/$1.sessions" 2>/dev/null | head -1 | cut -d: -f1) || true
+  fl=$(cat "$TEAM_DIR/seats/$1.floor" 2>/dev/null) || fl=0
+  [ -n "$ln" ] && [[ "$fl" =~ ^[0-9]+$ ]] && [ "$ln" -le "$fl" ]
+}
 resume_floor() { # <seat> <line of the first session that counts>: sessions recorded before that line are never resumed
   put "$TEAM_DIR/seats/$1.floor" "$(( ${2:-1} - 1 ))"
 }
@@ -4138,14 +4143,17 @@ record_sessions() { # <agents json>: herdr knows each running seat's conversatio
   mkdir -p "$TEAM_DIR/seats"
   for ((i = 0; i < n; i++)); do
     id=$(jq -r --arg n "${S_NAME[$i]}" '[.result.agents[] | select(.name == $n) | .agent_session.value // empty][0] // empty' <<<"$1" 2>/dev/null || true)
-    [ -n "$id" ] && [ "$id" != "$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null)" ] && printf '%s\n' "$id" >"$TEAM_DIR/seats/${S_NAME[$i]}.session"
+    # an id from before the floor is stale (a /clear's hook wrote a newer one after this list was taken)
+    if [ -n "$id" ] && [ "$id" != "$(cat "$TEAM_DIR/seats/${S_NAME[$i]}.session" 2>/dev/null)" ] && ! before_floor "${S_NAME[$i]}" "$id"; then
+      printf '%s\n' "$id" >"$TEAM_DIR/seats/${S_NAME[$i]}.session"
+    fi
     [ -z "$id" ] || grep -qxF -- "$id" "$TEAM_DIR/seats/${S_NAME[$i]}.sessions" 2>/dev/null || printf '%s\n' "$id" >>"$TEAM_DIR/seats/${S_NAME[$i]}.sessions"
   done
   return 0
 }
 
 seat_resume_id() { # <index> -> the conversation to resume, or nothing
-  local i=$1 id f
+  local i=$1 id f rc
   case "${S_KIND[$i]}" in
     claude)
       # the seat's recorded conversations, the one used last first (its transcript changed last): the first with a
@@ -4156,7 +4164,9 @@ seat_resume_id() { # <index> -> the conversation to resume, or nothing
       id=$(cat "$seats.session" 2>/dev/null) || id=""
       if [[ "$id" =~ ^[A-Za-z0-9-]+$ ]]; then
         for f in "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"/projects/*/"$id".jsonl; do
-          [ -f "$f" ] && grep -q '"type":"user"' "$f" && { echo "$id"; return 0; }
+          # grep 2: the transcript cannot be read; squad cannot tell, so it tries the resume (a failure is a RESUME_FAILED)
+          [ -f "$f" ] || continue; rc=0; grep -q '"type":"user"' "$f" 2>/dev/null || rc=$?
+          [ "$rc" = 1 ] || { echo "$id"; return 0; }
         done
       fi
       while IFS= read -r id; do
@@ -4168,7 +4178,8 @@ seat_resume_id() { # <index> -> the conversation to resume, or nothing
       # shellcheck disable=SC2012  # ls -t: the portable sort by change time; the names are ids squad checked
       while IFS= read -r f; do
         id=$(basename "$f" .jsonl)
-        if grep -q '"type":"user"' "$f"; then echo "$id"; return 0; fi
+        rc=0; grep -q '"type":"user"' "$f" 2>/dev/null || rc=$?
+        [ "$rc" = 1 ] || { echo "$id"; return 0; }
       done < <(ls -t "${files[@]}")
       ;;
     codex)
@@ -4459,11 +4470,19 @@ cmd_up() {
   fi
   if [ "${#RESUMED[@]}" -gt 0 ]; then
     log_event squad - RESTART "resumed: ${RESUMED[*]}"
-    for ((i = 0; i < n; i++)); do
-      [ "${S_ROLE[$i]}" = observer ] || continue
-      case " ${RESUMED[*]} " in *" ${S_NAME[$i]} "*) seat_dialog "${S_NAME[$i]}" || herdr agent prompt "${S_NAME[$i]}" "$(restart_note) Write that as your next pass." >/dev/null || true ;; esac
+    # the restart note: the observer, and a lead that brief did not reach in this run (it got the note there);
+    # a seat's .resumed mark goes only once its note was sent, so a later 'squad up' sends it again
+    for name in "${RESUMED[@]}"; do
+      i=$(seat_index "$name") || continue
+      case "${S_ROLE[$i]}" in
+        observer) seat_dialog "$name" || { herdr agent prompt "$name" "$(restart_note) Write that as your next pass." >/dev/null && rm -f "$TEAM_DIR/seats/$name.resumed"; } || true ;;
+        lead) case " ${STARTED[*]:-} " in
+                *" $name "*) rm -f "$TEAM_DIR/seats/$name.resumed" ;;
+                *) seat_dialog "$name" || { herdr agent prompt "$name" "$(restart_note)" >/dev/null && rm -f "$TEAM_DIR/seats/$name.resumed"; } || true ;;
+              esac ;;
+        *) rm -f "$TEAM_DIR/seats/$name.resumed" ;;
+      esac
     done
-    for name in "${RESUMED[@]}"; do rm -f "$TEAM_DIR/seats/$name.resumed"; done
   fi
 
   say ""
