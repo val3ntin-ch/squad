@@ -844,6 +844,10 @@ panes4='{"result":{"panes":[{"pane_id":"w5:p1","label":"lead"},{"pane_id":"w5:p2
 evn=$(wc -l <.team/events.log)
 MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"rev-gpt","agent_status":"idle","pane_id":"w5:p6","workspace_id":"w5","agent":"codex"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
 check "036 (review): the next run counts that seat as resumed, not as started blank" sh -c "tail -n +$((evn + 1)) .team/events.log | grep -qE ' squad - RESTART resumed: .*rev-gpt' && test ! -f .team/seats/rev-gpt.resumed"
+# 036 (CodeRabbit): a briefed observer that a stopped run resumed still gets the restart note
+reset_log; mkdir -p .team/.briefed; : >.team/.briefed/observer; : >.team/seats/observer.resumed
+MOCK_WS="$ws4" MOCK_PANES="$panes4" MOCK_AGENTS='{"result":{"agents":[{"name":"observer","agent_status":"idle","pane_id":"w5:p7","workspace_id":"w5","agent":"claude"}]}}' MOCK_WIDTH=160 "$squad" up --fresh dev-b >/dev/null 2>&1 || true
+check "036 (CodeRabbit): a briefed observer with the resumed mark gets the restart note" sh -c "grep -q '^herdr agent prompt observer .*restart' '$MOCK_LOG' && test ! -f .team/seats/observer.resumed"
 reset_log; rm -f .team/.briefed/*; echo 0 >.team/seats/dev-b.floor; echo 11111111-2222-3333-4444-555555555555 >.team/seats/dev-b.session
 MOCK_FAIL_RESUME=1 MOCK_PANE_TEXT='Do you trust the files in this folder?' MOCK_WIDTH=160 "$squad" up >"$tmp/up036.out" 2>&1 || true
 check "036 (review): a resume that stops on a dialog gets the dialog's hint, not only the fresh-start way out" grep -q 'choose trust' "$tmp/up036.out"

@@ -4427,10 +4427,9 @@ cmd_up() {
     name=${S_NAME[$i]}; pane=${PANES[$i]}
     if [ -n "$(jq -r --arg n "$name" '.result.agents[] | select(.name == $n) | .pane_id' <<<"$agents_json")" ]; then
       if is_briefed "$name"; then say "  $name already running"
-      else
-        say "  $name already running, not briefed yet"; STARTED+=("$name")
-        [ ! -f "$TEAM_DIR/seats/$name.resumed" ] || RESUMED+=("$name")   # resumed by a run that stopped before the briefing
-      fi
+      else say "  $name already running, not briefed yet"; STARTED+=("$name"); fi
+      # resumed by a run that stopped before the restart note was sent (a briefed observer too)
+      [ ! -f "$TEAM_DIR/seats/$name.resumed" ] || RESUMED+=("$name")
       continue
     fi
     # an agent herdr detected in the seat's pane but never named (its start

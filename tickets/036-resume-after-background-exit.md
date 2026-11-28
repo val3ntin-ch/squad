@@ -12,7 +12,9 @@ ticket a seat always comes back in its real conversation, or squad stops and say
 ## Scope
 - In: the session record of a Claude seat (`.session`, the SessionStart hook); the resume in
   `squad up`; the fresh-start fallback; smoke tests; README "Resume".
-- Out (not in this ticket): Codex seats; how the owner exits a seat.
+- Out (not in this ticket): how Codex seats record their session; how the owner exits a seat.
+- Decided (val3ntin-ch, 28 Nov 2026): a refused resume leaves a Codex seat stopped too, as
+  every seat: one rule for all, no fresh start in place of a refused resume.
 
 ## Done when
 - [x] A session file that holds an empty conversation (no user message) does not replace the
