@@ -50,7 +50,7 @@ Each repository's team runs in its own herdr session, named after the repository
 
 - `squad up` from a terminal outside herdr starts or attaches that session and starts the team in it. Its start log is `.team/up.log`.
 - `squad up` inside herdr works in that repository's session and refuses another repository's session, with the command to switch.
-- **Resume.** After a restart (herdr, the Mac), `squad up` brings every seat back with its own conversation: Claude seats with `--resume <their session>`, Codex seats with `codex resume <their session>`. A Claude seat records its current session at every start, `/clear` and compaction (a SessionStart hook passed with `--settings`; the same file has the Stop hook that records the seat's background work). The lead and the observer then get one line: check the heavy lock, the queue and uncommitted work. `squad up --fresh` starts new conversations instead.
+- **Resume.** After a restart (herdr, the Mac), `squad up` brings every seat back with its own conversation: Claude seats with `--resume <their session>`, Codex seats with `codex resume <their session>`. A Claude seat records its current session at every start, `/clear` and compaction (a SessionStart hook passed with `--settings`; the same file has the Stop hook that records the seat's background work). The lead and the observer then get one line: check the heavy lock, the queue and uncommitted work. squad resumes the recorded session, or else the seat's session used last that has a user turn, so an exit with "Move to background" (which records a new, empty session) does not lose the conversation; a session from before the seat's last `/clear` or fresh start is never resumed. When a resume is refused, the seat stays stopped: squad logs `RESUME_FAILED` and tells you, and never starts it fresh in its place. `squad up --fresh` starts new conversations instead; `squad up --fresh <seat>...` only for the seats named.
 
 ## Commands
 
@@ -58,7 +58,7 @@ Each repository's team runs in its own herdr session, named after the repository
 |---|---|
 | `squad new <dir>` | Creates a project folder with git, a first commit and a team. |
 | `squad init` | Adds a team to the repository you are in. Fills the `setup` line from the lockfile it finds (pnpm, yarn, npm, bun, uv, poetry, bundler) so every worktree gets its dependencies. |
-| `squad up [--fresh]` | Creates the worktrees, opens the repository's herdr session and workspace, and starts or resumes every agent. Safe to run again: it keeps running seats and starts only what is missing. |
+| `squad up [--fresh [seat...]]` | Creates the worktrees, opens the repository's herdr session and workspace, and starts or resumes every agent. Safe to run again: it keeps running seats and starts only what is missing. |
 | `squad report [--live\|--open]` | Writes `.team/report.html`: decisions, observer, timeline, QA, cost, events. `--live` is the report tab; `--open` opens the page. |
 | `squad brief` | Starts the lead again with one short line. |
 | `squad watch` | The live board in the team tab: usage, tasks, seats and their trouble. `--once` prints it once. |
